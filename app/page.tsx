@@ -304,7 +304,7 @@ export default function AnalisePage() {
             Ativo B (comparação){select(symbolB, setSymbolB, SYMBOLS)}
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
-            Período{select(String(months), (v) => setMonths(+v), ['1', '3', '6', '12', '18'])}
+            Período (meses){select(String(months), (v) => setMonths(+v), ['1', '3', '6', '12', '18'])}
           </label>
           <button onClick={run} disabled={status === 'loading'}
             style={{ background: S.a, color: '#1a1206', border: 'none', borderRadius: 8, padding: '10px 22px', fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: status === 'loading' ? 0.6 : 1 }}>
