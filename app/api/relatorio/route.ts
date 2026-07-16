@@ -36,7 +36,7 @@ REGRAS INVIOLÁVEIS:
 6. Encerre com uma frase padrão informando que o relatório é descritivo e não constitui recomendação de investimento.
 
 FORMATO: texto corrido em 3 a 5 parágrafos curtos, sem markdown, sem listas.
-CONTEÚDO: resumo do período; leitura da volatilidade e do regime atual de cada ativo; se houver dois ativos, comparação objetiva (quem rendeu mais pagou qual preço em risco); observações sobre a relação retorno/drawdown.`;
+CONTEÚDO: a primeira frase DEVE declarar explicitamente o período analisado (ex.: "No período de 1 mês..."); leitura da volatilidade e do regime atual de cada ativo — ao mencionar o regime, explique em meia frase que ele compara a volatilidade atual com o histórico do próprio ativo no período; se houver dois ativos, comparação objetiva (quem rendeu mais pagou qual preço em risco); observações sobre a relação retorno/drawdown. Ao citar volatilidade, sempre qualifique como "anualizada". Ao citar melhor/pior janela, diga "janela de 24 horas".`;
 
 export async function POST(req: Request) {
   try {
@@ -58,16 +58,17 @@ export async function POST(req: Request) {
       symbol: String(a.symbol).slice(0, 12),
       retornoPeriodoPct: Number(a.returnPct),
       drawdownMaximoPct: Number(a.maxDrawdownPct),
-      volatilidadeMediaAnualPct: Number(a.annualVolPct),
-      volatilidadeAtualAnualPct: Number(a.currentVolPct),
+      volatilidadeMediaAnualPct: Math.round(Number(a.annualVolPct)),
+      volatilidadeAtualAnualPct: Math.round(Number(a.currentVolPct)),
       regimeAtual: String(a.regime).slice(0, 10),
       melhorJanela24hPct: Number(a.bestDayPct),
       piorJanela24hPct: Number(a.worstDayPct),
       ultimoPrecoUSDT: Number(a.lastPrice),
     }));
 
+    const periodoTexto = periodoMeses === 1 ? '1 mês' : `${periodoMeses} meses`;
     const userPrompt =
-      `Período analisado: ${periodoMeses} meses, candles de 1 hora.\n` +
+      `Período analisado: ${periodoTexto} (candles de 1 hora).\n` +
       `Dados:\n${JSON.stringify(clean, null, 2)}`;
 
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
