@@ -1,78 +1,133 @@
 'use client';
 
 /**
- * Dashboard de Análise de Mercado — VigIA Trade v4
+ * Dashboard de Análise de Mercado — VigIA Trade v5
  * ---------------------------------------------------------------------------
- * Novidades da v4:
- * - Navegação para /alertas e /conta no header.
- * - Logado: cards de status (alertas ativos, chave Binance, últimas ordens)
- *   e histórico das últimas análises (persistido — sobrevive ao refresh).
- * - Cada análise rodada é salva em `analyses`; o relatório IA é anexado à
- *   análise quando gerado. "Reabrir" re-executa com os mesmos parâmetros
- *   sobre dados atuais.
- * - Deslogado: dashboard funciona normalmente, sem persistência.
+ * Correções desta versão:
+ * - Usa somente candles já encerrados.
+ * - Mantém os símbolos da análise separados dos controles atuais.
+ * - Alinha comparação e correlação pelo horário real dos candles.
+ * - Permite o período semanal de 12 meses com amostra suficiente.
+ * - Calcula Sharpe histórico com retornos logarítmicos e desvio-padrão amostral.
+ * - Valida amostra dos dois ativos antes de exibir ou persistir a análise.
+ * - Evita que falhas de persistência derrubem a análise já concluída.
  */
 
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import {
-  ResponsiveContainer, LineChart, Line, XAxis, YAxis,
-  Tooltip, Legend, CartesianGrid, ReferenceLine,
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  Legend,
+  CartesianGrid,
+  ReferenceLine,
 } from 'recharts';
 import { getSupabase } from '../lib/supabaseClient';
 
 // ---------------------------------------------------------------------------
-// Timeframes e períodos (inalterado da v3)
+// Timeframes e períodos
 // ---------------------------------------------------------------------------
 
-interface PeriodOption { label: string; days: number }
+interface PeriodOption {
+  label: string;
+  days: number;
+}
 
 const TIMEFRAMES = {
   '1h': {
-    api: '1h', label: '1 hora', windowLabel: 'janela de 72h', unitLabel: 'janela de 24h',
-    periodsPerYear: 24 * 365, volWindow: 72, candlesPorDia: 24,
+    api: '1h',
+    label: '1 hora',
+    windowLabel: 'janela de 72h',
+    unitLabel: 'janela de 24h',
+    periodsPerYear: 24 * 365,
+    volWindow: 72,
+    candlesPorDia: 24,
     periods: [
-      { label: '7 dias', days: 7 }, { label: '14 dias', days: 14 },
-      { label: '30 dias', days: 30 }, { label: '60 dias', days: 60 }, { label: '90 dias', days: 90 },
+      { label: '7 dias', days: 7 },
+      { label: '14 dias', days: 14 },
+      { label: '30 dias', days: 30 },
+      { label: '60 dias', days: 60 },
+      { label: '90 dias', days: 90 },
     ] as PeriodOption[],
   },
   '4h': {
-    api: '4h', label: '4 horas', windowLabel: 'janela de 7 dias', unitLabel: 'janela de 24h',
-    periodsPerYear: 6 * 365, volWindow: 42, candlesPorDia: 6,
+    api: '4h',
+    label: '4 horas',
+    windowLabel: 'janela de 7 dias',
+    unitLabel: 'janela de 24h',
+    periodsPerYear: 6 * 365,
+    volWindow: 42,
+    candlesPorDia: 6,
     periods: [
-      { label: '14 dias', days: 14 }, { label: '30 dias', days: 30 },
-      { label: '90 dias', days: 90 }, { label: '180 dias', days: 180 }, { label: '12 meses', days: 365 },
+      { label: '14 dias', days: 14 },
+      { label: '30 dias', days: 30 },
+      { label: '90 dias', days: 90 },
+      { label: '180 dias', days: 180 },
+      { label: '12 meses', days: 365 },
     ] as PeriodOption[],
   },
   '1d': {
-    api: '1d', label: 'diário', windowLabel: 'janela de 30 dias', unitLabel: 'dia',
-    periodsPerYear: 365, volWindow: 30, candlesPorDia: 1,
+    api: '1d',
+    label: 'diário',
+    windowLabel: 'janela de 30 dias',
+    unitLabel: 'dia',
+    periodsPerYear: 365,
+    volWindow: 30,
+    candlesPorDia: 1,
     periods: [
-      { label: '3 meses', days: 90 }, { label: '6 meses', days: 180 },
-      { label: '12 meses', days: 365 }, { label: '24 meses', days: 730 }, { label: '36 meses', days: 1095 },
+      { label: '3 meses', days: 90 },
+      { label: '6 meses', days: 180 },
+      { label: '12 meses', days: 365 },
+      { label: '24 meses', days: 730 },
+      { label: '36 meses', days: 1095 },
     ] as PeriodOption[],
   },
   '1w': {
-    api: '1w', label: 'semanal', windowLabel: 'janela de 12 semanas', unitLabel: 'semana',
-    periodsPerYear: 52, volWindow: 12, candlesPorDia: 0,
+    api: '1w',
+    label: 'semanal',
+    windowLabel: 'janela de 12 semanas',
+    unitLabel: 'semana',
+    periodsPerYear: 52,
+    volWindow: 12,
+    candlesPorDia: 0,
     periods: [
-      { label: '12 meses', days: 365 }, { label: '24 meses', days: 730 },
-      { label: '36 meses', days: 1095 }, { label: '60 meses', days: 1825 },
+      { label: '12 meses', days: 365 },
+      { label: '24 meses', days: 730 },
+      { label: '36 meses', days: 1095 },
+      { label: '60 meses', days: 1825 },
     ] as PeriodOption[],
   },
 } as const;
+
 type Timeframe = keyof typeof TIMEFRAMES;
 
-const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'nenhum'];
-const MIN_CANDLES = 60;
+const SYMBOLS = [
+  'BTCUSDT',
+  'ETHUSDT',
+  'SOLUSDT',
+  'BNBUSDT',
+  'XRPUSDT',
+  'nenhum',
+];
+
+const MIN_ALIGNED_RETURNS = 30;
 
 // ---------------------------------------------------------------------------
 // Tipos
 // ---------------------------------------------------------------------------
 
 interface Candle {
-  openTime: number; open: number; high: number;
-  low: number; close: number; volume: number;
+  openTime: number;
+  closeTime: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
 }
 
 type Regime = 'calmo' | 'normal' | 'volátil' | 'extremo';
@@ -96,16 +151,29 @@ interface AssetStats {
 
 interface AnalysisRow {
   id: string;
-  symbol_a: string; symbol_b: string | null;
-  timeframe: Timeframe; period_label: string;
-  retorno_a: number | null; retorno_b: number | null; correlacao: number | null;
+  symbol_a: string;
+  symbol_b: string | null;
+  timeframe: Timeframe;
+  period_label: string;
+  retorno_a: number | null;
+  retorno_b: number | null;
+  correlacao: number | null;
   criado_em: string;
 }
 
 interface OrderRow {
-  id: string; symbol: string; status: string; is_testnet: boolean;
-  entry_price: number | null; exit_price: number | null; pnl_usdt: number | null;
+  id: string;
+  symbol: string;
+  status: string;
+  is_testnet: boolean;
+  entry_price: number | null;
+  exit_price: number | null;
+  pnl_usdt: number | null;
   criado_em: string;
+}
+
+interface KeyInfo {
+  is_testnet: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,166 +181,381 @@ interface OrderRow {
 // ---------------------------------------------------------------------------
 
 const S = {
-  bg: '#101418', panel: '#181f26', border: '#2a343f',
-  text: '#d7dee6', dim: '#7d8a97',
-  a: '#e8a13c', b: '#4f8fd0',
-  green: '#3fb26f', red: '#d05555',
-  regime: { calmo: '#4f8fd0', normal: '#3fb26f', 'volátil': '#e8a13c', extremo: '#d05555' } as Record<Regime, string>,
+  bg: '#101418',
+  panel: '#181f26',
+  border: '#2a343f',
+  text: '#d7dee6',
+  dim: '#7d8a97',
+  a: '#e8a13c',
+  b: '#4f8fd0',
+  green: '#3fb26f',
+  red: '#d05555',
+  regime: {
+    calmo: '#4f8fd0',
+    normal: '#3fb26f',
+    'volátil': '#e8a13c',
+    extremo: '#d05555',
+  } as Record<Regime, string>,
 };
 
 const fmt = (n: number, d = 2) =>
-  n.toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
+  n.toLocaleString('pt-BR', {
+    minimumFractionDigits: d,
+    maximumFractionDigits: d,
+  });
+
 const fmtPct = (n: number) => `${n >= 0 ? '+' : ''}${fmt(n)}%`;
+
 const fmtData = (iso: string) =>
-  new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  new Date(iso).toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 
 const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   pendente: { label: 'pendente', color: '#7d8a97' },
+  entrada_enviada: { label: 'enviando entrada', color: '#e8a13c' },
   entrada_executada: { label: 'entrada feita', color: '#e8a13c' },
+  protecao_pendente: { label: 'criando proteção', color: '#e8a13c' },
+  entrada_sem_protecao: { label: 'sem proteção ⚠️', color: '#d05555' },
   oco_ativa: { label: 'OCO ativa', color: '#4f8fd0' },
   alvo_executado: { label: 'alvo ✅', color: '#3fb26f' },
   stop_executado: { label: 'stop 🛑', color: '#d05555' },
   cancelada: { label: 'cancelada', color: '#7d8a97' },
+  erro_pre_entrada: { label: 'erro antes da entrada', color: '#d05555' },
   erro: { label: 'erro', color: '#d05555' },
 };
 
 // ---------------------------------------------------------------------------
-// Dados / cálculos (inalterados da v3)
+// Dados e cálculos
 // ---------------------------------------------------------------------------
 
 async function fetchKlines(
-  symbol: string, interval: string, days: number, onProgress: (m: string) => void,
+  symbol: string,
+  interval: string,
+  days: number,
+  onProgress: (message: string) => void,
 ): Promise<Candle[]> {
-  const end = Date.now();
-  let cursor = end - days * 24 * 60 * 60 * 1000;
-  const out: Candle[] = [];
-  while (cursor < end) {
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&startTime=${cursor}&limit=1000`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Binance respondeu ${res.status} para ${symbol}`);
+  const requestedEnd = Date.now();
+  const requestedStart = requestedEnd - days * 24 * 60 * 60 * 1000;
+  let cursor = requestedStart;
+
+  const candlesByTime = new Map<number, Candle>();
+
+  while (cursor < requestedEnd) {
+    const params = new URLSearchParams({
+      symbol,
+      interval,
+      startTime: String(cursor),
+      endTime: String(requestedEnd),
+      limit: '1000',
+    });
+
+    const res = await fetch(
+      `https://api.binance.com/api/v3/klines?${params.toString()}`,
+      { cache: 'no-store' },
+    );
+
+    if (!res.ok) {
+      throw new Error(`Binance respondeu ${res.status} para ${symbol}`);
+    }
+
     const batch: (string | number)[][] = await res.json();
     if (!batch.length) break;
+
     for (const k of batch) {
-      out.push({ openTime: Number(k[0]), open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5] });
+      const openTime = Number(k[0]);
+      const closeTime = Number(k[6]);
+
+      // A Binance inclui o candle ainda em formação. Ele não pode participar
+      // de métricas históricas porque seu fechamento ainda pode mudar.
+      if (closeTime > requestedEnd) continue;
+
+      candlesByTime.set(openTime, {
+        openTime,
+        closeTime,
+        open: Number(k[1]),
+        high: Number(k[2]),
+        low: Number(k[3]),
+        close: Number(k[4]),
+        volume: Number(k[5]),
+      });
     }
-    cursor = out[out.length - 1].openTime + 1;
-    onProgress(`${symbol}: ${out.length} candles...`);
+
+    const lastOpenTime = Number(batch[batch.length - 1][0]);
+    const nextCursor = lastOpenTime + 1;
+
+    if (nextCursor <= cursor) break;
+    cursor = nextCursor;
+
+    onProgress(`${symbol}: ${candlesByTime.size} candles fechados...`);
+
     if (batch.length < 1000) break;
   }
-  return out;
+
+  return [...candlesByTime.values()]
+    .filter((candle) => candle.openTime >= requestedStart)
+    .sort((a, b) => a.openTime - b.openTime);
 }
 
 function logReturns(candles: Candle[]): number[] {
-  const r: number[] = [];
-  for (let i = 1; i < candles.length; i++) r.push(Math.log(candles[i].close / candles[i - 1].close));
-  return r;
-}
+  const returns: number[] = [];
 
-function rollingVol(returns: number[], window: number, periodsPerYear: number): (number | null)[] {
-  const annualize = Math.sqrt(periodsPerYear);
-  const out: (number | null)[] = new Array(returns.length + 1).fill(null);
-  let sum = 0, sumSq = 0;
-  for (let i = 0; i < returns.length; i++) {
-    sum += returns[i]; sumSq += returns[i] ** 2;
-    if (i >= window) { sum -= returns[i - window]; sumSq -= returns[i - window] ** 2; }
-    if (i >= window - 1) {
-      const mean = sum / window;
-      const variance = Math.max(0, sumSq / window - mean ** 2);
-      out[i + 1] = Math.sqrt(variance) * annualize * 100;
+  for (let i = 1; i < candles.length; i++) {
+    const previous = candles[i - 1].close;
+    const current = candles[i].close;
+
+    if (previous > 0 && current > 0) {
+      returns.push(Math.log(current / previous));
     }
   }
-  return out;
+
+  return returns;
+}
+
+function mean(values: number[]): number {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function sampleStandardDeviation(values: number[]): number {
+  if (values.length < 2) return 0;
+
+  const average = mean(values);
+  const variance = values.reduce(
+    (sum, value) => sum + (value - average) ** 2,
+    0,
+  ) / (values.length - 1);
+
+  return Math.sqrt(Math.max(0, variance));
+}
+
+function rollingVol(
+  returns: number[],
+  window: number,
+  periodsPerYear: number,
+): (number | null)[] {
+  const annualize = Math.sqrt(periodsPerYear);
+  const output: (number | null)[] = new Array(returns.length + 1).fill(null);
+
+  let sum = 0;
+  let sumSq = 0;
+
+  for (let i = 0; i < returns.length; i++) {
+    sum += returns[i];
+    sumSq += returns[i] ** 2;
+
+    if (i >= window) {
+      sum -= returns[i - window];
+      sumSq -= returns[i - window] ** 2;
+    }
+
+    if (i >= window - 1) {
+      const average = sum / window;
+      const variance = Math.max(0, sumSq / window - average ** 2);
+      output[i + 1] = Math.sqrt(variance) * annualize * 100;
+    }
+  }
+
+  return output;
 }
 
 function classifyRegime(volSeries: (number | null)[]): Regime {
-  const vals = volSeries.filter((v): v is number => v !== null).sort((x, y) => x - y);
+  const values = volSeries
+    .filter((value): value is number => value !== null)
+    .sort((a, b) => a - b);
   const current = volSeries[volSeries.length - 1];
-  if (current === null || vals.length < 4) return 'normal';
-  const q = (p: number) => vals[Math.floor(p * (vals.length - 1))];
-  if (current <= q(0.25)) return 'calmo';
-  if (current <= q(0.75)) return 'normal';
-  if (current <= q(0.95)) return 'volátil';
+
+  if (current === null || current === undefined || values.length < 4) {
+    return 'normal';
+  }
+
+  // Mantido igual ao cálculo server-side usado pelos alertas para que o mesmo
+  // conjunto de candles não receba regimes diferentes no painel e no cron.
+  const quantile = (p: number) =>
+    values[Math.floor(p * (values.length - 1))];
+
+  if (current <= quantile(0.25)) return 'calmo';
+  if (current <= quantile(0.75)) return 'normal';
+  if (current <= quantile(0.95)) return 'volátil';
   return 'extremo';
 }
 
+function alignedCandlePairs(
+  a: Candle[],
+  b: Candle[],
+): { a: Candle; b: Candle }[] {
+  const mapB = new Map(b.map((candle) => [candle.openTime, candle]));
+
+  return a.flatMap((candleA) => {
+    const candleB = mapB.get(candleA.openTime);
+    return candleB ? [{ a: candleA, b: candleB }] : [];
+  });
+}
+
 function correlation(a: Candle[], b: Candle[]): number | null {
-  if (a.length < 2 || b.length < 2) return null;
-  const mapB = new Map<number, number>();
-  for (let i = 1; i < b.length; i++) mapB.set(b[i].openTime, Math.log(b[i].close / b[i - 1].close));
-  const xs: number[] = [], ys: number[] = [];
-  for (let i = 1; i < a.length; i++) {
-    const rb = mapB.get(a[i].openTime);
-    if (rb !== undefined) { xs.push(Math.log(a[i].close / a[i - 1].close)); ys.push(rb); }
+  const pairs = alignedCandlePairs(a, b);
+  if (pairs.length < MIN_ALIGNED_RETURNS + 1) return null;
+
+  const xs: number[] = [];
+  const ys: number[] = [];
+
+  for (let i = 1; i < pairs.length; i++) {
+    const previous = pairs[i - 1];
+    const current = pairs[i];
+
+    if (
+      previous.a.close <= 0 ||
+      previous.b.close <= 0 ||
+      current.a.close <= 0 ||
+      current.b.close <= 0
+    ) {
+      continue;
+    }
+
+    xs.push(Math.log(current.a.close / previous.a.close));
+    ys.push(Math.log(current.b.close / previous.b.close));
   }
+
   const n = xs.length;
-  if (n < 30) return null;
-  const mx = xs.reduce((s, v) => s + v, 0) / n;
-  const my = ys.reduce((s, v) => s + v, 0) / n;
-  let cov = 0, vx = 0, vy = 0;
+  if (n < MIN_ALIGNED_RETURNS) return null;
+
+  const meanX = mean(xs);
+  const meanY = mean(ys);
+
+  let covariance = 0;
+  let varianceX = 0;
+  let varianceY = 0;
+
   for (let i = 0; i < n; i++) {
-    cov += (xs[i] - mx) * (ys[i] - my);
-    vx += (xs[i] - mx) ** 2; vy += (ys[i] - my) ** 2;
+    const dx = xs[i] - meanX;
+    const dy = ys[i] - meanY;
+
+    covariance += dx * dy;
+    varianceX += dx ** 2;
+    varianceY += dy ** 2;
   }
-  const denom = Math.sqrt(vx * vy);
-  return denom > 0 ? cov / denom : null;
+
+  const denominator = Math.sqrt(varianceX * varianceY);
+  return denominator > 0 ? covariance / denominator : null;
 }
 
 function correlationLabel(r: number): string {
-  const abs = Math.abs(r);
-  if (abs >= 0.7) return r > 0 ? 'alta' : 'alta inversa';
-  if (abs >= 0.4) return r > 0 ? 'moderada' : 'moderada inversa';
+  const absolute = Math.abs(r);
+
+  if (absolute >= 0.7) return r > 0 ? 'alta' : 'alta inversa';
+  if (absolute >= 0.4) return r > 0 ? 'moderada' : 'moderada inversa';
   return 'baixa';
 }
 
 function computeStats(
-  symbol: string, candles: Candle[], vol: (number | null)[], tf: (typeof TIMEFRAMES)[Timeframe],
+  symbol: string,
+  candles: Candle[],
+  vol: (number | null)[],
+  tf: (typeof TIMEFRAMES)[Timeframe],
 ): AssetStats {
-  const first = candles[0].close, last = candles[candles.length - 1].close;
+  const first = candles[0].close;
+  const last = candles[candles.length - 1].close;
   const n = candles.length;
-  let peak = -Infinity, maxDD = 0, belowPeak = 0;
-  for (const c of candles) {
-    peak = Math.max(peak, c.close);
-    const dd = (c.close - peak) / peak;
-    maxDD = Math.min(maxDD, dd);
-    if (dd < 0) belowPeak++;
+
+  let peak = -Infinity;
+  let maxDrawdown = 0;
+  let belowPeak = 0;
+
+  for (const candle of candles) {
+    peak = Math.max(peak, candle.close);
+    const drawdown = (candle.close - peak) / peak;
+    maxDrawdown = Math.min(maxDrawdown, drawdown);
+
+    if (drawdown < 0) belowPeak++;
   }
-  const currentDD = (last - peak) / peak;
+
+  const currentDrawdown = (last - peak) / peak;
   const span = tf.candlesPorDia > 0 ? tf.candlesPorDia : 1;
-  let best = -Infinity, worst = Infinity;
+
+  let best = 0;
+  let worst = 0;
+  let hasUnitReturn = false;
+
   for (let i = span; i < n; i++) {
-    const r = (candles[i].close / candles[i - span].close - 1) * 100;
-    if (r > best) best = r;
-    if (r < worst) worst = r;
+    const unitReturn = (candles[i].close / candles[i - span].close - 1) * 100;
+
+    if (!hasUnitReturn) {
+      best = unitReturn;
+      worst = unitReturn;
+      hasUnitReturn = true;
+    } else {
+      best = Math.max(best, unitReturn);
+      worst = Math.min(worst, unitReturn);
+    }
   }
+
   const returns = logReturns(candles);
-  const positives = returns.filter((r) => r > 0).length;
-  const volVals = vol.filter((v): v is number => v !== null);
-  const annualVol = volVals.reduce((s, v) => s + v, 0) / (volVals.length || 1);
-  const annualReturn = (Math.pow(last / first, tf.periodsPerYear / Math.max(1, n - 1)) - 1) * 100;
+  const positives = returns.filter((value) => value > 0).length;
+  const volValues = vol.filter((value): value is number => value !== null);
+  const averageRollingVol = mean(volValues);
+
+  const elapsedPeriods = Math.max(1, returns.length);
+  const annualizedLogReturn = Math.log(last / first) * (
+    tf.periodsPerYear / elapsedPeriods
+  );
+  const annualReturn = (Math.exp(annualizedLogReturn) - 1) * 100;
+
+  const periodMean = mean(returns);
+  const periodStd = sampleStandardDeviation(returns);
+  const sharpe = periodStd > 0
+    ? (periodMean / periodStd) * Math.sqrt(tf.periodsPerYear)
+    : 0;
+
   return {
     symbol,
     returnPct: (last / first - 1) * 100,
     annualReturnPct: annualReturn,
-    maxDrawdownPct: maxDD * 100,
-    currentDrawdownPct: currentDD * 100,
+    maxDrawdownPct: maxDrawdown * 100,
+    currentDrawdownPct: currentDrawdown * 100,
     timeInDrawdownPct: (belowPeak / n) * 100,
-    annualVolPct: annualVol,
-    currentVolPct: volVals[volVals.length - 1] ?? 0,
-    sharpe: annualVol > 0 ? annualReturn / annualVol : 0,
+    annualVolPct: averageRollingVol,
+    currentVolPct: volValues[volValues.length - 1] ?? 0,
+    sharpe,
     pctPositive: returns.length ? (positives / returns.length) * 100 : 0,
     regime: classifyRegime(vol),
-    bestUnitPct: best, worstUnitPct: worst,
+    bestUnitPct: best,
+    worstUnitPct: worst,
     lastPrice: last,
   };
+}
+
+function minimumCandlesFor(timeframe: Timeframe): number {
+  const config = TIMEFRAMES[timeframe];
+  return Math.max(MIN_ALIGNED_RETURNS, config.volWindow + 10);
 }
 
 // ---------------------------------------------------------------------------
 // UI auxiliares
 // ---------------------------------------------------------------------------
 
-function Card({ children, style, title }: { children: React.ReactNode; style?: React.CSSProperties; title?: string }) {
+function Card({
+  children,
+  style,
+  title,
+}: {
+  children: React.ReactNode;
+  style?: React.CSSProperties;
+  title?: string;
+}) {
   return (
-    <section title={title} style={{ background: S.panel, border: `1px solid ${S.border}`, borderRadius: 10, padding: 16, ...style }}>
+    <section
+      title={title}
+      style={{
+        background: S.panel,
+        border: `1px solid ${S.border}`,
+        borderRadius: 10,
+        padding: 16,
+        ...style,
+      }}
+    >
       {children}
     </section>
   );
@@ -280,11 +563,21 @@ function Card({ children, style, title }: { children: React.ReactNode; style?: R
 
 function RegimeBadge({ regime }: { regime: Regime }) {
   return (
-    <span style={{
-      background: `${S.regime[regime]}22`, color: S.regime[regime],
-      border: `1px solid ${S.regime[regime]}55`, borderRadius: 20,
-      padding: '2px 10px', fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5,
-    }}>{regime}</span>
+    <span
+      style={{
+        background: `${S.regime[regime]}22`,
+        color: S.regime[regime],
+        border: `1px solid ${S.regime[regime]}55`,
+        borderRadius: 20,
+        padding: '2px 10px',
+        fontSize: 12,
+        fontWeight: 600,
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+      }}
+    >
+      {regime}
+    </span>
   );
 }
 
@@ -302,152 +595,391 @@ export default function AnalisePage() {
   const [timeframe, setTimeframe] = useState<Timeframe>('1d');
   const [periodIdx, setPeriodIdx] = useState(1);
 
-  const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [status, setStatus] = useState<
+    'idle' | 'loading' | 'done' | 'error'
+  >('idle');
   const [progress, setProgress] = useState('');
   const [error, setError] = useState('');
 
+  const [usedSymbolA, setUsedSymbolA] = useState('BTCUSDT');
+  const [usedSymbolB, setUsedSymbolB] = useState('ETHUSDT');
   const [usedTf, setUsedTf] = useState<Timeframe>('1d');
   const [usedPeriodLabel, setUsedPeriodLabel] = useState('6 meses');
+
   const [dataA, setDataA] = useState<Candle[]>([]);
   const [dataB, setDataB] = useState<Candle[]>([]);
   const [report, setReport] = useState('');
   const [reportLoading, setReportLoading] = useState(false);
 
-  // Status/histórico (logado)
+  // Status e histórico do usuário autenticado.
   const [alertCount, setAlertCount] = useState<number | null>(null);
-  const [keyInfo, setKeyInfo] = useState<{ is_testnet: boolean } | null | undefined>(undefined); // undefined = não carregado
+  const [keyInfo, setKeyInfo] = useState<KeyInfo | null | undefined>(undefined);
   const [lastOrders, setLastOrders] = useState<OrderRow[]>([]);
   const [lastAnalyses, setLastAnalyses] = useState<AnalysisRow[]>([]);
   const [currentAnalysisId, setCurrentAnalysisId] = useState<string | null>(null);
 
-  // Sessão --------------------------------------------------------------------
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
-    return () => sub.subscription.unsubscribe();
+    supabase.auth.getSession().then(({ data }: { data: { session: Session | null } }) => setSession(data.session));
+
+    const { data: subscription } = supabase.auth.onAuthStateChange(
+      (_event: string, nextSession: Session | null) => setSession(nextSession),
+    );
+
+    return () => subscription.subscription.unsubscribe();
   }, [supabase]);
 
   const loadStatus = useCallback(async () => {
     const [alerts, keys, orders, analyses] = await Promise.all([
-      supabase.from('alert_rules').select('id', { count: 'exact', head: true }).eq('ativo', true),
-      supabase.from('exchange_keys').select('is_testnet').maybeSingle(),
-      supabase.from('orders')
-        .select('id, symbol, status, is_testnet, entry_price, exit_price, pnl_usdt, criado_em')
-        .order('criado_em', { ascending: false }).limit(3),
-      supabase.from('analyses')
-        .select('id, symbol_a, symbol_b, timeframe, period_label, retorno_a, retorno_b, correlacao, criado_em')
-        .order('criado_em', { ascending: false }).limit(5),
+      supabase
+        .from('alert_rules')
+        .select('id', { count: 'exact', head: true })
+        .eq('ativo', true),
+      supabase
+        .from('exchange_keys')
+        .select('is_testnet')
+        .maybeSingle(),
+      supabase
+        .from('orders')
+        .select(
+          'id, symbol, status, is_testnet, entry_price, exit_price, pnl_usdt, criado_em',
+        )
+        .order('criado_em', { ascending: false })
+        .limit(3),
+      supabase
+        .from('analyses')
+        .select(
+          'id, symbol_a, symbol_b, timeframe, period_label, retorno_a, retorno_b, correlacao, criado_em',
+        )
+        .order('criado_em', { ascending: false })
+        .limit(5),
     ]);
-    setAlertCount(alerts.count ?? 0);
-    setKeyInfo((keys.data as { is_testnet: boolean } | null) ?? null);
-    setLastOrders((orders.data as OrderRow[]) ?? []);
-    setLastAnalyses((analyses.data as AnalysisRow[]) ?? []);
+
+    setAlertCount(alerts.error ? 0 : alerts.count ?? 0);
+    setKeyInfo(keys.error ? null : (keys.data as KeyInfo | null) ?? null);
+    setLastOrders(orders.error ? [] : (orders.data as OrderRow[]) ?? []);
+    setLastAnalyses(
+      analyses.error ? [] : (analyses.data as AnalysisRow[]) ?? [],
+    );
   }, [supabase]);
 
-  useEffect(() => { if (session) loadStatus(); }, [session, loadStatus]);
+  useEffect(() => {
+    if (session) {
+      setKeyInfo(undefined);
+      void loadStatus();
+      return;
+    }
 
-  const onTimeframeChange = (v: string) => {
-    const next = v as Timeframe;
+    setAlertCount(null);
+    setKeyInfo(undefined);
+    setLastOrders([]);
+    setLastAnalyses([]);
+    setCurrentAnalysisId(null);
+  }, [session, loadStatus]);
+
+  const onTimeframeChange = (value: string) => {
+    const next = value as Timeframe;
     setTimeframe(next);
     setPeriodIdx(Math.min(1, TIMEFRAMES[next].periods.length - 1));
   };
 
-  // Análise (aceita overrides para o "reabrir" do histórico) -------------------
-  const run = useCallback(async (ov?: { symbolA: string; symbolB: string; timeframe: Timeframe; periodLabel: string }) => {
-    const useTf = ov?.timeframe ?? timeframe;
-    const cfg = TIMEFRAMES[useTf];
-    const period = ov
-      ? cfg.periods.find((p) => p.label === ov.periodLabel) ?? cfg.periods[1]
-      : cfg.periods[Math.min(periodIdx, cfg.periods.length - 1)];
-    const useA = ov?.symbolA ?? symbolA;
-    const useB = ov?.symbolB ?? symbolB;
+  const run = useCallback(async (
+    override?: {
+      symbolA: string;
+      symbolB: string;
+      timeframe: Timeframe;
+      periodLabel: string;
+    },
+  ) => {
+    const selectedTf = override?.timeframe ?? timeframe;
+    const config = TIMEFRAMES[selectedTf];
 
-    if (ov) {
-      setSymbolA(useA); setSymbolB(useB); setTimeframe(useTf);
-      setPeriodIdx(Math.max(0, cfg.periods.findIndex((p) => p.label === period.label)));
+    const selectedPeriod = override
+      ? config.periods.find((period) => period.label === override.periodLabel)
+        ?? config.periods[Math.min(1, config.periods.length - 1)]
+      : config.periods[Math.min(periodIdx, config.periods.length - 1)];
+
+    const selectedA = override?.symbolA ?? symbolA;
+    const requestedB = override?.symbolB ?? symbolB;
+    const selectedB = requestedB !== 'nenhum' && requestedB !== selectedA
+      ? requestedB
+      : 'nenhum';
+
+    if (override) {
+      setSymbolA(selectedA);
+      setSymbolB(requestedB);
+      setTimeframe(selectedTf);
+      setPeriodIdx(
+        Math.max(
+          0,
+          config.periods.findIndex(
+            (period) => period.label === selectedPeriod.label,
+          ),
+        ),
+      );
     }
 
-    setStatus('loading'); setError(''); setReport(''); setCurrentAnalysisId(null);
+    setStatus('loading');
+    setProgress('');
+    setError('');
+    setReport('');
+    setCurrentAnalysisId(null);
+
     try {
-      const a = await fetchKlines(useA, cfg.api, period.days, setProgress);
-      const b = useB !== 'nenhum' && useB !== useA ? await fetchKlines(useB, cfg.api, period.days, setProgress) : [];
-      const minimo = Math.max(MIN_CANDLES, cfg.volWindow + 10);
-      if (a.length < minimo) {
-        throw new Error(`Amostra insuficiente (${a.length} candles; mínimo ${minimo}). Aumente o período.`);
-      }
-      setDataA(a); setDataB(b);
-      setUsedTf(useTf); setUsedPeriodLabel(period.label);
-      setStatus('done');
+      const candlesA = await fetchKlines(
+        selectedA,
+        config.api,
+        selectedPeriod.days,
+        setProgress,
+      );
 
-      // Persistência (logado): salva parâmetros + resumo
-      if (session) {
-        const tfc = TIMEFRAMES[useTf];
-        const volSa = rollingVol(logReturns(a), tfc.volWindow, tfc.periodsPerYear);
-        const sa = computeStats(useA, a, volSa, tfc);
-        let sb: AssetStats | null = null;
-        let corrVal: number | null = null;
-        if (b.length) {
-          const volSb = rollingVol(logReturns(b), tfc.volWindow, tfc.periodsPerYear);
-          sb = computeStats(useB, b, volSb, tfc);
-          corrVal = correlation(a, b);
+      const candlesB = selectedB !== 'nenhum'
+        ? await fetchKlines(
+          selectedB,
+          config.api,
+          selectedPeriod.days,
+          setProgress,
+        )
+        : [];
+
+      const minimum = minimumCandlesFor(selectedTf);
+
+      if (candlesA.length < minimum) {
+        throw new Error(
+          `${selectedA}: amostra insuficiente (${candlesA.length} candles fechados; mínimo ${minimum}). Aumente o período.`,
+        );
+      }
+
+      if (selectedB !== 'nenhum' && candlesB.length < minimum) {
+        throw new Error(
+          `${selectedB}: amostra insuficiente (${candlesB.length} candles fechados; mínimo ${minimum}). Aumente o período.`,
+        );
+      }
+
+      if (candlesB.length) {
+        const aligned = alignedCandlePairs(candlesA, candlesB);
+
+        if (aligned.length < MIN_ALIGNED_RETURNS + 1) {
+          throw new Error(
+            `Os ativos possuem somente ${Math.max(0, aligned.length - 1)} retornos alinhados; mínimo ${MIN_ALIGNED_RETURNS}.`,
+          );
         }
-        const { data: row } = await supabase.from('analyses').insert({
-          symbol_a: useA,
-          symbol_b: b.length ? useB : null,
-          timeframe: useTf,
-          period_label: period.label,
-          retorno_a: sa.returnPct,
-          retorno_b: sb?.returnPct ?? null,
-          correlacao: corrVal,
-          stats: { a: sa, b: sb },
-          user_id: session.user.id,
-        }).select('id').single();
-        if (row) setCurrentAnalysisId(row.id as string);
-        loadStatus();
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Erro ao buscar dados.');
-      setStatus('error');
-    }
-  }, [symbolA, symbolB, timeframe, periodIdx, session, supabase, loadStatus]);
 
-  // Derivados ------------------------------------------------------------------
+      setDataA(candlesA);
+      setDataB(candlesB);
+      setUsedSymbolA(selectedA);
+      setUsedSymbolB(selectedB);
+      setUsedTf(selectedTf);
+      setUsedPeriodLabel(selectedPeriod.label);
+      setStatus('done');
+      setProgress('');
+
+      // A persistência é secundária: uma falha no banco não invalida os dados
+      // de mercado que já foram calculados e exibidos corretamente.
+      if (session) {
+        try {
+          const volSeriesA = rollingVol(
+            logReturns(candlesA),
+            config.volWindow,
+            config.periodsPerYear,
+          );
+          const statsForA = computeStats(
+            selectedA,
+            candlesA,
+            volSeriesA,
+            config,
+          );
+
+          let statsForB: AssetStats | null = null;
+          let correlationValue: number | null = null;
+
+          if (candlesB.length) {
+            const volSeriesB = rollingVol(
+              logReturns(candlesB),
+              config.volWindow,
+              config.periodsPerYear,
+            );
+
+            statsForB = computeStats(
+              selectedB,
+              candlesB,
+              volSeriesB,
+              config,
+            );
+            correlationValue = correlation(candlesA, candlesB);
+          }
+
+          const { data: row, error: insertError } = await supabase
+            .from('analyses')
+            .insert({
+              symbol_a: selectedA,
+              symbol_b: candlesB.length ? selectedB : null,
+              timeframe: selectedTf,
+              period_label: selectedPeriod.label,
+              retorno_a: statsForA.returnPct,
+              retorno_b: statsForB?.returnPct ?? null,
+              correlacao: correlationValue,
+              stats: { a: statsForA, b: statsForB },
+              user_id: session.user.id,
+            })
+            .select('id')
+            .single();
+
+          if (!insertError && row) {
+            setCurrentAnalysisId(row.id as string);
+          }
+
+          await loadStatus();
+        } catch (persistenceError) {
+          console.error('Falha ao persistir análise:', persistenceError);
+        }
+      }
+    } catch (runError) {
+      setError(
+        runError instanceof Error
+          ? runError.message
+          : 'Erro ao buscar dados.',
+      );
+      setStatus('error');
+      setProgress('');
+    }
+  }, [
+    timeframe,
+    periodIdx,
+    symbolA,
+    symbolB,
+    session,
+    supabase,
+    loadStatus,
+  ]);
+
+  // Derivados da última análise concluída, nunca dos controles que ainda não
+  // foram executados.
   const tf = TIMEFRAMES[usedTf];
-  const volA = useMemo(() => dataA.length ? rollingVol(logReturns(dataA), tf.volWindow, tf.periodsPerYear) : [], [dataA, tf]);
-  const volB = useMemo(() => dataB.length ? rollingVol(logReturns(dataB), tf.volWindow, tf.periodsPerYear) : [], [dataB, tf]);
-  const statsA = useMemo(() => dataA.length ? computeStats(symbolA, dataA, volA, tf) : null, [dataA, volA, symbolA, tf]);
-  const statsB = useMemo(() => dataB.length ? computeStats(symbolB, dataB, volB, tf) : null, [dataB, volB, symbolB, tf]);
-  const corr = useMemo(() => (dataA.length && dataB.length) ? correlation(dataA, dataB) : null, [dataA, dataB]);
+
+  const volA = useMemo(
+    () => dataA.length
+      ? rollingVol(logReturns(dataA), tf.volWindow, tf.periodsPerYear)
+      : [],
+    [dataA, tf],
+  );
+
+  const volB = useMemo(
+    () => dataB.length
+      ? rollingVol(logReturns(dataB), tf.volWindow, tf.periodsPerYear)
+      : [],
+    [dataB, tf],
+  );
+
+  const statsA = useMemo(
+    () => dataA.length
+      ? computeStats(usedSymbolA, dataA, volA, tf)
+      : null,
+    [dataA, volA, usedSymbolA, tf],
+  );
+
+  const statsB = useMemo(
+    () => dataB.length
+      ? computeStats(usedSymbolB, dataB, volB, tf)
+      : null,
+    [dataB, volB, usedSymbolB, tf],
+  );
+
+  const corr = useMemo(
+    () => dataA.length && dataB.length
+      ? correlation(dataA, dataB)
+      : null,
+    [dataA, dataB],
+  );
 
   const charts = useMemo(() => {
     if (!dataA.length) return { perf: [], vol: [] };
-    const step = Math.max(1, Math.floor(dataA.length / 500));
-    const baseA = dataA[0].close;
-    const baseB = dataB.length ? dataB[0].close : 1;
-    const perf: Record<string, number | string>[] = [];
-    const vol: Record<string, number | string>[] = [];
-    const longRange = usedTf === '1d' || usedTf === '1w';
-    for (let i = 0; i < dataA.length; i += step) {
-      const d = new Date(dataA[i].openTime);
-      const label = longRange
-        ? `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getFullYear()).slice(2)}`
-        : `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
-      const pPoint: Record<string, number | string> = { label, [symbolA]: +((dataA[i].close / baseA) * 100).toFixed(2) };
-      const vPoint: Record<string, number | string> = { label };
-      if (volA[i] !== null && volA[i] !== undefined) vPoint[symbolA] = +(volA[i] as number).toFixed(1);
-      if (dataB[i]) {
-        pPoint[symbolB] = +((dataB[i].close / baseB) * 100).toFixed(2);
-        if (volB[i] !== null && volB[i] !== undefined) vPoint[symbolB] = +(volB[i] as number).toFixed(1);
-      }
-      perf.push(pPoint); vol.push(vPoint);
-    }
-    return { perf, vol };
-  }, [dataA, dataB, volA, volB, symbolA, symbolB, usedTf]);
 
-  // Relatório -------------------------------------------------------------------
+    const step = Math.max(1, Math.floor(dataA.length / 500));
+    const sampledIndexes: number[] = [];
+
+    for (let index = 0; index < dataA.length; index += step) {
+      sampledIndexes.push(index);
+    }
+
+    if (sampledIndexes[sampledIndexes.length - 1] !== dataA.length - 1) {
+      sampledIndexes.push(dataA.length - 1);
+    }
+
+    const baseA = dataA[0].close;
+    const bByTime = new Map(
+      dataB.map((candle, index) => [
+        candle.openTime,
+        { candle, volatility: volB[index] },
+      ]),
+    );
+
+    const firstMatchedB = dataA
+      .map((candle) => bByTime.get(candle.openTime)?.candle)
+      .find((candle): candle is Candle => Boolean(candle));
+
+    const baseB = firstMatchedB?.close ?? 1;
+    const performance: Record<string, number | string>[] = [];
+    const volatility: Record<string, number | string>[] = [];
+    const longRange = usedTf === '1d' || usedTf === '1w';
+
+    for (const index of sampledIndexes) {
+      const candleA = dataA[index];
+      const date = new Date(candleA.openTime);
+      const label = longRange
+        ? `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getFullYear()).slice(2)}`
+        : `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}`;
+
+      const performancePoint: Record<string, number | string> = {
+        label,
+        [usedSymbolA]: Number(((candleA.close / baseA) * 100).toFixed(2)),
+      };
+      const volatilityPoint: Record<string, number | string> = { label };
+
+      if (volA[index] !== null && volA[index] !== undefined) {
+        volatilityPoint[usedSymbolA] = Number(
+          (volA[index] as number).toFixed(1),
+        );
+      }
+
+      const matchedB = bByTime.get(candleA.openTime);
+
+      if (matchedB && usedSymbolB !== 'nenhum') {
+        performancePoint[usedSymbolB] = Number(
+          ((matchedB.candle.close / baseB) * 100).toFixed(2),
+        );
+
+        if (
+          matchedB.volatility !== null &&
+          matchedB.volatility !== undefined
+        ) {
+          volatilityPoint[usedSymbolB] = Number(
+            matchedB.volatility.toFixed(1),
+          );
+        }
+      }
+
+      performance.push(performancePoint);
+      volatility.push(volatilityPoint);
+    }
+
+    return { perf: performance, vol: volatility };
+  }, [
+    dataA,
+    dataB,
+    volA,
+    volB,
+    usedSymbolA,
+    usedSymbolB,
+    usedTf,
+  ]);
+
   const generateReport = useCallback(async () => {
     if (!statsA) return;
-    setReportLoading(true); setReport('');
+
+    setReportLoading(true);
+    setReport('');
+
     try {
       const res = await fetch('/api/relatorio', {
         method: 'POST',
@@ -460,168 +992,568 @@ export default function AnalisePage() {
           ativos: [statsA, statsB].filter(Boolean),
         }),
       });
+
       if (!res.ok) throw new Error(`API respondeu ${res.status}`);
+
       const json = await res.json();
-      const texto = json.relatorio ?? 'Resposta vazia da API.';
-      setReport(texto);
-      // Anexa o relatório à análise salva
+      const text = json.relatorio ?? 'Resposta vazia da API.';
+      setReport(text);
+
       if (session && currentAnalysisId) {
-        await supabase.from('analyses').update({ report: texto }).eq('id', currentAnalysisId);
+        const { error: updateError } = await supabase
+          .from('analyses')
+          .update({ report: text })
+          .eq('id', currentAnalysisId);
+
+        if (updateError) {
+          console.error('Falha ao anexar relatório à análise:', updateError);
+        }
       }
-    } catch (e) {
-      setReport(`Erro ao gerar relatório: ${e instanceof Error ? e.message : 'desconhecido'}.`);
+    } catch (reportError) {
+      setReport(
+        `Erro ao gerar relatório: ${
+          reportError instanceof Error ? reportError.message : 'desconhecido'
+        }.`,
+      );
     } finally {
       setReportLoading(false);
     }
-  }, [statsA, statsB, usedPeriodLabel, tf, corr, session, currentAnalysisId, supabase]);
+  }, [
+    statsA,
+    statsB,
+    usedPeriodLabel,
+    tf,
+    corr,
+    session,
+    currentAnalysisId,
+    supabase,
+  ]);
 
-  const select = (value: string, onChange: (v: string) => void, opts: { value: string; label: string }[]) => (
-    <select value={value} onChange={(e) => onChange(e.target.value)}
-      style={{ background: S.bg, border: `1px solid ${S.border}`, borderRadius: 6, color: S.text, padding: '8px 10px', fontSize: 14, textAlign: 'center' }}>
-      {opts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+  const select = (
+    value: string,
+    onChange: (value: string) => void,
+    options: { value: string; label: string }[],
+  ) => (
+    <select
+      value={value}
+      onChange={(event: React.ChangeEvent<HTMLSelectElement>) => onChange(event.target.value)}
+      style={{
+        background: S.bg,
+        border: `1px solid ${S.border}`,
+        borderRadius: 6,
+        color: S.text,
+        padding: '8px 10px',
+        fontSize: 14,
+        textAlign: 'center',
+      }}
+    >
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
     </select>
   );
 
   const currentPeriods = TIMEFRAMES[timeframe].periods;
 
-  const statRows: { label: string; tip: string; get: (s: AssetStats) => string; color?: (s: AssetStats) => string }[] = [
-    { label: 'Último preço (USDT)', tip: 'Preço de fechamento do candle mais recente.', get: (s) => fmt(s.lastPrice) },
-    { label: 'Retorno no período', tip: 'Variação do preço do início ao fim do período analisado.', get: (s) => fmtPct(s.returnPct), color: (s) => s.returnPct >= 0 ? S.green : S.red },
-    { label: 'Drawdown máximo', tip: 'Maior queda registrada de um topo até o fundo seguinte dentro do período.', get: (s) => fmtPct(s.maxDrawdownPct), color: () => S.red },
-    { label: 'Drawdown atual', tip: 'Quanto o preço está abaixo do maior topo do período neste momento.', get: (s) => fmtPct(s.currentDrawdownPct), color: (s) => s.currentDrawdownPct < -0.5 ? S.red : S.dim },
-    { label: 'Tempo em drawdown', tip: 'Fração do período em que o preço esteve abaixo do topo anterior.', get: (s) => `${fmt(s.timeInDrawdownPct, 0)}%` },
-    { label: 'Volatilidade média (anualizada)', tip: 'O quanto o preço costuma oscilar, projetado em escala anual. Mede risco, não direção.', get: (s) => `${fmt(s.annualVolPct, 0)}%` },
-    { label: 'Volatilidade atual (anualizada)', tip: 'Oscilação recente do preço, projetada em escala anual.', get: (s) => `${fmt(s.currentVolPct, 0)}%` },
-    { label: 'Retorno/risco (Sharpe simpl.)', tip: 'Retorno anualizado dividido pela volatilidade anualizada. Maior = mais retorno por unidade de risco.', get: (s) => fmt(s.sharpe), color: (s) => s.sharpe >= 0 ? S.green : S.red },
-    { label: 'Períodos positivos', tip: 'Percentual de candles que fecharam em alta em relação ao anterior.', get: (s) => `${fmt(s.pctPositive, 0)}%` },
-    { label: `Melhor ${tf.unitLabel}`, tip: 'Maior alta registrada nessa unidade de tempo dentro do período.', get: (s) => fmtPct(s.bestUnitPct), color: () => S.green },
-    { label: `Pior ${tf.unitLabel}`, tip: 'Maior queda registrada nessa unidade de tempo dentro do período.', get: (s) => fmtPct(s.worstUnitPct), color: () => S.red },
+  const statRows: {
+    label: string;
+    tip: string;
+    get: (stats: AssetStats) => string;
+    color?: (stats: AssetStats) => string;
+  }[] = [
+    {
+      label: 'Último preço (USDT)',
+      tip: 'Preço de fechamento do candle encerrado mais recente.',
+      get: (stats) => fmt(stats.lastPrice),
+    },
+    {
+      label: 'Retorno no período',
+      tip: 'Variação do preço do início ao fim do período analisado.',
+      get: (stats) => fmtPct(stats.returnPct),
+      color: (stats) => stats.returnPct >= 0 ? S.green : S.red,
+    },
+    {
+      label: 'Drawdown máximo',
+      tip: 'Maior queda registrada de um topo até o fundo seguinte dentro do período.',
+      get: (stats) => fmtPct(stats.maxDrawdownPct),
+      color: () => S.red,
+    },
+    {
+      label: 'Drawdown atual',
+      tip: 'Quanto o último fechamento está abaixo do maior topo do período.',
+      get: (stats) => fmtPct(stats.currentDrawdownPct),
+      color: (stats) => stats.currentDrawdownPct < -0.5 ? S.red : S.dim,
+    },
+    {
+      label: 'Tempo em drawdown',
+      tip: 'Fração dos candles em que o preço esteve abaixo do topo anterior.',
+      get: (stats) => `${fmt(stats.timeInDrawdownPct, 0)}%`,
+    },
+    {
+      label: 'Volatilidade média (anualizada)',
+      tip: 'Média da volatilidade realizada das janelas históricas, projetada em escala anual. Mede risco, não direção.',
+      get: (stats) => `${fmt(stats.annualVolPct, 0)}%`,
+    },
+    {
+      label: 'Volatilidade atual (anualizada)',
+      tip: 'Volatilidade realizada da janela encerrada mais recente, projetada em escala anual.',
+      get: (stats) => `${fmt(stats.currentVolPct, 0)}%`,
+    },
+    {
+      label: 'Sharpe histórico (rf = 0)',
+      tip: 'Média dos retornos logarítmicos dividida pelo desvio-padrão amostral, anualizada e sem descontar taxa livre de risco. É descritivo e não prevê retorno futuro.',
+      get: (stats) => fmt(stats.sharpe),
+      color: (stats) => stats.sharpe >= 0 ? S.green : S.red,
+    },
+    {
+      label: 'Candles positivos (histórico)',
+      tip: 'Percentual histórico de candles que fecharam acima do candle anterior. Não representa probabilidade futura.',
+      get: (stats) => `${fmt(stats.pctPositive, 0)}%`,
+    },
+    {
+      label: `Melhor ${tf.unitLabel}`,
+      tip: 'Maior alta histórica registrada nessa unidade dentro do período.',
+      get: (stats) => fmtPct(stats.bestUnitPct),
+      color: () => S.green,
+    },
+    {
+      label: `Pior ${tf.unitLabel}`,
+      tip: 'Maior queda histórica registrada nessa unidade dentro do período.',
+      get: (stats) => fmtPct(stats.worstUnitPct),
+      color: () => S.red,
+    },
   ];
 
   return (
-    <main style={{ minHeight: '100vh', background: S.bg, color: S.text, fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-
+    <main
+      style={{
+        minHeight: '100vh',
+        background: S.bg,
+        color: S.text,
+        fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+      }}
+    >
       {/* Header + navegação */}
-      <header style={{ borderBottom: `1px solid ${S.border}`, background: S.panel, padding: '12px 20px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+      <header
+        style={{
+          borderBottom: `1px solid ${S.border}`,
+          background: S.panel,
+          padding: '12px 20px',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 12,
+          }}
+        >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo.png" alt="VigIA Trade" style={{ height: 32, width: 'auto', display: 'block' }} />
+          <img
+            src="/logo.png"
+            alt="VigIA Trade"
+            style={{ height: 32, width: 'auto', display: 'block' }}
+          />
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>Análise de mercado</div>
-            <div style={{ fontSize: 11, color: S.dim }}>monitoramento · risco definido · decisão sua</div>
+            <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>
+              Análise de mercado
+            </div>
+            <div style={{ fontSize: 11, color: S.dim }}>
+              monitoramento · risco definido · decisão sua
+            </div>
           </div>
         </div>
-        <nav style={{ display: 'flex', justifyContent: 'center', gap: 20, marginTop: 8, fontSize: 13 }}>
+
+        <nav
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            gap: 20,
+            marginTop: 8,
+            fontSize: 13,
+          }}
+        >
           <span style={{ color: S.a, fontWeight: 600 }}>Análise</span>
-          <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>Alertas</a>
-          <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>Conta Binance</a>
+          <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
+            Alertas
+          </a>
+          <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
+            Conta Binance
+          </a>
           {!session ? (
-            <a href="/alertas" style={{ color: S.green, textDecoration: 'none' }}>Entrar</a>
+            <a
+              href="/alertas"
+              style={{ color: S.green, textDecoration: 'none' }}
+            >
+              Entrar
+            </a>
           ) : (
-            <button onClick={() => supabase.auth.signOut()}
-              style={{ background: 'transparent', border: 'none', color: S.red, fontSize: 13, cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>
+            <button
+              onClick={() => supabase.auth.signOut()}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: S.red,
+                fontSize: 13,
+                cursor: 'pointer',
+                padding: 0,
+                fontFamily: 'inherit',
+              }}
+            >
               Sair
             </button>
           )}
         </nav>
       </header>
 
-      <div style={{ maxWidth: 1080, margin: '0 auto', padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-
+      <div
+        style={{
+          maxWidth: 1080,
+          margin: '0 auto',
+          padding: '24px 20px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 16,
+        }}
+      >
         {/* Cards de status (logado) */}
         {session && (
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
+          <div
+            style={{
+              display: 'flex',
+              gap: 12,
+              flexWrap: 'wrap',
+              justifyContent: 'center',
+            }}
+          >
             <a href="/alertas" style={{ textDecoration: 'none', color: S.text }}>
-              <Card style={{ padding: '10px 16px', textAlign: 'center', minWidth: 140, cursor: 'pointer' }}>
-                <div style={{ fontSize: 11, color: S.dim, textTransform: 'uppercase', letterSpacing: 0.6 }}>Alertas ativos</div>
-                <div style={{ fontSize: 20, fontWeight: 700, color: S.a }}>{alertCount ?? '—'}</div>
-              </Card>
-            </a>
-            <a href="/conta" style={{ textDecoration: 'none', color: S.text }}>
-              <Card style={{ padding: '10px 16px', textAlign: 'center', minWidth: 140, cursor: 'pointer' }}>
-                <div style={{ fontSize: 11, color: S.dim, textTransform: 'uppercase', letterSpacing: 0.6 }}>Binance</div>
-                <div style={{
-                  fontSize: 14, fontWeight: 700, marginTop: 4,
-                  color: keyInfo === null ? S.dim : keyInfo?.is_testnet ? S.green : S.red,
-                }}>
-                  {keyInfo === undefined ? '—' : keyInfo === null ? 'não conectada' : keyInfo.is_testnet ? 'TESTNET' : 'CONTA REAL'}
+              <Card
+                style={{
+                  padding: '10px 16px',
+                  textAlign: 'center',
+                  minWidth: 140,
+                  cursor: 'pointer',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: S.dim,
+                    textTransform: 'uppercase',
+                    letterSpacing: 0.6,
+                  }}
+                >
+                  Alertas ativos
+                </div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: S.a }}>
+                  {alertCount ?? '—'}
                 </div>
               </Card>
             </a>
+
             <a href="/conta" style={{ textDecoration: 'none', color: S.text }}>
-              <Card style={{ padding: '10px 16px', textAlign: 'center', minWidth: 200, cursor: 'pointer' }}>
-                <div style={{ fontSize: 11, color: S.dim, textTransform: 'uppercase', letterSpacing: 0.6 }}>Últimas ordens</div>
+              <Card
+                style={{
+                  padding: '10px 16px',
+                  textAlign: 'center',
+                  minWidth: 140,
+                  cursor: 'pointer',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: S.dim,
+                    textTransform: 'uppercase',
+                    letterSpacing: 0.6,
+                  }}
+                >
+                  Binance
+                </div>
+                <div
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 700,
+                    marginTop: 4,
+                    color: keyInfo === null
+                      ? S.dim
+                      : keyInfo?.is_testnet
+                        ? S.green
+                        : S.red,
+                  }}
+                >
+                  {keyInfo === undefined
+                    ? '—'
+                    : keyInfo === null
+                      ? 'não conectada'
+                      : keyInfo.is_testnet
+                        ? 'TESTNET'
+                        : 'CONTA REAL'}
+                </div>
+              </Card>
+            </a>
+
+            <a href="/conta" style={{ textDecoration: 'none', color: S.text }}>
+              <Card
+                style={{
+                  padding: '10px 16px',
+                  textAlign: 'center',
+                  minWidth: 200,
+                  cursor: 'pointer',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: S.dim,
+                    textTransform: 'uppercase',
+                    letterSpacing: 0.6,
+                  }}
+                >
+                  Últimas ordens
+                </div>
+
                 {lastOrders.length === 0 ? (
-                  <div style={{ fontSize: 13, color: S.dim, marginTop: 4 }}>nenhuma</div>
-                ) : lastOrders.map((o) => (
-                  <div key={o.id} style={{ fontSize: 12, marginTop: 4 }}>
-                    {o.symbol} · <span style={{ color: STATUS_LABEL[o.status]?.color ?? S.dim }}>{STATUS_LABEL[o.status]?.label ?? o.status}</span>
-                    {o.pnl_usdt !== null && (
-                      <span style={{ color: o.pnl_usdt >= 0 ? S.green : S.red }}> · {o.pnl_usdt >= 0 ? '+' : ''}{fmt(o.pnl_usdt)} USDT</span>
-                    )}
+                  <div style={{ fontSize: 13, color: S.dim, marginTop: 4 }}>
+                    nenhuma
                   </div>
-                ))}
+                ) : (
+                  lastOrders.map((order) => (
+                    <div key={order.id} style={{ fontSize: 12, marginTop: 4 }}>
+                      {order.symbol} ·{' '}
+                      <span
+                        style={{
+                          color: STATUS_LABEL[order.status]?.color ?? S.dim,
+                        }}
+                      >
+                        {STATUS_LABEL[order.status]?.label ?? order.status}
+                      </span>
+                      {order.pnl_usdt !== null && (
+                        <span
+                          style={{
+                            color: order.pnl_usdt >= 0 ? S.green : S.red,
+                          }}
+                        >
+                          {' '}· {order.pnl_usdt >= 0 ? '+' : ''}
+                          {fmt(order.pnl_usdt)} USDT
+                        </span>
+                      )}
+                    </div>
+                  ))
+                )}
               </Card>
             </a>
           </div>
         )}
 
-        <p style={{ color: S.dim, fontSize: 13, margin: '0 auto', maxWidth: 780, textAlign: 'center' }}>
-          Dados da Binance. Volatilidade realizada em {tf.windowLabel}, anualizada; regime
-          classificado contra os quartis do próprio histórico. Ferramenta de análise —
-          volatilidade mede amplitude de risco, não direção futura de preço.
+        <p
+          style={{
+            color: S.dim,
+            fontSize: 13,
+            margin: '0 auto',
+            maxWidth: 780,
+            textAlign: 'center',
+          }}
+        >
+          Dados da Binance usando somente candles encerrados. Volatilidade
+          realizada em {tf.windowLabel}, anualizada; regime classificado contra
+          os quartis do próprio histórico. Ferramenta de análise — volatilidade
+          mede amplitude de risco, não direção futura de preço.
         </p>
 
         {/* Controles */}
-        <Card style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-end', justifyContent: 'center' }}>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim, textAlign: 'center' }}>
-            Ativo A{select(symbolA, setSymbolA, SYMBOLS.filter((s) => s !== 'nenhum').map((s) => ({ value: s, label: s })))}
+        <Card
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 16,
+            alignItems: 'flex-end',
+            justifyContent: 'center',
+          }}
+        >
+          <label
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              fontSize: 12,
+              color: S.dim,
+              textAlign: 'center',
+            }}
+          >
+            Ativo A
+            {select(
+              symbolA,
+              setSymbolA,
+              SYMBOLS
+                .filter((symbol) => symbol !== 'nenhum')
+                .map((symbol) => ({ value: symbol, label: symbol })),
+            )}
           </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim, textAlign: 'center' }}>
-            Ativo B (comparação){select(symbolB, setSymbolB, SYMBOLS.map((s) => ({ value: s, label: s })))}
+
+          <label
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              fontSize: 12,
+              color: S.dim,
+              textAlign: 'center',
+            }}
+          >
+            Ativo B (comparação)
+            {select(
+              symbolB,
+              setSymbolB,
+              SYMBOLS.map((symbol) => ({ value: symbol, label: symbol })),
+            )}
           </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim, textAlign: 'center' }}>
-            Timeframe{select(timeframe, onTimeframeChange,
-              (Object.keys(TIMEFRAMES) as Timeframe[]).map((k) => ({ value: k, label: TIMEFRAMES[k].label })))}
+
+          <label
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              fontSize: 12,
+              color: S.dim,
+              textAlign: 'center',
+            }}
+          >
+            Timeframe
+            {select(
+              timeframe,
+              onTimeframeChange,
+              (Object.keys(TIMEFRAMES) as Timeframe[]).map((key) => ({
+                value: key,
+                label: TIMEFRAMES[key].label,
+              })),
+            )}
           </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim, textAlign: 'center' }}>
-            Período{select(String(Math.min(periodIdx, currentPeriods.length - 1)), (v) => setPeriodIdx(+v),
-              currentPeriods.map((p, i) => ({ value: String(i), label: p.label })))}
+
+          <label
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              fontSize: 12,
+              color: S.dim,
+              textAlign: 'center',
+            }}
+          >
+            Período
+            {select(
+              String(Math.min(periodIdx, currentPeriods.length - 1)),
+              (value) => setPeriodIdx(Number(value)),
+              currentPeriods.map((period, index) => ({
+                value: String(index),
+                label: period.label,
+              })),
+            )}
           </label>
-          <button onClick={() => run()} disabled={status === 'loading'}
-            style={{ background: S.a, color: '#1a1206', border: 'none', borderRadius: 8, padding: '10px 22px', fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: status === 'loading' ? 0.6 : 1 }}>
+
+          <button
+            onClick={() => run()}
+            disabled={status === 'loading'}
+            style={{
+              background: S.a,
+              color: '#1a1206',
+              border: 'none',
+              borderRadius: 8,
+              padding: '10px 22px',
+              fontSize: 14,
+              fontWeight: 700,
+              cursor: status === 'loading' ? 'wait' : 'pointer',
+              opacity: status === 'loading' ? 0.6 : 1,
+            }}
+          >
             {status === 'loading' ? progress || 'Carregando...' : 'Analisar'}
           </button>
-          {status === 'error' && <span style={{ color: S.red, fontSize: 13, flexBasis: '100%', textAlign: 'center' }}>{error}</span>}
+
+          {status === 'error' && (
+            <span
+              style={{
+                color: S.red,
+                fontSize: 13,
+                flexBasis: '100%',
+                textAlign: 'center',
+              }}
+            >
+              {error}
+            </span>
+          )}
         </Card>
 
         {/* Histórico de análises (logado) */}
         {session && lastAnalyses.length > 0 && (
           <Card>
-            <div style={{ fontSize: 13, fontWeight: 600, textAlign: 'center', marginBottom: 8 }}>Últimas análises</div>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                textAlign: 'center',
+                marginBottom: 8,
+              }}
+            >
+              Últimas análises
+            </div>
+
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {lastAnalyses.map((an) => (
-                <button key={an.id}
+              {lastAnalyses.map((analysis) => (
+                <button
+                  key={analysis.id}
                   onClick={() => run({
-                    symbolA: an.symbol_a,
-                    symbolB: an.symbol_b ?? 'nenhum',
-                    timeframe: an.timeframe,
-                    periodLabel: an.period_label,
+                    symbolA: analysis.symbol_a,
+                    symbolB: analysis.symbol_b ?? 'nenhum',
+                    timeframe: analysis.timeframe,
+                    periodLabel: analysis.period_label,
                   })}
                   style={{
-                    background: 'transparent', border: `1px solid ${S.border}`, borderRadius: 8,
-                    padding: '8px 12px', color: S.text, fontSize: 12, cursor: 'pointer', textAlign: 'center',
-                  }}>
-                  {an.symbol_a}{an.symbol_b ? ` × ${an.symbol_b}` : ''} · {TIMEFRAMES[an.timeframe]?.label ?? an.timeframe} · {an.period_label}
-                  {an.retorno_a !== null && (
-                    <span style={{ color: an.retorno_a >= 0 ? S.green : S.red }}> · {fmtPct(an.retorno_a)}</span>
+                    background: 'transparent',
+                    border: `1px solid ${S.border}`,
+                    borderRadius: 8,
+                    padding: '8px 12px',
+                    color: S.text,
+                    fontSize: 12,
+                    cursor: 'pointer',
+                    textAlign: 'center',
+                  }}
+                >
+                  {analysis.symbol_a}
+                  {analysis.symbol_b ? ` × ${analysis.symbol_b}` : ''}
+                  {' '}· {TIMEFRAMES[analysis.timeframe]?.label ?? analysis.timeframe}
+                  {' '}· {analysis.period_label}
+                  {analysis.retorno_a !== null && (
+                    <span
+                      style={{
+                        color: analysis.retorno_a >= 0 ? S.green : S.red,
+                      }}
+                    >
+                      {' '}· {fmtPct(analysis.retorno_a)}
+                    </span>
                   )}
-                  {an.correlacao !== null && <span style={{ color: S.dim }}> · corr {fmt(an.correlacao)}</span>}
-                  <span style={{ color: S.dim }}> · {fmtData(an.criado_em)}</span>
+                  {analysis.correlacao !== null && (
+                    <span style={{ color: S.dim }}>
+                      {' '}· corr {fmt(analysis.correlacao)}
+                    </span>
+                  )}
+                  <span style={{ color: S.dim }}>
+                    {' '}· {fmtData(analysis.criado_em)}
+                  </span>
                 </button>
               ))}
             </div>
-            <div style={{ fontSize: 11, color: S.dim, textAlign: 'center', marginTop: 8 }}>
+
+            <div
+              style={{
+                fontSize: 11,
+                color: S.dim,
+                textAlign: 'center',
+                marginTop: 8,
+              }}
+            >
               Tocar reabre a análise com os mesmos parâmetros sobre dados atuais.
             </div>
           </Card>
@@ -630,81 +1562,262 @@ export default function AnalisePage() {
         {status === 'done' && statsA && (
           <>
             {/* Regimes + correlação */}
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
-              {[statsA, statsB].filter((s): s is AssetStats => !!s).map((s) => (
-                <Card key={s.symbol} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, padding: '12px 16px' }}>
-                  <strong style={{ fontSize: 15 }}>{s.symbol}</strong>
-                  <RegimeBadge regime={s.regime} />
-                  <span style={{ color: S.dim, fontSize: 13 }}>
-                    vol. atual {fmt(s.currentVolPct, 0)}% a.a. · média {fmt(s.annualVolPct, 0)}%
-                  </span>
-                </Card>
-              ))}
+            <div
+              style={{
+                display: 'flex',
+                gap: 12,
+                flexWrap: 'wrap',
+                justifyContent: 'center',
+              }}
+            >
+              {[statsA, statsB]
+                .filter((stats): stats is AssetStats => Boolean(stats))
+                .map((stats) => (
+                  <Card
+                    key={stats.symbol}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 12,
+                      padding: '12px 16px',
+                    }}
+                  >
+                    <strong style={{ fontSize: 15 }}>{stats.symbol}</strong>
+                    <RegimeBadge regime={stats.regime} />
+                    <span style={{ color: S.dim, fontSize: 13 }}>
+                      vol. atual {fmt(stats.currentVolPct, 0)}% a.a. · média{' '}
+                      {fmt(stats.annualVolPct, 0)}%
+                    </span>
+                  </Card>
+                ))}
+
               {corr !== null && statsB && (
                 <Card
-                  title="Correlação de Pearson entre os retornos dos dois ativos. Perto de 1 = movem juntos (diversificar entre eles adianta pouco); perto de 0 = independentes; negativa = movem em direções opostas."
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '12px 16px', cursor: 'help' }}
+                  title="Correlação de Pearson entre retornos alinhados pelo mesmo horário. Perto de 1 = movem juntos; perto de 0 = baixa relação linear; negativa = tendem a mover em direções opostas."
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 10,
+                    padding: '12px 16px',
+                    cursor: 'help',
+                  }}
                 >
-                  <strong style={{ fontSize: 14 }}>Correlação {statsA.symbol} × {statsB.symbol}</strong>
-                  <span style={{ fontSize: 15, fontWeight: 700, color: Math.abs(corr) >= 0.7 ? S.a : S.text }}>{fmt(corr)}</span>
-                  <span style={{ color: S.dim, fontSize: 13 }}>({correlationLabel(corr)})</span>
+                  <strong style={{ fontSize: 14 }}>
+                    Correlação {statsA.symbol} × {statsB.symbol}
+                  </strong>
+                  <span
+                    style={{
+                      fontSize: 15,
+                      fontWeight: 700,
+                      color: Math.abs(corr) >= 0.7 ? S.a : S.text,
+                    }}
+                  >
+                    {fmt(corr)}
+                  </span>
+                  <span style={{ color: S.dim, fontSize: 13 }}>
+                    ({correlationLabel(corr)})
+                  </span>
                 </Card>
               )}
             </div>
 
             {/* Performance */}
             <Card style={{ height: 340 }}>
-              <div style={{ fontSize: 12, color: S.dim, marginBottom: 8, textAlign: 'center' }}>
-                Performance (base 100 no início) — candles {tf.label} · {usedPeriodLabel}
+              <div
+                style={{
+                  fontSize: 12,
+                  color: S.dim,
+                  marginBottom: 8,
+                  textAlign: 'center',
+                }}
+              >
+                Performance (base 100 no primeiro candle alinhado) — candles{' '}
+                {tf.label} · {usedPeriodLabel}
               </div>
+
               <ResponsiveContainer width="100%" height="90%">
                 <LineChart data={charts.perf}>
                   <CartesianGrid stroke={S.border} strokeDasharray="3 3" />
-                  <XAxis dataKey="label" stroke={S.dim} fontSize={11} minTickGap={40} />
-                  <YAxis stroke={S.dim} fontSize={11} domain={['auto', 'auto']} width={60} />
-                  <Tooltip contentStyle={{ background: S.bg, border: `1px solid ${S.border}`, borderRadius: 8, fontSize: 12 }} labelStyle={{ color: S.dim }} />
+                  <XAxis
+                    dataKey="label"
+                    stroke={S.dim}
+                    fontSize={11}
+                    minTickGap={40}
+                  />
+                  <YAxis
+                    stroke={S.dim}
+                    fontSize={11}
+                    domain={['auto', 'auto']}
+                    width={60}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      background: S.bg,
+                      border: `1px solid ${S.border}`,
+                      borderRadius: 8,
+                      fontSize: 12,
+                    }}
+                    labelStyle={{ color: S.dim }}
+                  />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <ReferenceLine y={100} stroke={S.dim} strokeDasharray="4 4" />
-                  <Line type="monotone" dataKey={symbolA} stroke={S.a} dot={false} strokeWidth={2} />
-                  {statsB && <Line type="monotone" dataKey={symbolB} stroke={S.b} dot={false} strokeWidth={2} />}
+                  <ReferenceLine
+                    y={100}
+                    stroke={S.dim}
+                    strokeDasharray="4 4"
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey={usedSymbolA}
+                    stroke={S.a}
+                    dot={false}
+                    strokeWidth={2}
+                  />
+                  {statsB && (
+                    <Line
+                      type="monotone"
+                      dataKey={usedSymbolB}
+                      stroke={S.b}
+                      dot={false}
+                      strokeWidth={2}
+                      connectNulls
+                    />
+                  )}
                 </LineChart>
               </ResponsiveContainer>
             </Card>
 
             {/* Volatilidade */}
             <Card style={{ height: 300 }}>
-              <div style={{ fontSize: 12, color: S.dim, marginBottom: 8, textAlign: 'center' }}>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: S.dim,
+                  marginBottom: 8,
+                  textAlign: 'center',
+                }}
+              >
                 Volatilidade realizada anualizada (%) — {tf.windowLabel}
               </div>
+
               <ResponsiveContainer width="100%" height="88%">
                 <LineChart data={charts.vol}>
                   <CartesianGrid stroke={S.border} strokeDasharray="3 3" />
-                  <XAxis dataKey="label" stroke={S.dim} fontSize={11} minTickGap={40} />
+                  <XAxis
+                    dataKey="label"
+                    stroke={S.dim}
+                    fontSize={11}
+                    minTickGap={40}
+                  />
                   <YAxis stroke={S.dim} fontSize={11} width={50} />
-                  <Tooltip contentStyle={{ background: S.bg, border: `1px solid ${S.border}`, borderRadius: 8, fontSize: 12 }} labelStyle={{ color: S.dim }} />
+                  <Tooltip
+                    contentStyle={{
+                      background: S.bg,
+                      border: `1px solid ${S.border}`,
+                      borderRadius: 8,
+                      fontSize: 12,
+                    }}
+                    labelStyle={{ color: S.dim }}
+                  />
                   <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Line type="monotone" dataKey={symbolA} stroke={S.a} dot={false} strokeWidth={2} connectNulls />
-                  {statsB && <Line type="monotone" dataKey={symbolB} stroke={S.b} dot={false} strokeWidth={2} connectNulls />}
+                  <Line
+                    type="monotone"
+                    dataKey={usedSymbolA}
+                    stroke={S.a}
+                    dot={false}
+                    strokeWidth={2}
+                    connectNulls
+                  />
+                  {statsB && (
+                    <Line
+                      type="monotone"
+                      dataKey={usedSymbolB}
+                      stroke={S.b}
+                      dot={false}
+                      strokeWidth={2}
+                      connectNulls
+                    />
+                  )}
                 </LineChart>
               </ResponsiveContainer>
             </Card>
 
             {/* Tabela */}
             <Card>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>
+              <table
+                style={{
+                  width: '100%',
+                  borderCollapse: 'collapse',
+                  fontSize: 13,
+                  fontVariantNumeric: 'tabular-nums',
+                }}
+              >
                 <thead>
                   <tr style={{ color: S.dim, textAlign: 'center' }}>
-                    <th style={{ padding: '6px 8px', textAlign: 'center' }}>Métrica ({usedPeriodLabel} · {tf.label})</th>
-                    <th style={{ padding: '6px 8px', color: S.a, textAlign: 'center' }}>{statsA.symbol}</th>
-                    {statsB && <th style={{ padding: '6px 8px', color: S.b, textAlign: 'center' }}>{statsB.symbol}</th>}
+                    <th style={{ padding: '6px 8px', textAlign: 'center' }}>
+                      Métrica ({usedPeriodLabel} · {tf.label})
+                    </th>
+                    <th
+                      style={{
+                        padding: '6px 8px',
+                        color: S.a,
+                        textAlign: 'center',
+                      }}
+                    >
+                      {statsA.symbol}
+                    </th>
+                    {statsB && (
+                      <th
+                        style={{
+                          padding: '6px 8px',
+                          color: S.b,
+                          textAlign: 'center',
+                        }}
+                      >
+                        {statsB.symbol}
+                      </th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
                   {statRows.map((row) => (
-                    <tr key={row.label} style={{ borderTop: `1px solid ${S.border}`, textAlign: 'center' }}>
-                      <td title={row.tip} style={{ padding: '8px', color: S.dim, cursor: 'help', textAlign: 'center' }}>{row.label}</td>
-                      <td style={{ padding: '8px', color: row.color?.(statsA) }}>{row.get(statsA)}</td>
-                      {statsB && <td style={{ padding: '8px', color: row.color?.(statsB) }}>{row.get(statsB)}</td>}
+                    <tr
+                      key={row.label}
+                      style={{
+                        borderTop: `1px solid ${S.border}`,
+                        textAlign: 'center',
+                      }}
+                    >
+                      <td
+                        title={row.tip}
+                        style={{
+                          padding: '8px',
+                          color: S.dim,
+                          cursor: 'help',
+                          textAlign: 'center',
+                        }}
+                      >
+                        {row.label}
+                      </td>
+                      <td
+                        style={{
+                          padding: '8px',
+                          color: row.color?.(statsA),
+                        }}
+                      >
+                        {row.get(statsA)}
+                      </td>
+                      {statsB && (
+                        <td
+                          style={{
+                            padding: '8px',
+                            color: row.color?.(statsB),
+                          }}
+                        >
+                          {row.get(statsB)}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -713,18 +1826,56 @@ export default function AnalisePage() {
 
             {/* Relatório IA */}
             <Card>
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: 10,
+                  textAlign: 'center',
+                }}
+              >
                 <div>
-                  <div style={{ fontSize: 15, fontWeight: 600 }}>Relatório analítico</div>
-                  <div style={{ fontSize: 12, color: S.dim }}>Gerado por IA a partir das métricas acima. Descritivo, não recomendação.</div>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>
+                    Relatório analítico
+                  </div>
+                  <div style={{ fontSize: 12, color: S.dim }}>
+                    Gerado por IA a partir das métricas acima. Descritivo, não
+                    recomendação.
+                  </div>
                 </div>
-                <button onClick={generateReport} disabled={reportLoading}
-                  style={{ background: 'transparent', color: S.a, border: `1px solid ${S.a}`, borderRadius: 8, padding: '8px 18px', fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: reportLoading ? 0.6 : 1 }}>
+
+                <button
+                  onClick={generateReport}
+                  disabled={reportLoading}
+                  style={{
+                    background: 'transparent',
+                    color: S.a,
+                    border: `1px solid ${S.a}`,
+                    borderRadius: 8,
+                    padding: '8px 18px',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: reportLoading ? 'wait' : 'pointer',
+                    opacity: reportLoading ? 0.6 : 1,
+                  }}
+                >
                   {reportLoading ? 'Gerando...' : 'Gerar relatório'}
                 </button>
               </div>
+
               {report && (
-                <div style={{ marginTop: 14, fontSize: 14, lineHeight: 1.7, whiteSpace: 'pre-wrap', borderTop: `1px solid ${S.border}`, paddingTop: 14, textAlign: 'left' }}>
+                <div
+                  style={{
+                    marginTop: 14,
+                    fontSize: 14,
+                    lineHeight: 1.7,
+                    whiteSpace: 'pre-wrap',
+                    borderTop: `1px solid ${S.border}`,
+                    paddingTop: 14,
+                    textAlign: 'left',
+                  }}
+                >
                   {report}
                 </div>
               )}
