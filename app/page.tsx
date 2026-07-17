@@ -515,7 +515,14 @@ export default function AnalisePage() {
           <span style={{ color: S.a, fontWeight: 600 }}>Análise</span>
           <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>Alertas</a>
           <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>Conta Binance</a>
-          {!session && <a href="/alertas" style={{ color: S.green, textDecoration: 'none' }}>Entrar</a>}
+          {!session ? (
+            <a href="/alertas" style={{ color: S.green, textDecoration: 'none' }}>Entrar</a>
+          ) : (
+            <button onClick={() => supabase.auth.signOut()}
+              style={{ background: 'transparent', border: 'none', color: S.red, fontSize: 13, cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>
+              Sair
+            </button>
+          )}
         </nav>
       </header>
 
