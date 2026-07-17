@@ -264,9 +264,9 @@ function computeStats(
 // UI auxiliares
 // ---------------------------------------------------------------------------
 
-function Card({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
+function Card({ children, style, title }: { children: React.ReactNode; style?: React.CSSProperties; title?: string }) {
   return (
-    <section style={{ background: S.panel, border: `1px solid ${S.border}`, borderRadius: 10, padding: 16, ...style }}>
+    <section title={title} style={{ background: S.panel, border: `1px solid ${S.border}`, borderRadius: 10, padding: 16, ...style }}>
       {children}
     </section>
   );
