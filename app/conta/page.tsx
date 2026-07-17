@@ -1,14 +1,13 @@
 'use client';
 
 /**
- * app/conta/page.tsx — VigIA Trade
+ * app/conta/page.tsx — VigIA Trade v2
  * ----------------------------------------------------------------------------
- * Conexão com a Binance (testnet ou real) + teste manual de ordem OCO.
- * Tudo passa pela edge function binance-trade — o api_secret nunca é lido
- * de volta pelo client (write-only) e nunca é persistido no browser.
+ * Novidades: navegação no header + histórico de ordens persistido (tabela
+ * orders, atualizada pelo cron monitorar-ordens) — sobrevive ao refresh.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { getSupabase } from '../../lib/supabaseClient';
 
@@ -23,6 +22,21 @@ const inputStyle: React.CSSProperties = {
   color: S.text, padding: '8px 10px', fontSize: 14, textAlign: 'center',
 };
 
+const fmt = (n: number, d = 2) =>
+  n.toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
+const fmtData = (iso: string) =>
+  new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+const STATUS_LABEL: Record<string, { label: string; color: string }> = {
+  pendente: { label: 'pendente', color: '#7d8a97' },
+  entrada_executada: { label: 'entrada feita', color: '#e8a13c' },
+  oco_ativa: { label: 'OCO ativa', color: '#4f8fd0' },
+  alvo_executado: { label: 'alvo ✅', color: '#3fb26f' },
+  stop_executado: { label: 'stop 🛑', color: '#d05555' },
+  cancelada: { label: 'cancelada', color: '#7d8a97' },
+  erro: { label: 'erro', color: '#d05555' },
+};
+
 function Card({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
   return (
     <section style={{ background: S.panel, border: `1px solid ${S.border}`, borderRadius: 10, padding: 16, ...style }}>
@@ -33,6 +47,13 @@ function Card({ children, style }: { children: React.ReactNode; style?: React.CS
 
 interface KeyInfo { api_key: string; is_testnet: boolean }
 interface Balance { asset: string; free: string; locked: string }
+interface OrderRow {
+  id: string; symbol: string; status: string; is_testnet: boolean;
+  quote_amount: number; qty: number | null;
+  entry_price: number | null; exit_price: number | null;
+  stop_price: number | null; target_price: number | null;
+  pnl_usdt: number | null; erro: string | null; criado_em: string;
+}
 
 export default function ContaPage() {
   const supabase = getSupabase();
@@ -48,7 +69,6 @@ export default function ContaPage() {
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [balances, setBalances] = useState<Balance[]>([]);
 
-  // Teste de ordem
   const [ordSymbol, setOrdSymbol] = useState('BTCUSDT');
   const [ordAmount, setOrdAmount] = useState('50');
   const [ordStop, setOrdStop] = useState('2');
@@ -56,17 +76,27 @@ export default function ContaPage() {
   const [ordResult, setOrdResult] = useState('');
   const [ordBusy, setOrdBusy] = useState(false);
 
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setAuthReady(true); });
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
     return () => sub.subscription.unsubscribe();
   }, [supabase]);
 
+  const loadOrders = useCallback(async () => {
+    const { data } = await supabase.from('orders')
+      .select('id, symbol, status, is_testnet, quote_amount, qty, entry_price, exit_price, stop_price, target_price, pnl_usdt, erro, criado_em')
+      .order('criado_em', { ascending: false }).limit(15);
+    setOrders((data as OrderRow[]) ?? []);
+  }, [supabase]);
+
   useEffect(() => {
     if (!session) return;
     supabase.from('exchange_keys').select('api_key, is_testnet').maybeSingle()
       .then(({ data }) => setKeyInfo(data as KeyInfo | null));
-  }, [session, supabase]);
+    loadOrders();
+  }, [session, supabase, loadOrders]);
 
   const invoke = async (payload: Record<string, unknown>) => {
     const { data, error } = await supabase.functions.invoke('binance-trade', { body: payload });
@@ -124,28 +154,32 @@ export default function ContaPage() {
         `Executada (${r.is_testnet ? 'testnet' : 'REAL'}): comprou ${r.entrada.qty} a ~${r.entrada.preco_medio.toFixed(2)} ` +
         `(gasto ${r.entrada.gasto_usdt.toFixed(2)} USDT). OCO ativa: alvo ${r.saida.alvo} / stop ${r.saida.stop}.`,
       );
+      loadOrders();
     } catch (e) {
       setOrdResult(`Erro: ${e instanceof Error ? e.message : 'desconhecido'}`);
+      loadOrders();
     } finally { setOrdBusy(false); }
   };
 
   return (
     <main style={{ minHeight: '100vh', background: S.bg, color: S.text, fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-      <header style={{
-        borderBottom: `1px solid ${S.border}`, background: S.panel,
-        padding: '12px 20px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
-      }}>
-        <a href="/" style={{ display: 'flex', alignItems: 'center', gap: 12, textDecoration: 'none', color: S.text }}>
+      <header style={{ borderBottom: `1px solid ${S.border}`, background: S.panel, padding: '12px 20px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/logo.png" alt="VigIA Trade" style={{ height: 32, width: 'auto', display: 'block' }} />
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>Conta Binance</div>
-            <div style={{ fontSize: 11, color: S.dim }}>conexão · teste de ordem OCO</div>
+            <div style={{ fontSize: 11, color: S.dim }}>conexão · ordens · histórico</div>
           </div>
-        </a>
+        </div>
+        <nav style={{ display: 'flex', justifyContent: 'center', gap: 20, marginTop: 8, fontSize: 13 }}>
+          <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>Análise</a>
+          <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>Alertas</a>
+          <span style={{ color: S.a, fontWeight: 600 }}>Conta Binance</span>
+        </nav>
       </header>
 
-      <div style={{ maxWidth: 640, margin: '0 auto', padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ maxWidth: 720, margin: '0 auto', padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
 
         {!authReady ? null : !session ? (
           <Card style={{ textAlign: 'center', color: S.dim, fontSize: 14 }}>
@@ -220,7 +254,7 @@ export default function ContaPage() {
             {/* --------------------------- Ordem de teste --------------------------- */}
             {keyInfo && (
               <Card style={{ display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'center', textAlign: 'center' }}>
-                <div style={{ fontSize: 15, fontWeight: 600 }}>Ordem de teste (entrada + OCO)</div>
+                <div style={{ fontSize: 15, fontWeight: 600 }}>Nova ordem (entrada + OCO)</div>
                 <div style={{ fontSize: 12, color: S.dim, maxWidth: 480 }}>
                   Compra a mercado gastando o valor em USDT e registra na Binance uma saída OCO:
                   alvo (venda no lucro) e stop (venda na perda máxima) — quando um executa, o outro cancela.
@@ -256,6 +290,51 @@ export default function ContaPage() {
                 )}
               </Card>
             )}
+
+            {/* --------------------------- Histórico de ordens --------------------------- */}
+            <Card>
+              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                <div style={{ fontSize: 15, fontWeight: 600 }}>Histórico de ordens</div>
+                <button onClick={loadOrders}
+                  style={{ background: 'transparent', color: S.dim, border: `1px solid ${S.border}`, borderRadius: 6, padding: '4px 10px', fontSize: 11, cursor: 'pointer' }}>
+                  Atualizar
+                </button>
+              </div>
+              {orders.length === 0 ? (
+                <div style={{ color: S.dim, fontSize: 13, textAlign: 'center' }}>Nenhuma ordem registrada ainda.</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {orders.map((o) => {
+                    const st = STATUS_LABEL[o.status] ?? { label: o.status, color: S.dim };
+                    return (
+                      <div key={o.id} style={{ border: `1px solid ${S.border}`, borderRadius: 8, padding: '10px 12px', textAlign: 'center' }}>
+                        <div style={{ fontSize: 13 }}>
+                          <strong>{o.symbol}</strong>
+                          {o.is_testnet && <span style={{ color: S.green, fontSize: 11 }}> testnet</span>}
+                          {' '}· <span style={{ color: st.color, fontWeight: 600 }}>{st.label}</span>
+                          {o.pnl_usdt !== null && (
+                            <span style={{ color: o.pnl_usdt >= 0 ? S.green : S.red }}>
+                              {' '}· {o.pnl_usdt >= 0 ? '+' : ''}{fmt(o.pnl_usdt)} USDT
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 11, color: S.dim, marginTop: 4 }}>
+                          {fmtData(o.criado_em)} · gasto {fmt(o.quote_amount)} USDT
+                          {o.entry_price !== null && ` · entrada ${fmt(o.entry_price)}`}
+                          {o.exit_price !== null && ` · saída ${fmt(o.exit_price)}`}
+                          {o.status === 'oco_ativa' && o.target_price !== null && o.stop_price !== null &&
+                            ` · alvo ${fmt(o.target_price)} / stop ${fmt(o.stop_price)}`}
+                          {o.erro && ` · ${o.erro.slice(0, 80)}`}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: S.dim, textAlign: 'center', marginTop: 10 }}>
+                Ordens com OCO ativa são verificadas a cada 5 minutos; o resultado (alvo/stop) chega também por email.
+              </div>
+            </Card>
           </>
         )}
       </div>
