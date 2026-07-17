@@ -199,17 +199,17 @@ export default function AlertasPage() {
             <div style={{ fontSize: 11, color: S.dim }}>monitoramento automático · aviso por email</div>
           </div>
         </a>
-        {session && (
-          <button onClick={() => supabase.auth.signOut()}
-            style={{ position: 'absolute', right: 20, background: 'transparent', color: S.dim, border: `1px solid ${S.border}`, borderRadius: 6, padding: '6px 12px', fontSize: 12, cursor: 'pointer' }}>
-            Sair
-          </button>
-        )}
         </div>
         <nav style={{ display: 'flex', justifyContent: 'center', gap: 20, marginTop: 8, fontSize: 13 }}>
           <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>Análise</a>
           <span style={{ color: S.a, fontWeight: 600 }}>Alertas</span>
           <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>Conta Binance</a>
+          {session && (
+            <button onClick={() => supabase.auth.signOut()}
+              style={{ background: 'transparent', border: 'none', color: S.red, fontSize: 13, cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>
+              Sair
+            </button>
+          )}
         </nav>
       </header>
 
