@@ -1,28 +1,29 @@
 'use client';
 
 /**
- * Dashboard de Análise de Mercado (cripto) — v3
+ * Dashboard de Análise de Mercado — VigIA Trade v4
  * ---------------------------------------------------------------------------
- * - Período adaptativo por timeframe (dias nos intradiários, meses no diário/semanal),
- *   com mínimo de ~60 candles para validade estatística das métricas.
- * - Novas métricas: correlação A×B, retorno/risco (Sharpe simplificado),
- *   % de períodos positivos, drawdown atual e tempo em drawdown.
- * - Tooltips explicativos (atributo title) em todas as métricas.
- * - Layout centralizado para mobile.
+ * Novidades da v4:
+ * - Navegação para /alertas e /conta no header.
+ * - Logado: cards de status (alertas ativos, chave Binance, últimas ordens)
+ *   e histórico das últimas análises (persistido — sobrevive ao refresh).
+ * - Cada análise rodada é salva em `analyses`; o relatório IA é anexado à
+ *   análise quando gerado. "Reabrir" re-executa com os mesmos parâmetros
+ *   sobre dados atuais.
+ * - Deslogado: dashboard funciona normalmente, sem persistência.
  */
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
+import type { Session } from '@supabase/supabase-js';
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis,
   Tooltip, Legend, CartesianGrid, ReferenceLine,
 } from 'recharts';
+import { getSupabase } from '../lib/supabaseClient';
 
 // ---------------------------------------------------------------------------
-// Timeframes e períodos
+// Timeframes e períodos (inalterado da v3)
 // ---------------------------------------------------------------------------
-// Cada timeframe define seus próprios períodos válidos (em dias), garantindo
-// no mínimo ~60 candles — abaixo disso, volatilidade anualizada, quartis de
-// regime e drawdown perdem validade estatística.
 
 interface PeriodOption { label: string; days: number }
 
@@ -93,6 +94,20 @@ interface AssetStats {
   lastPrice: number;
 }
 
+interface AnalysisRow {
+  id: string;
+  symbol_a: string; symbol_b: string | null;
+  timeframe: Timeframe; period_label: string;
+  retorno_a: number | null; retorno_b: number | null; correlacao: number | null;
+  criado_em: string;
+}
+
+interface OrderRow {
+  id: string; symbol: string; status: string; is_testnet: boolean;
+  entry_price: number | null; exit_price: number | null; pnl_usdt: number | null;
+  criado_em: string;
+}
+
 // ---------------------------------------------------------------------------
 // Estilo
 // ---------------------------------------------------------------------------
@@ -108,9 +123,21 @@ const S = {
 const fmt = (n: number, d = 2) =>
   n.toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
 const fmtPct = (n: number) => `${n >= 0 ? '+' : ''}${fmt(n)}%`;
+const fmtData = (iso: string) =>
+  new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+const STATUS_LABEL: Record<string, { label: string; color: string }> = {
+  pendente: { label: 'pendente', color: '#7d8a97' },
+  entrada_executada: { label: 'entrada feita', color: '#e8a13c' },
+  oco_ativa: { label: 'OCO ativa', color: '#4f8fd0' },
+  alvo_executado: { label: 'alvo ✅', color: '#3fb26f' },
+  stop_executado: { label: 'stop 🛑', color: '#d05555' },
+  cancelada: { label: 'cancelada', color: '#7d8a97' },
+  erro: { label: 'erro', color: '#d05555' },
+};
 
 // ---------------------------------------------------------------------------
-// Dados
+// Dados / cálculos (inalterados da v3)
 // ---------------------------------------------------------------------------
 
 async function fetchKlines(
@@ -126,10 +153,7 @@ async function fetchKlines(
     const batch: (string | number)[][] = await res.json();
     if (!batch.length) break;
     for (const k of batch) {
-      out.push({
-        openTime: Number(k[0]),
-        open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5],
-      });
+      out.push({ openTime: Number(k[0]), open: +k[1], high: +k[2], low: +k[3], close: +k[4], volume: +k[5] });
     }
     cursor = out[out.length - 1].openTime + 1;
     onProgress(`${symbol}: ${out.length} candles...`);
@@ -138,15 +162,9 @@ async function fetchKlines(
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// Cálculos
-// ---------------------------------------------------------------------------
-
 function logReturns(candles: Candle[]): number[] {
   const r: number[] = [];
-  for (let i = 1; i < candles.length; i++) {
-    r.push(Math.log(candles[i].close / candles[i - 1].close));
-  }
+  for (let i = 1; i < candles.length; i++) r.push(Math.log(candles[i].close / candles[i - 1].close));
   return r;
 }
 
@@ -177,30 +195,23 @@ function classifyRegime(volSeries: (number | null)[]): Regime {
   return 'extremo';
 }
 
-/** Correlação de Pearson entre retornos de A e B, alinhados por openTime. */
 function correlation(a: Candle[], b: Candle[]): number | null {
   if (a.length < 2 || b.length < 2) return null;
   const mapB = new Map<number, number>();
-  for (let i = 1; i < b.length; i++) {
-    mapB.set(b[i].openTime, Math.log(b[i].close / b[i - 1].close));
-  }
+  for (let i = 1; i < b.length; i++) mapB.set(b[i].openTime, Math.log(b[i].close / b[i - 1].close));
   const xs: number[] = [], ys: number[] = [];
   for (let i = 1; i < a.length; i++) {
     const rb = mapB.get(a[i].openTime);
-    if (rb !== undefined) {
-      xs.push(Math.log(a[i].close / a[i - 1].close));
-      ys.push(rb);
-    }
+    if (rb !== undefined) { xs.push(Math.log(a[i].close / a[i - 1].close)); ys.push(rb); }
   }
   const n = xs.length;
-  if (n < 30) return null; // amostra pareada insuficiente
+  if (n < 30) return null;
   const mx = xs.reduce((s, v) => s + v, 0) / n;
   const my = ys.reduce((s, v) => s + v, 0) / n;
   let cov = 0, vx = 0, vy = 0;
   for (let i = 0; i < n; i++) {
     cov += (xs[i] - mx) * (ys[i] - my);
-    vx += (xs[i] - mx) ** 2;
-    vy += (ys[i] - my) ** 2;
+    vx += (xs[i] - mx) ** 2; vy += (ys[i] - my) ** 2;
   }
   const denom = Math.sqrt(vx * vy);
   return denom > 0 ? cov / denom : null;
@@ -218,7 +229,6 @@ function computeStats(
 ): AssetStats {
   const first = candles[0].close, last = candles[candles.length - 1].close;
   const n = candles.length;
-
   let peak = -Infinity, maxDD = 0, belowPeak = 0;
   for (const c of candles) {
     peak = Math.max(peak, c.close);
@@ -227,7 +237,6 @@ function computeStats(
     if (dd < 0) belowPeak++;
   }
   const currentDD = (last - peak) / peak;
-
   const span = tf.candlesPorDia > 0 ? tf.candlesPorDia : 1;
   let best = -Infinity, worst = Infinity;
   for (let i = span; i < n; i++) {
@@ -235,14 +244,11 @@ function computeStats(
     if (r > best) best = r;
     if (r < worst) worst = r;
   }
-
   const returns = logReturns(candles);
   const positives = returns.filter((r) => r > 0).length;
-
   const volVals = vol.filter((v): v is number => v !== null);
   const annualVol = volVals.reduce((s, v) => s + v, 0) / (volVals.length || 1);
   const annualReturn = (Math.pow(last / first, tf.periodsPerYear / Math.max(1, n - 1)) - 1) * 100;
-
   return {
     symbol,
     returnPct: (last / first - 1) * 100,
@@ -287,16 +293,19 @@ function RegimeBadge({ regime }: { regime: Regime }) {
 // ---------------------------------------------------------------------------
 
 export default function AnalisePage() {
+  const supabase = getSupabase();
+
+  const [session, setSession] = useState<Session | null>(null);
+
   const [symbolA, setSymbolA] = useState('BTCUSDT');
   const [symbolB, setSymbolB] = useState('ETHUSDT');
   const [timeframe, setTimeframe] = useState<Timeframe>('1d');
-  const [periodIdx, setPeriodIdx] = useState(1); // default: 6 meses no diário
+  const [periodIdx, setPeriodIdx] = useState(1);
 
   const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [progress, setProgress] = useState('');
   const [error, setError] = useState('');
 
-  // Congelados no momento da análise (labels/cálculos não mudam sem re-analisar)
   const [usedTf, setUsedTf] = useState<Timeframe>('1d');
   const [usedPeriodLabel, setUsedPeriodLabel] = useState('6 meses');
   const [dataA, setDataA] = useState<Candle[]>([]);
@@ -304,35 +313,105 @@ export default function AnalisePage() {
   const [report, setReport] = useState('');
   const [reportLoading, setReportLoading] = useState(false);
 
-  // Ao trocar timeframe, realinha o índice de período para uma opção válida
+  // Status/histórico (logado)
+  const [alertCount, setAlertCount] = useState<number | null>(null);
+  const [keyInfo, setKeyInfo] = useState<{ is_testnet: boolean } | null | undefined>(undefined); // undefined = não carregado
+  const [lastOrders, setLastOrders] = useState<OrderRow[]>([]);
+  const [lastAnalyses, setLastAnalyses] = useState<AnalysisRow[]>([]);
+  const [currentAnalysisId, setCurrentAnalysisId] = useState<string | null>(null);
+
+  // Sessão --------------------------------------------------------------------
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, [supabase]);
+
+  const loadStatus = useCallback(async () => {
+    const [alerts, keys, orders, analyses] = await Promise.all([
+      supabase.from('alert_rules').select('id', { count: 'exact', head: true }).eq('ativo', true),
+      supabase.from('exchange_keys').select('is_testnet').maybeSingle(),
+      supabase.from('orders')
+        .select('id, symbol, status, is_testnet, entry_price, exit_price, pnl_usdt, criado_em')
+        .order('criado_em', { ascending: false }).limit(3),
+      supabase.from('analyses')
+        .select('id, symbol_a, symbol_b, timeframe, period_label, retorno_a, retorno_b, correlacao, criado_em')
+        .order('criado_em', { ascending: false }).limit(5),
+    ]);
+    setAlertCount(alerts.count ?? 0);
+    setKeyInfo((keys.data as { is_testnet: boolean } | null) ?? null);
+    setLastOrders((orders.data as OrderRow[]) ?? []);
+    setLastAnalyses((analyses.data as AnalysisRow[]) ?? []);
+  }, [supabase]);
+
+  useEffect(() => { if (session) loadStatus(); }, [session, loadStatus]);
+
   const onTimeframeChange = (v: string) => {
     const next = v as Timeframe;
     setTimeframe(next);
     setPeriodIdx(Math.min(1, TIMEFRAMES[next].periods.length - 1));
   };
 
-  const run = useCallback(async () => {
-    const cfg = TIMEFRAMES[timeframe];
-    const period = cfg.periods[Math.min(periodIdx, cfg.periods.length - 1)];
-    setStatus('loading'); setError(''); setReport('');
+  // Análise (aceita overrides para o "reabrir" do histórico) -------------------
+  const run = useCallback(async (ov?: { symbolA: string; symbolB: string; timeframe: Timeframe; periodLabel: string }) => {
+    const useTf = ov?.timeframe ?? timeframe;
+    const cfg = TIMEFRAMES[useTf];
+    const period = ov
+      ? cfg.periods.find((p) => p.label === ov.periodLabel) ?? cfg.periods[1]
+      : cfg.periods[Math.min(periodIdx, cfg.periods.length - 1)];
+    const useA = ov?.symbolA ?? symbolA;
+    const useB = ov?.symbolB ?? symbolB;
+
+    if (ov) {
+      setSymbolA(useA); setSymbolB(useB); setTimeframe(useTf);
+      setPeriodIdx(Math.max(0, cfg.periods.findIndex((p) => p.label === period.label)));
+    }
+
+    setStatus('loading'); setError(''); setReport(''); setCurrentAnalysisId(null);
     try {
-      const a = await fetchKlines(symbolA, cfg.api, period.days, setProgress);
-      const b = symbolB !== 'nenhum' && symbolB !== symbolA
-        ? await fetchKlines(symbolB, cfg.api, period.days, setProgress) : [];
+      const a = await fetchKlines(useA, cfg.api, period.days, setProgress);
+      const b = useB !== 'nenhum' && useB !== useA ? await fetchKlines(useB, cfg.api, period.days, setProgress) : [];
       const minimo = Math.max(MIN_CANDLES, cfg.volWindow + 10);
       if (a.length < minimo) {
         throw new Error(`Amostra insuficiente (${a.length} candles; mínimo ${minimo}). Aumente o período.`);
       }
       setDataA(a); setDataB(b);
-      setUsedTf(timeframe); setUsedPeriodLabel(period.label);
+      setUsedTf(useTf); setUsedPeriodLabel(period.label);
       setStatus('done');
+
+      // Persistência (logado): salva parâmetros + resumo
+      if (session) {
+        const tfc = TIMEFRAMES[useTf];
+        const volSa = rollingVol(logReturns(a), tfc.volWindow, tfc.periodsPerYear);
+        const sa = computeStats(useA, a, volSa, tfc);
+        let sb: AssetStats | null = null;
+        let corrVal: number | null = null;
+        if (b.length) {
+          const volSb = rollingVol(logReturns(b), tfc.volWindow, tfc.periodsPerYear);
+          sb = computeStats(useB, b, volSb, tfc);
+          corrVal = correlation(a, b);
+        }
+        const { data: row } = await supabase.from('analyses').insert({
+          symbol_a: useA,
+          symbol_b: b.length ? useB : null,
+          timeframe: useTf,
+          period_label: period.label,
+          retorno_a: sa.returnPct,
+          retorno_b: sb?.returnPct ?? null,
+          correlacao: corrVal,
+          stats: { a: sa, b: sb },
+          user_id: session.user.id,
+        }).select('id').single();
+        if (row) setCurrentAnalysisId(row.id as string);
+        loadStatus();
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erro ao buscar dados.');
       setStatus('error');
     }
-  }, [symbolA, symbolB, timeframe, periodIdx]);
+  }, [symbolA, symbolB, timeframe, periodIdx, session, supabase, loadStatus]);
 
-  // Derivados ----------------------------------------------------------------
+  // Derivados ------------------------------------------------------------------
   const tf = TIMEFRAMES[usedTf];
   const volA = useMemo(() => dataA.length ? rollingVol(logReturns(dataA), tf.volWindow, tf.periodsPerYear) : [], [dataA, tf]);
   const volB = useMemo(() => dataB.length ? rollingVol(logReturns(dataB), tf.volWindow, tf.periodsPerYear) : [], [dataB, tf]);
@@ -353,9 +432,7 @@ export default function AnalisePage() {
       const label = longRange
         ? `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getFullYear()).slice(2)}`
         : `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
-      const pPoint: Record<string, number | string> = {
-        label, [symbolA]: +((dataA[i].close / baseA) * 100).toFixed(2),
-      };
+      const pPoint: Record<string, number | string> = { label, [symbolA]: +((dataA[i].close / baseA) * 100).toFixed(2) };
       const vPoint: Record<string, number | string> = { label };
       if (volA[i] !== null && volA[i] !== undefined) vPoint[symbolA] = +(volA[i] as number).toFixed(1);
       if (dataB[i]) {
@@ -367,7 +444,7 @@ export default function AnalisePage() {
     return { perf, vol };
   }, [dataA, dataB, volA, volB, symbolA, symbolB, usedTf]);
 
-  // Relatório via IA -----------------------------------------------------------
+  // Relatório -------------------------------------------------------------------
   const generateReport = useCallback(async () => {
     if (!statsA) return;
     setReportLoading(true); setReport('');
@@ -385,13 +462,18 @@ export default function AnalisePage() {
       });
       if (!res.ok) throw new Error(`API respondeu ${res.status}`);
       const json = await res.json();
-      setReport(json.relatorio ?? 'Resposta vazia da API.');
+      const texto = json.relatorio ?? 'Resposta vazia da API.';
+      setReport(texto);
+      // Anexa o relatório à análise salva
+      if (session && currentAnalysisId) {
+        await supabase.from('analyses').update({ report: texto }).eq('id', currentAnalysisId);
+      }
     } catch (e) {
-      setReport(`Erro ao gerar relatório: ${e instanceof Error ? e.message : 'desconhecido'}. Verifique /api/relatorio e a OPENAI_API_KEY.`);
+      setReport(`Erro ao gerar relatório: ${e instanceof Error ? e.message : 'desconhecido'}.`);
     } finally {
       setReportLoading(false);
     }
-  }, [statsA, statsB, usedPeriodLabel, tf, corr]);
+  }, [statsA, statsB, usedPeriodLabel, tf, corr, session, currentAnalysisId, supabase]);
 
   const select = (value: string, onChange: (v: string) => void, opts: { value: string; label: string }[]) => (
     <select value={value} onChange={(e) => onChange(e.target.value)}
@@ -419,20 +501,63 @@ export default function AnalisePage() {
   return (
     <main style={{ minHeight: '100vh', background: S.bg, color: S.text, fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
 
-      {/* Header */}
-      <header style={{
-        borderBottom: `1px solid ${S.border}`, background: S.panel,
-        padding: '12px 20px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
-      }}>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/logo.png" alt="Logo" style={{ height: 32, width: 'auto', display: 'block' }} />
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>Análise de mercado</div>
-          <div style={{ fontSize: 11, color: S.dim }}>histórico · volatilidade · comparação</div>
+      {/* Header + navegação */}
+      <header style={{ borderBottom: `1px solid ${S.border}`, background: S.panel, padding: '12px 20px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.png" alt="VigIA Trade" style={{ height: 32, width: 'auto', display: 'block' }} />
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>Análise de mercado</div>
+            <div style={{ fontSize: 11, color: S.dim }}>monitoramento · risco definido · decisão sua</div>
+          </div>
         </div>
+        <nav style={{ display: 'flex', justifyContent: 'center', gap: 20, marginTop: 8, fontSize: 13 }}>
+          <span style={{ color: S.a, fontWeight: 600 }}>Análise</span>
+          <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>Alertas</a>
+          <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>Conta Binance</a>
+          {!session && <a href="/alertas" style={{ color: S.green, textDecoration: 'none' }}>Entrar</a>}
+        </nav>
       </header>
 
       <div style={{ maxWidth: 1080, margin: '0 auto', padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+        {/* Cards de status (logado) */}
+        {session && (
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
+            <a href="/alertas" style={{ textDecoration: 'none', color: S.text }}>
+              <Card style={{ padding: '10px 16px', textAlign: 'center', minWidth: 140, cursor: 'pointer' }}>
+                <div style={{ fontSize: 11, color: S.dim, textTransform: 'uppercase', letterSpacing: 0.6 }}>Alertas ativos</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: S.a }}>{alertCount ?? '—'}</div>
+              </Card>
+            </a>
+            <a href="/conta" style={{ textDecoration: 'none', color: S.text }}>
+              <Card style={{ padding: '10px 16px', textAlign: 'center', minWidth: 140, cursor: 'pointer' }}>
+                <div style={{ fontSize: 11, color: S.dim, textTransform: 'uppercase', letterSpacing: 0.6 }}>Binance</div>
+                <div style={{
+                  fontSize: 14, fontWeight: 700, marginTop: 4,
+                  color: keyInfo === null ? S.dim : keyInfo?.is_testnet ? S.green : S.red,
+                }}>
+                  {keyInfo === undefined ? '—' : keyInfo === null ? 'não conectada' : keyInfo.is_testnet ? 'TESTNET' : 'CONTA REAL'}
+                </div>
+              </Card>
+            </a>
+            <a href="/conta" style={{ textDecoration: 'none', color: S.text }}>
+              <Card style={{ padding: '10px 16px', textAlign: 'center', minWidth: 200, cursor: 'pointer' }}>
+                <div style={{ fontSize: 11, color: S.dim, textTransform: 'uppercase', letterSpacing: 0.6 }}>Últimas ordens</div>
+                {lastOrders.length === 0 ? (
+                  <div style={{ fontSize: 13, color: S.dim, marginTop: 4 }}>nenhuma</div>
+                ) : lastOrders.map((o) => (
+                  <div key={o.id} style={{ fontSize: 12, marginTop: 4 }}>
+                    {o.symbol} · <span style={{ color: STATUS_LABEL[o.status]?.color ?? S.dim }}>{STATUS_LABEL[o.status]?.label ?? o.status}</span>
+                    {o.pnl_usdt !== null && (
+                      <span style={{ color: o.pnl_usdt >= 0 ? S.green : S.red }}> · {o.pnl_usdt >= 0 ? '+' : ''}{fmt(o.pnl_usdt)} USDT</span>
+                    )}
+                  </div>
+                ))}
+              </Card>
+            </a>
+          </div>
+        )}
 
         <p style={{ color: S.dim, fontSize: 13, margin: '0 auto', maxWidth: 780, textAlign: 'center' }}>
           Dados da Binance. Volatilidade realizada em {tf.windowLabel}, anualizada; regime
@@ -456,12 +581,44 @@ export default function AnalisePage() {
             Período{select(String(Math.min(periodIdx, currentPeriods.length - 1)), (v) => setPeriodIdx(+v),
               currentPeriods.map((p, i) => ({ value: String(i), label: p.label })))}
           </label>
-          <button onClick={run} disabled={status === 'loading'}
+          <button onClick={() => run()} disabled={status === 'loading'}
             style={{ background: S.a, color: '#1a1206', border: 'none', borderRadius: 8, padding: '10px 22px', fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: status === 'loading' ? 0.6 : 1 }}>
             {status === 'loading' ? progress || 'Carregando...' : 'Analisar'}
           </button>
           {status === 'error' && <span style={{ color: S.red, fontSize: 13, flexBasis: '100%', textAlign: 'center' }}>{error}</span>}
         </Card>
+
+        {/* Histórico de análises (logado) */}
+        {session && lastAnalyses.length > 0 && (
+          <Card>
+            <div style={{ fontSize: 13, fontWeight: 600, textAlign: 'center', marginBottom: 8 }}>Últimas análises</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {lastAnalyses.map((an) => (
+                <button key={an.id}
+                  onClick={() => run({
+                    symbolA: an.symbol_a,
+                    symbolB: an.symbol_b ?? 'nenhum',
+                    timeframe: an.timeframe,
+                    periodLabel: an.period_label,
+                  })}
+                  style={{
+                    background: 'transparent', border: `1px solid ${S.border}`, borderRadius: 8,
+                    padding: '8px 12px', color: S.text, fontSize: 12, cursor: 'pointer', textAlign: 'center',
+                  }}>
+                  {an.symbol_a}{an.symbol_b ? ` × ${an.symbol_b}` : ''} · {TIMEFRAMES[an.timeframe]?.label ?? an.timeframe} · {an.period_label}
+                  {an.retorno_a !== null && (
+                    <span style={{ color: an.retorno_a >= 0 ? S.green : S.red }}> · {fmtPct(an.retorno_a)}</span>
+                  )}
+                  {an.correlacao !== null && <span style={{ color: S.dim }}> · corr {fmt(an.correlacao)}</span>}
+                  <span style={{ color: S.dim }}> · {fmtData(an.criado_em)}</span>
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: S.dim, textAlign: 'center', marginTop: 8 }}>
+              Tocar reabre a análise com os mesmos parâmetros sobre dados atuais.
+            </div>
+          </Card>
+        )}
 
         {status === 'done' && statsA && (
           <>
