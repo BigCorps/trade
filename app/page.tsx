@@ -1,12 +1,14 @@
 'use client';
 
 /**
- * Dashboard de Análise de Mercado (cripto) — v2 com timeframes
+ * Dashboard de Análise de Mercado (cripto) — v3
  * ---------------------------------------------------------------------------
- * Timeframes: 1h, 4h, diário, semanal — anualização e janelas ajustadas por escala.
- * Módulos: performance normalizada, volatilidade realizada + regime,
- * comparação de ativos, relatório via IA (/api/relatorio).
- * Header básico com /public/logo.png.
+ * - Período adaptativo por timeframe (dias nos intradiários, meses no diário/semanal),
+ *   com mínimo de ~60 candles para validade estatística das métricas.
+ * - Novas métricas: correlação A×B, retorno/risco (Sharpe simplificado),
+ *   % de períodos positivos, drawdown atual e tempo em drawdown.
+ * - Tooltips explicativos (atributo title) em todas as métricas.
+ * - Layout centralizado para mobile.
  */
 
 import { useState, useMemo, useCallback } from 'react';
@@ -16,24 +18,52 @@ import {
 } from 'recharts';
 
 // ---------------------------------------------------------------------------
-// Timeframes
+// Timeframes e períodos
 // ---------------------------------------------------------------------------
-// periodsPerYear: quantos candles cabem em 1 ano — define a anualização da vol.
-// volWindow: janela móvel da volatilidade, escolhida para fazer sentido na escala
-//            (72h no 1h; ~7 dias no 4h; 30 dias no diário; 12 semanas no semanal).
-// candlesPorDia: usado na métrica "melhor/pior dia"; 0 = não se aplica (semanal).
-// minMonths: período mínimo para a janela ter amostra suficiente.
+// Cada timeframe define seus próprios períodos válidos (em dias), garantindo
+// no mínimo ~60 candles — abaixo disso, volatilidade anualizada, quartis de
+// regime e drawdown perdem validade estatística.
+
+interface PeriodOption { label: string; days: number }
 
 const TIMEFRAMES = {
-  '1h': { api: '1h', label: '1 hora',  windowLabel: 'janela de 72h',        dayLabel: 'janela de 24h', periodsPerYear: 24 * 365, volWindow: 72, candlesPorDia: 24, minMonths: 1 },
-  '4h': { api: '4h', label: '4 horas', windowLabel: 'janela de 7 dias',     dayLabel: 'janela de 24h', periodsPerYear: 6 * 365,  volWindow: 42, candlesPorDia: 6,  minMonths: 1 },
-  '1d': { api: '1d', label: 'diário',  windowLabel: 'janela de 30 dias',    dayLabel: 'dia',           periodsPerYear: 365,      volWindow: 30, candlesPorDia: 1,  minMonths: 3 },
-  '1w': { api: '1w', label: 'semanal', windowLabel: 'janela de 12 semanas', dayLabel: 'semana',        periodsPerYear: 52,       volWindow: 12, candlesPorDia: 0,  minMonths: 12 },
+  '1h': {
+    api: '1h', label: '1 hora', windowLabel: 'janela de 72h', unitLabel: 'janela de 24h',
+    periodsPerYear: 24 * 365, volWindow: 72, candlesPorDia: 24,
+    periods: [
+      { label: '7 dias', days: 7 }, { label: '14 dias', days: 14 },
+      { label: '30 dias', days: 30 }, { label: '60 dias', days: 60 }, { label: '90 dias', days: 90 },
+    ] as PeriodOption[],
+  },
+  '4h': {
+    api: '4h', label: '4 horas', windowLabel: 'janela de 7 dias', unitLabel: 'janela de 24h',
+    periodsPerYear: 6 * 365, volWindow: 42, candlesPorDia: 6,
+    periods: [
+      { label: '14 dias', days: 14 }, { label: '30 dias', days: 30 },
+      { label: '90 dias', days: 90 }, { label: '180 dias', days: 180 }, { label: '12 meses', days: 365 },
+    ] as PeriodOption[],
+  },
+  '1d': {
+    api: '1d', label: 'diário', windowLabel: 'janela de 30 dias', unitLabel: 'dia',
+    periodsPerYear: 365, volWindow: 30, candlesPorDia: 1,
+    periods: [
+      { label: '3 meses', days: 90 }, { label: '6 meses', days: 180 },
+      { label: '12 meses', days: 365 }, { label: '24 meses', days: 730 }, { label: '36 meses', days: 1095 },
+    ] as PeriodOption[],
+  },
+  '1w': {
+    api: '1w', label: 'semanal', windowLabel: 'janela de 12 semanas', unitLabel: 'semana',
+    periodsPerYear: 52, volWindow: 12, candlesPorDia: 0,
+    periods: [
+      { label: '12 meses', days: 365 }, { label: '24 meses', days: 730 },
+      { label: '36 meses', days: 1095 }, { label: '60 meses', days: 1825 },
+    ] as PeriodOption[],
+  },
 } as const;
 type Timeframe = keyof typeof TIMEFRAMES;
 
 const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'nenhum'];
-const PERIOD_OPTIONS = [1, 3, 6, 12, 18, 24, 36];
+const MIN_CANDLES = 60;
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -49,12 +79,17 @@ type Regime = 'calmo' | 'normal' | 'volátil' | 'extremo';
 interface AssetStats {
   symbol: string;
   returnPct: number;
+  annualReturnPct: number;
   maxDrawdownPct: number;
+  currentDrawdownPct: number;
+  timeInDrawdownPct: number;
   annualVolPct: number;
   currentVolPct: number;
+  sharpe: number;
+  pctPositive: number;
   regime: Regime;
-  bestUnitPct: number;   // melhor dia (ou semana, no 1w)
-  worstUnitPct: number;  // pior dia (ou semana, no 1w)
+  bestUnitPct: number;
+  worstUnitPct: number;
   lastPrice: number;
 }
 
@@ -79,10 +114,10 @@ const fmtPct = (n: number) => `${n >= 0 ? '+' : ''}${fmt(n)}%`;
 // ---------------------------------------------------------------------------
 
 async function fetchKlines(
-  symbol: string, interval: string, months: number, onProgress: (m: string) => void,
+  symbol: string, interval: string, days: number, onProgress: (m: string) => void,
 ): Promise<Candle[]> {
   const end = Date.now();
-  let cursor = end - months * 30 * 24 * 60 * 60 * 1000;
+  let cursor = end - days * 24 * 60 * 60 * 1000;
   const out: Candle[] = [];
   while (cursor < end) {
     const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&startTime=${cursor}&limit=1000`;
@@ -115,7 +150,6 @@ function logReturns(candles: Candle[]): number[] {
   return r;
 }
 
-/** Volatilidade realizada anualizada (%) em janela móvel, alinhada aos candles. */
 function rollingVol(returns: number[], window: number, periodsPerYear: number): (number | null)[] {
   const annualize = Math.sqrt(periodsPerYear);
   const out: (number | null)[] = new Array(returns.length + 1).fill(null);
@@ -143,30 +177,83 @@ function classifyRegime(volSeries: (number | null)[]): Regime {
   return 'extremo';
 }
 
+/** Correlação de Pearson entre retornos de A e B, alinhados por openTime. */
+function correlation(a: Candle[], b: Candle[]): number | null {
+  if (a.length < 2 || b.length < 2) return null;
+  const mapB = new Map<number, number>();
+  for (let i = 1; i < b.length; i++) {
+    mapB.set(b[i].openTime, Math.log(b[i].close / b[i - 1].close));
+  }
+  const xs: number[] = [], ys: number[] = [];
+  for (let i = 1; i < a.length; i++) {
+    const rb = mapB.get(a[i].openTime);
+    if (rb !== undefined) {
+      xs.push(Math.log(a[i].close / a[i - 1].close));
+      ys.push(rb);
+    }
+  }
+  const n = xs.length;
+  if (n < 30) return null; // amostra pareada insuficiente
+  const mx = xs.reduce((s, v) => s + v, 0) / n;
+  const my = ys.reduce((s, v) => s + v, 0) / n;
+  let cov = 0, vx = 0, vy = 0;
+  for (let i = 0; i < n; i++) {
+    cov += (xs[i] - mx) * (ys[i] - my);
+    vx += (xs[i] - mx) ** 2;
+    vy += (ys[i] - my) ** 2;
+  }
+  const denom = Math.sqrt(vx * vy);
+  return denom > 0 ? cov / denom : null;
+}
+
+function correlationLabel(r: number): string {
+  const abs = Math.abs(r);
+  if (abs >= 0.7) return r > 0 ? 'alta' : 'alta inversa';
+  if (abs >= 0.4) return r > 0 ? 'moderada' : 'moderada inversa';
+  return 'baixa';
+}
+
 function computeStats(
   symbol: string, candles: Candle[], vol: (number | null)[], tf: (typeof TIMEFRAMES)[Timeframe],
 ): AssetStats {
   const first = candles[0].close, last = candles[candles.length - 1].close;
-  let peak = -Infinity, maxDD = 0;
+  const n = candles.length;
+
+  let peak = -Infinity, maxDD = 0, belowPeak = 0;
   for (const c of candles) {
     peak = Math.max(peak, c.close);
-    maxDD = Math.min(maxDD, (c.close - peak) / peak);
+    const dd = (c.close - peak) / peak;
+    maxDD = Math.min(maxDD, dd);
+    if (dd < 0) belowPeak++;
   }
-  // melhor/pior unidade: 1 dia (candlesPorDia candles) ou 1 candle no semanal
+  const currentDD = (last - peak) / peak;
+
   const span = tf.candlesPorDia > 0 ? tf.candlesPorDia : 1;
   let best = -Infinity, worst = Infinity;
-  for (let i = span; i < candles.length; i++) {
+  for (let i = span; i < n; i++) {
     const r = (candles[i].close / candles[i - span].close - 1) * 100;
     if (r > best) best = r;
     if (r < worst) worst = r;
   }
+
+  const returns = logReturns(candles);
+  const positives = returns.filter((r) => r > 0).length;
+
   const volVals = vol.filter((v): v is number => v !== null);
+  const annualVol = volVals.reduce((s, v) => s + v, 0) / (volVals.length || 1);
+  const annualReturn = (Math.pow(last / first, tf.periodsPerYear / Math.max(1, n - 1)) - 1) * 100;
+
   return {
     symbol,
     returnPct: (last / first - 1) * 100,
+    annualReturnPct: annualReturn,
     maxDrawdownPct: maxDD * 100,
-    annualVolPct: volVals.reduce((s, v) => s + v, 0) / (volVals.length || 1),
+    currentDrawdownPct: currentDD * 100,
+    timeInDrawdownPct: (belowPeak / n) * 100,
+    annualVolPct: annualVol,
     currentVolPct: volVals[volVals.length - 1] ?? 0,
+    sharpe: annualVol > 0 ? annualReturn / annualVol : 0,
+    pctPositive: returns.length ? (positives / returns.length) * 100 : 0,
     regime: classifyRegime(vol),
     bestUnitPct: best, worstUnitPct: worst,
     lastPrice: last,
@@ -203,41 +290,47 @@ export default function AnalisePage() {
   const [symbolA, setSymbolA] = useState('BTCUSDT');
   const [symbolB, setSymbolB] = useState('ETHUSDT');
   const [timeframe, setTimeframe] = useState<Timeframe>('1d');
-  const [months, setMonths] = useState(6);
+  const [periodIdx, setPeriodIdx] = useState(1); // default: 6 meses no diário
 
   const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [progress, setProgress] = useState('');
   const [error, setError] = useState('');
 
-  // Timeframe congelado no momento da análise (labels não trocam sem re-analisar)
+  // Congelados no momento da análise (labels/cálculos não mudam sem re-analisar)
   const [usedTf, setUsedTf] = useState<Timeframe>('1d');
+  const [usedPeriodLabel, setUsedPeriodLabel] = useState('6 meses');
   const [dataA, setDataA] = useState<Candle[]>([]);
   const [dataB, setDataB] = useState<Candle[]>([]);
   const [report, setReport] = useState('');
   const [reportLoading, setReportLoading] = useState(false);
 
+  // Ao trocar timeframe, realinha o índice de período para uma opção válida
+  const onTimeframeChange = (v: string) => {
+    const next = v as Timeframe;
+    setTimeframe(next);
+    setPeriodIdx(Math.min(1, TIMEFRAMES[next].periods.length - 1));
+  };
+
   const run = useCallback(async () => {
     const cfg = TIMEFRAMES[timeframe];
-    if (months < cfg.minMonths) {
-      setError(`Timeframe ${cfg.label} exige período mínimo de ${cfg.minMonths} meses para amostra suficiente.`);
-      setStatus('error');
-      return;
-    }
+    const period = cfg.periods[Math.min(periodIdx, cfg.periods.length - 1)];
     setStatus('loading'); setError(''); setReport('');
     try {
-      const a = await fetchKlines(symbolA, cfg.api, months, setProgress);
+      const a = await fetchKlines(symbolA, cfg.api, period.days, setProgress);
       const b = symbolB !== 'nenhum' && symbolB !== symbolA
-        ? await fetchKlines(symbolB, cfg.api, months, setProgress) : [];
-      if (a.length < cfg.volWindow + 10) {
-        throw new Error(`Candles insuficientes (${a.length}) para a janela de volatilidade neste timeframe. Aumente o período.`);
+        ? await fetchKlines(symbolB, cfg.api, period.days, setProgress) : [];
+      const minimo = Math.max(MIN_CANDLES, cfg.volWindow + 10);
+      if (a.length < minimo) {
+        throw new Error(`Amostra insuficiente (${a.length} candles; mínimo ${minimo}). Aumente o período.`);
       }
-      setDataA(a); setDataB(b); setUsedTf(timeframe);
+      setDataA(a); setDataB(b);
+      setUsedTf(timeframe); setUsedPeriodLabel(period.label);
       setStatus('done');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Erro ao buscar dados.');
       setStatus('error');
     }
-  }, [symbolA, symbolB, timeframe, months]);
+  }, [symbolA, symbolB, timeframe, periodIdx]);
 
   // Derivados ----------------------------------------------------------------
   const tf = TIMEFRAMES[usedTf];
@@ -245,6 +338,7 @@ export default function AnalisePage() {
   const volB = useMemo(() => dataB.length ? rollingVol(logReturns(dataB), tf.volWindow, tf.periodsPerYear) : [], [dataB, tf]);
   const statsA = useMemo(() => dataA.length ? computeStats(symbolA, dataA, volA, tf) : null, [dataA, volA, symbolA, tf]);
   const statsB = useMemo(() => dataB.length ? computeStats(symbolB, dataB, volB, tf) : null, [dataB, volB, symbolB, tf]);
+  const corr = useMemo(() => (dataA.length && dataB.length) ? correlation(dataA, dataB) : null, [dataA, dataB]);
 
   const charts = useMemo(() => {
     if (!dataA.length) return { perf: [], vol: [] };
@@ -282,9 +376,10 @@ export default function AnalisePage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          periodoMeses: months,
+          periodoLabel: usedPeriodLabel,
           timeframeLabel: tf.label,
-          unidadeExtremos: tf.dayLabel,
+          unidadeExtremos: tf.unitLabel,
+          correlacao: corr,
           ativos: [statsA, statsB].filter(Boolean),
         }),
       });
@@ -296,23 +391,29 @@ export default function AnalisePage() {
     } finally {
       setReportLoading(false);
     }
-  }, [statsA, statsB, months, tf]);
+  }, [statsA, statsB, usedPeriodLabel, tf, corr]);
 
   const select = (value: string, onChange: (v: string) => void, opts: { value: string; label: string }[]) => (
     <select value={value} onChange={(e) => onChange(e.target.value)}
-      style={{ background: S.bg, border: `1px solid ${S.border}`, borderRadius: 6, color: S.text, padding: '8px 10px', fontSize: 14 }}>
+      style={{ background: S.bg, border: `1px solid ${S.border}`, borderRadius: 6, color: S.text, padding: '8px 10px', fontSize: 14, textAlign: 'center' }}>
       {opts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
     </select>
   );
 
-  const statRows: { label: string; get: (s: AssetStats) => string; color?: (s: AssetStats) => string }[] = [
-    { label: 'Último preço (USDT)', get: (s) => fmt(s.lastPrice) },
-    { label: 'Retorno no período', get: (s) => fmtPct(s.returnPct), color: (s) => s.returnPct >= 0 ? S.green : S.red },
-    { label: 'Drawdown máximo', get: (s) => fmtPct(s.maxDrawdownPct), color: () => S.red },
-    { label: 'Volatilidade média (anualizada)', get: (s) => `${fmt(s.annualVolPct, 0)}%` },
-    { label: 'Volatilidade atual (anualizada)', get: (s) => `${fmt(s.currentVolPct, 0)}%` },
-    { label: `Melhor ${tf.dayLabel}`, get: (s) => fmtPct(s.bestUnitPct), color: () => S.green },
-    { label: `Pior ${tf.dayLabel}`, get: (s) => fmtPct(s.worstUnitPct), color: () => S.red },
+  const currentPeriods = TIMEFRAMES[timeframe].periods;
+
+  const statRows: { label: string; tip: string; get: (s: AssetStats) => string; color?: (s: AssetStats) => string }[] = [
+    { label: 'Último preço (USDT)', tip: 'Preço de fechamento do candle mais recente.', get: (s) => fmt(s.lastPrice) },
+    { label: 'Retorno no período', tip: 'Variação do preço do início ao fim do período analisado.', get: (s) => fmtPct(s.returnPct), color: (s) => s.returnPct >= 0 ? S.green : S.red },
+    { label: 'Drawdown máximo', tip: 'Maior queda registrada de um topo até o fundo seguinte dentro do período.', get: (s) => fmtPct(s.maxDrawdownPct), color: () => S.red },
+    { label: 'Drawdown atual', tip: 'Quanto o preço está abaixo do maior topo do período neste momento.', get: (s) => fmtPct(s.currentDrawdownPct), color: (s) => s.currentDrawdownPct < -0.5 ? S.red : S.dim },
+    { label: 'Tempo em drawdown', tip: 'Fração do período em que o preço esteve abaixo do topo anterior.', get: (s) => `${fmt(s.timeInDrawdownPct, 0)}%` },
+    { label: 'Volatilidade média (anualizada)', tip: 'O quanto o preço costuma oscilar, projetado em escala anual. Mede risco, não direção.', get: (s) => `${fmt(s.annualVolPct, 0)}%` },
+    { label: 'Volatilidade atual (anualizada)', tip: 'Oscilação recente do preço, projetada em escala anual.', get: (s) => `${fmt(s.currentVolPct, 0)}%` },
+    { label: 'Retorno/risco (Sharpe simpl.)', tip: 'Retorno anualizado dividido pela volatilidade anualizada. Maior = mais retorno por unidade de risco.', get: (s) => fmt(s.sharpe), color: (s) => s.sharpe >= 0 ? S.green : S.red },
+    { label: 'Períodos positivos', tip: 'Percentual de candles que fecharam em alta em relação ao anterior.', get: (s) => `${fmt(s.pctPositive, 0)}%` },
+    { label: `Melhor ${tf.unitLabel}`, tip: 'Maior alta registrada nessa unidade de tempo dentro do período.', get: (s) => fmtPct(s.bestUnitPct), color: () => S.green },
+    { label: `Pior ${tf.unitLabel}`, tip: 'Maior queda registrada nessa unidade de tempo dentro do período.', get: (s) => fmtPct(s.worstUnitPct), color: () => S.red },
   ];
 
   return (
@@ -321,11 +422,11 @@ export default function AnalisePage() {
       {/* Header */}
       <header style={{
         borderBottom: `1px solid ${S.border}`, background: S.panel,
-        padding: '12px 20px', display: 'flex', alignItems: 'center', gap: 12,
+        padding: '12px 20px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
       }}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/logo.png" alt="Logo" style={{ height: 32, width: 'auto', display: 'block' }} />
-        <div>
+        <div style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>Análise de mercado</div>
           <div style={{ fontSize: 11, color: S.dim }}>histórico · volatilidade · comparação</div>
         </div>
@@ -333,53 +434,64 @@ export default function AnalisePage() {
 
       <div style={{ maxWidth: 1080, margin: '0 auto', padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-        <p style={{ color: S.dim, fontSize: 13, margin: 0, maxWidth: 780 }}>
+        <p style={{ color: S.dim, fontSize: 13, margin: '0 auto', maxWidth: 780, textAlign: 'center' }}>
           Dados da Binance. Volatilidade realizada em {tf.windowLabel}, anualizada; regime
           classificado contra os quartis do próprio histórico. Ferramenta de análise —
           volatilidade mede amplitude de risco, não direção futura de preço.
         </p>
 
         {/* Controles */}
-        <Card style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-end' }}>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
+        <Card style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-end', justifyContent: 'center' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim, textAlign: 'center' }}>
             Ativo A{select(symbolA, setSymbolA, SYMBOLS.filter((s) => s !== 'nenhum').map((s) => ({ value: s, label: s })))}
           </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim, textAlign: 'center' }}>
             Ativo B (comparação){select(symbolB, setSymbolB, SYMBOLS.map((s) => ({ value: s, label: s })))}
           </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
-            Timeframe{select(timeframe, (v) => setTimeframe(v as Timeframe),
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim, textAlign: 'center' }}>
+            Timeframe{select(timeframe, onTimeframeChange,
               (Object.keys(TIMEFRAMES) as Timeframe[]).map((k) => ({ value: k, label: TIMEFRAMES[k].label })))}
           </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
-            Período (meses){select(String(months), (v) => setMonths(+v), PERIOD_OPTIONS.map((m) => ({ value: String(m), label: String(m) })))}
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim, textAlign: 'center' }}>
+            Período{select(String(Math.min(periodIdx, currentPeriods.length - 1)), (v) => setPeriodIdx(+v),
+              currentPeriods.map((p, i) => ({ value: String(i), label: p.label })))}
           </label>
           <button onClick={run} disabled={status === 'loading'}
             style={{ background: S.a, color: '#1a1206', border: 'none', borderRadius: 8, padding: '10px 22px', fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: status === 'loading' ? 0.6 : 1 }}>
             {status === 'loading' ? progress || 'Carregando...' : 'Analisar'}
           </button>
-          {status === 'error' && <span style={{ color: S.red, fontSize: 13, flexBasis: '100%' }}>{error}</span>}
+          {status === 'error' && <span style={{ color: S.red, fontSize: 13, flexBasis: '100%', textAlign: 'center' }}>{error}</span>}
         </Card>
 
         {status === 'done' && statsA && (
           <>
-            {/* Regimes */}
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            {/* Regimes + correlação */}
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
               {[statsA, statsB].filter((s): s is AssetStats => !!s).map((s) => (
-                <Card key={s.symbol} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px' }}>
+                <Card key={s.symbol} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, padding: '12px 16px' }}>
                   <strong style={{ fontSize: 15 }}>{s.symbol}</strong>
                   <RegimeBadge regime={s.regime} />
                   <span style={{ color: S.dim, fontSize: 13 }}>
-                    vol. atual {fmt(s.currentVolPct, 0)}% a.a. · média do período {fmt(s.annualVolPct, 0)}%
+                    vol. atual {fmt(s.currentVolPct, 0)}% a.a. · média {fmt(s.annualVolPct, 0)}%
                   </span>
                 </Card>
               ))}
+              {corr !== null && statsB && (
+                <Card
+                  title="Correlação de Pearson entre os retornos dos dois ativos. Perto de 1 = movem juntos (diversificar entre eles adianta pouco); perto de 0 = independentes; negativa = movem em direções opostas."
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, padding: '12px 16px', cursor: 'help' }}
+                >
+                  <strong style={{ fontSize: 14 }}>Correlação {statsA.symbol} × {statsB.symbol}</strong>
+                  <span style={{ fontSize: 15, fontWeight: 700, color: Math.abs(corr) >= 0.7 ? S.a : S.text }}>{fmt(corr)}</span>
+                  <span style={{ color: S.dim, fontSize: 13 }}>({correlationLabel(corr)})</span>
+                </Card>
+              )}
             </div>
 
             {/* Performance */}
             <Card style={{ height: 340 }}>
-              <div style={{ fontSize: 12, color: S.dim, marginBottom: 8 }}>
-                Performance (base 100 no início) — candles {tf.label}
+              <div style={{ fontSize: 12, color: S.dim, marginBottom: 8, textAlign: 'center' }}>
+                Performance (base 100 no início) — candles {tf.label} · {usedPeriodLabel}
               </div>
               <ResponsiveContainer width="100%" height="90%">
                 <LineChart data={charts.perf}>
@@ -397,7 +509,7 @@ export default function AnalisePage() {
 
             {/* Volatilidade */}
             <Card style={{ height: 300 }}>
-              <div style={{ fontSize: 12, color: S.dim, marginBottom: 8 }}>
+              <div style={{ fontSize: 12, color: S.dim, marginBottom: 8, textAlign: 'center' }}>
                 Volatilidade realizada anualizada (%) — {tf.windowLabel}
               </div>
               <ResponsiveContainer width="100%" height="88%">
@@ -417,16 +529,16 @@ export default function AnalisePage() {
             <Card>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>
                 <thead>
-                  <tr style={{ color: S.dim, textAlign: 'right' }}>
-                    <th style={{ textAlign: 'left', padding: '6px 8px' }}>Métrica ({months} {months === 1 ? 'mês' : 'meses'} · {tf.label})</th>
-                    <th style={{ padding: '6px 8px', color: S.a }}>{statsA.symbol}</th>
-                    {statsB && <th style={{ padding: '6px 8px', color: S.b }}>{statsB.symbol}</th>}
+                  <tr style={{ color: S.dim, textAlign: 'center' }}>
+                    <th style={{ padding: '6px 8px', textAlign: 'center' }}>Métrica ({usedPeriodLabel} · {tf.label})</th>
+                    <th style={{ padding: '6px 8px', color: S.a, textAlign: 'center' }}>{statsA.symbol}</th>
+                    {statsB && <th style={{ padding: '6px 8px', color: S.b, textAlign: 'center' }}>{statsB.symbol}</th>}
                   </tr>
                 </thead>
                 <tbody>
                   {statRows.map((row) => (
-                    <tr key={row.label} style={{ borderTop: `1px solid ${S.border}`, textAlign: 'right' }}>
-                      <td style={{ textAlign: 'left', padding: '8px', color: S.dim }}>{row.label}</td>
+                    <tr key={row.label} style={{ borderTop: `1px solid ${S.border}`, textAlign: 'center' }}>
+                      <td title={row.tip} style={{ padding: '8px', color: S.dim, cursor: 'help', textAlign: 'center' }}>{row.label}</td>
                       <td style={{ padding: '8px', color: row.color?.(statsA) }}>{row.get(statsA)}</td>
                       {statsB && <td style={{ padding: '8px', color: row.color?.(statsB) }}>{row.get(statsB)}</td>}
                     </tr>
@@ -437,7 +549,7 @@ export default function AnalisePage() {
 
             {/* Relatório IA */}
             <Card>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center' }}>
                 <div>
                   <div style={{ fontSize: 15, fontWeight: 600 }}>Relatório analítico</div>
                   <div style={{ fontSize: 12, color: S.dim }}>Gerado por IA a partir das métricas acima. Descritivo, não recomendação.</div>
@@ -448,7 +560,7 @@ export default function AnalisePage() {
                 </button>
               </div>
               {report && (
-                <div style={{ marginTop: 14, fontSize: 14, lineHeight: 1.7, whiteSpace: 'pre-wrap', borderTop: `1px solid ${S.border}`, paddingTop: 14 }}>
+                <div style={{ marginTop: 14, fontSize: 14, lineHeight: 1.7, whiteSpace: 'pre-wrap', borderTop: `1px solid ${S.border}`, paddingTop: 14, textAlign: 'left' }}>
                   {report}
                 </div>
               )}
