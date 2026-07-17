@@ -189,10 +189,8 @@ export default function AlertasPage() {
   return (
     <main style={{ minHeight: '100vh', background: S.bg, color: S.text, fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
 
-      <header style={{
-        borderBottom: `1px solid ${S.border}`, background: S.panel,
-        padding: '12px 20px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
-      }}>
+      <header style={{ borderBottom: `1px solid ${S.border}`, background: S.panel, padding: '12px 20px', position: 'relative' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
         <a href="/" style={{ display: 'flex', alignItems: 'center', gap: 12, textDecoration: 'none', color: S.text }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/logo.png" alt="VigIA Trade" style={{ height: 32, width: 'auto', display: 'block' }} />
@@ -207,6 +205,12 @@ export default function AlertasPage() {
             Sair
           </button>
         )}
+        </div>
+        <nav style={{ display: 'flex', justifyContent: 'center', gap: 20, marginTop: 8, fontSize: 13 }}>
+          <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>Análise</a>
+          <span style={{ color: S.a, fontWeight: 600 }}>Alertas</span>
+          <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>Conta Binance</a>
+        </nav>
       </header>
 
       <div style={{ maxWidth: 720, margin: '0 auto', padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
