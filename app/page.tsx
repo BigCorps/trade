@@ -1431,15 +1431,6 @@ export default function AnalisePage() {
                   Day Trade
                 </div>
 
-                <div
-                  style={{
-                    fontSize: 10,
-                    color: S.dim,
-                    marginTop: 2,
-                  }}
-                >
-                  5m · 15m · 30m · 1h
-                </div>
               </Card>
             </a>
           </div>
