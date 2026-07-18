@@ -1422,9 +1422,9 @@ export default function AnalisePage() {
 
                 <div
                   style={{
-                    fontSize: 15,
-                    fontWeight: 600,
-                    marginTop: 4,
+                    fontSize: 14,
+                    fontWeight: 500,
+                    marginTop: 3,
                     color: S.b,
                   }}
                 >
