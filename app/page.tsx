@@ -1396,6 +1396,52 @@ export default function AnalisePage() {
                 )}
               </Card>
             </a>
+
+            <a
+              href="/daytrade"
+              style={{ textDecoration: 'none', color: S.text }}
+            >
+              <Card
+                style={{
+                  padding: '10px 16px',
+                  textAlign: 'center',
+                  minWidth: 140,
+                  cursor: 'pointer',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: S.dim,
+                    textTransform: 'uppercase',
+                    letterSpacing: 0.6,
+                  }}
+                >
+                  Análise rápida
+                </div>
+
+                <div
+                  style={{
+                    fontSize: 17,
+                    fontWeight: 700,
+                    marginTop: 4,
+                    color: S.b,
+                  }}
+                >
+                  Day Trade
+                </div>
+
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: S.dim,
+                    marginTop: 2,
+                  }}
+                >
+                  5m · 15m · 30m · 1h
+                </div>
+              </Card>
+            </a>
           </div>
         )}
 
