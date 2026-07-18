@@ -1342,25 +1342,32 @@ export default function DayTradePage() {
           </div>
         </div>
 
-        <nav
-          style={{
-            display: 'flex',
-            justifyContent: 'center',
-            gap: 20,
-            marginTop: 8,
-            fontSize: 13,
-            flexWrap: 'wrap',
-          }}
-        >
-          <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
-            Análise
-          </a>
-          <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
-            Alertas
-          </a>
-          <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
-            Conta Binance
-          </a>
+<nav
+  style={{
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 20,
+    marginTop: 8,
+    fontSize: 13,
+  }}
+>
+<a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
+  Análise
+</a>
+
+<span style={{ color: S.b, fontWeight: 600 }}>
+  Day Trade
+</span>
+
+<a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
+  Alertas
+</a>
+
+<a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
+  Conta Binance
+</a>
           {!session ? (
             <a href="/alertas" style={{ color: S.green, textDecoration: 'none' }}>
               Entrar
