@@ -15,6 +15,8 @@
  * - Retorno, drawdown, amplitude, correlação e extremos intradiários.
  * - Resumo descritivo local, sem custo de IA e sem recomendação.
  * - Histórico separado no localStorage, sem misturar com análises de longo prazo.
+ * - Playbook educacional de tendência com rompimento, checklist e semáforo.
+ * - Plano de entrada, invalidação, alvo e calculadora de tamanho da posição.
  */
 
 import {
@@ -39,6 +41,25 @@ import {
   YAxis,
 } from 'recharts';
 import { getSupabase } from '../../lib/supabaseClient';
+import {
+  DAYTRADE_TIMEFRAME_INDICATOR_OPTIONS,
+  getRequiredCandleCount,
+  type DayTradeIndicators,
+} from '../../lib/daytrade/indicators';
+import {
+  analyzeTrendBreakout,
+  TREND_BREAKOUT_STATUS_LABELS,
+  type TrendBreakoutEvaluation,
+  type TrendBreakoutStatus,
+} from '../../lib/daytrade/strategies/trendBreakout';
+import {
+  calculatePositionSizeFromPlan,
+  type PositionSizingResult,
+} from '../../lib/daytrade/risk';
+import type {
+  TrendBreakoutBacktestResult,
+  TrendBreakoutBacktestTrade,
+} from '../../lib/daytrade/backtest';
 
 // ---------------------------------------------------------------------------
 // Configuração
@@ -133,6 +154,16 @@ const MIN_VISIBLE_CANDLES = 20;
 const HISTORY_KEY = 'vigia_daytrade_history_v1';
 const HISTORY_LIMIT = 20;
 
+const JOURNAL_LIMIT = 30;
+const BACKTEST_DEFAULT_CANDLES = 1500;
+
+type RemoteActionStatus = 'idle' | 'loading' | 'success' | 'error';
+type DayTradeAlertableStatus =
+  | 'observar'
+  | 'condicoes_atendidas'
+  | 'entrada_atrasada'
+  | 'invalidado';
+
 // ---------------------------------------------------------------------------
 // Tipos
 // ---------------------------------------------------------------------------
@@ -195,6 +226,147 @@ interface RunOverride {
   periodLabel: string;
 }
 
+
+interface RemoteActionState {
+  status: RemoteActionStatus;
+  message: string;
+}
+
+interface ServerSetupRecord {
+  id: string;
+  symbol: string;
+  timeframe: Timeframe;
+  strategy: string;
+  status: TrendBreakoutStatus;
+  score: number;
+  total_conditions: number;
+  candle_open_time: string;
+  candle_close_time: string;
+  criado_em?: string;
+  atualizado_em?: string;
+}
+
+interface TestnetSizingPreview {
+  quoteAmountUsdt?: number;
+  estimatedQuantity?: number;
+  estimatedTotalRiskUsdt?: number;
+  estimatedTotalRiskPct?: number;
+  grossRiskRewardRatio?: number;
+  stopDistancePct?: number;
+  targetDistancePct?: number;
+  warnings?: string[];
+  [key: string]: unknown;
+}
+
+interface TestnetPreviewPayload {
+  setup: {
+    id: string;
+    symbol: string;
+    timeframe: Timeframe;
+    strategy: string;
+    status: string;
+    candle_close_time: string;
+    expires_at: string;
+    age_ms: number;
+  };
+  plan: {
+    entry_reference: number;
+    stop_reference: number;
+    target_reference: number;
+    saved_risk_reward_ratio: number;
+    stop_pct: number;
+    target_pct: number;
+    gross_risk_reward_ratio: number;
+    atr: number;
+    breakout_level: number;
+    latest_acceptable_entry: number;
+  };
+  market: {
+    public_price: number;
+    public_source: string;
+    testnet_price: number;
+  };
+  account: {
+    environment: 'testnet';
+    total_usdt: number;
+    free_usdt: number;
+    locked_usdt: number;
+    max_order_usdt: number;
+  };
+  sizing: TestnetSizingPreview;
+  execution: {
+    mode: 'testnet';
+    request_id: string;
+    quote_amount: number;
+    stop_pct: number;
+    target_pct: number;
+    requires_confirmation: boolean;
+  };
+}
+
+interface TestnetPreviewResponse {
+  ok: boolean;
+  action: 'preview';
+  executable: boolean;
+  preview: TestnetPreviewPayload;
+}
+
+interface DayTradeJournalRecord {
+  id: string;
+  setup_id: string | null;
+  order_id: string | null;
+  mode: 'observacao' | 'testnet' | 'real';
+  status: string;
+  symbol: string;
+  timeframe: Timeframe;
+  strategy: string;
+  entry_reference: number | string;
+  stop_reference: number | string;
+  target_reference: number | string;
+  risk_reward_ratio: number | string;
+  planned_quantity: number | string | null;
+  planned_notional: number | string | null;
+  risk_usdt: number | string | null;
+  risk_percent: number | string | null;
+  entry_price: number | string | null;
+  exit_price: number | string | null;
+  quantity: number | string | null;
+  fees_usdt: number | string;
+  pnl_usdt: number | string | null;
+  result_r: number | string | null;
+  notes: string | null;
+  aberto_em: string | null;
+  fechado_em: string | null;
+  criado_em: string;
+  atualizado_em: string;
+}
+
+interface DayTradeAlertRuleRecord {
+  id: string;
+  symbol: string;
+  timeframe: Timeframe;
+  strategy: string;
+  notify_statuses: DayTradeAlertableStatus[];
+  canal: 'email';
+  ativo: boolean;
+  cooldown_minutes: number;
+  last_status: TrendBreakoutStatus | null;
+  last_candle_open_time: string | null;
+  last_triggered_at: string | null;
+  criado_em: string;
+  atualizado_em: string;
+}
+
+interface BacktestApiResponse {
+  ok: boolean;
+  symbol: string;
+  timeframe: Timeframe;
+  requested_candles: number;
+  execution_ms: number;
+  generated_at: string;
+  result: TrendBreakoutBacktestResult;
+}
+
 // ---------------------------------------------------------------------------
 // Visual
 // ---------------------------------------------------------------------------
@@ -217,6 +389,24 @@ const S = {
     'volátil': '#e8a13c',
     extremo: '#d05555',
   } as Record<Regime, string>,
+};
+
+const SETUP_STATUS_COLORS: Record<TrendBreakoutStatus, string> = {
+  dados_insuficientes: S.dim,
+  aguardar: S.yellow,
+  observar: S.b,
+  condicoes_atendidas: S.green,
+  entrada_atrasada: S.a,
+  invalidado: S.red,
+};
+
+const SETUP_STATUS_ICONS: Record<TrendBreakoutStatus, string> = {
+  dados_insuficientes: '○',
+  aguardar: '●',
+  observar: '◉',
+  condicoes_atendidas: '✓',
+  entrada_atrasada: '!',
+  invalidado: '×',
 };
 
 const fmt = (value: number, digits = 2) =>
@@ -247,6 +437,15 @@ const fmtDateTime = (iso: string) =>
     hour: '2-digit',
     minute: '2-digit',
   });
+
+const parseUserNumber = (value: string): number =>
+  Number(value.trim().replace(',', '.'));
+
+const formatConditionValue = (value: number | string | null): string => {
+  if (value === null) return '—';
+  if (typeof value === 'string') return value;
+  return fmt(value, Math.abs(value) >= 100 ? 2 : 3);
+};
 
 function Card({
   children,
@@ -294,6 +493,34 @@ function RegimeBadge({ regime }: { regime: Regime }) {
   );
 }
 
+function SetupStatusBadge({ status }: { status: TrendBreakoutStatus }) {
+  const color = SETUP_STATUS_COLORS[status];
+  const item = TREND_BREAKOUT_STATUS_LABELS[status];
+
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 7,
+        background: `${color}1f`,
+        color,
+        border: `1px solid ${color}66`,
+        borderRadius: 999,
+        padding: '7px 14px',
+        fontSize: 13,
+        fontWeight: 800,
+        textTransform: 'uppercase',
+        letterSpacing: 0.6,
+      }}
+    >
+      <span aria-hidden="true">{SETUP_STATUS_ICONS[status]}</span>
+      {item.label}
+    </span>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Binance e cálculos
 // ---------------------------------------------------------------------------
@@ -310,7 +537,13 @@ async function fetchKlines(
 
   // A janela anterior serve exclusivamente para calcular a volatilidade desde
   // o primeiro ponto visível. Esses candles não entram nas demais métricas.
-  const warmupMs = (config.volWindow + 4) * config.intervalMs;
+  const indicatorOptions = DAYTRADE_TIMEFRAME_INDICATOR_OPTIONS[timeframe];
+  const requiredIndicatorCandles = getRequiredCandleCount(indicatorOptions);
+  const warmupCandles = Math.max(
+    config.volWindow + 4,
+    requiredIndicatorCandles + 4,
+  );
+  const warmupMs = warmupCandles * config.intervalMs;
   const requestedStart = visibleStart - warmupMs;
   const candlesByTime = new Map<number, Candle>();
 
@@ -673,6 +906,85 @@ function buildReport(
   ].join('\n\n');
 }
 
+
+function nullableNumber(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function formatDateTime(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === '') return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('pt-BR');
+}
+
+function journalStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    planejada: 'Planejada',
+    aguardando_entrada: 'Aguardando entrada',
+    ordem_enviada: 'Ordem enviada',
+    aberta: 'Aberta e protegida',
+    alvo_executado: 'Alvo executado',
+    stop_executado: 'Stop executado',
+    encerrada_manual: 'Encerrada manualmente',
+    cancelada: 'Cancelada',
+    erro: 'Erro',
+  };
+
+  return labels[status] ?? status.replaceAll('_', ' ');
+}
+
+function journalStatusColor(status: string): string {
+  if (status === 'alvo_executado') return S.green;
+  if (status === 'stop_executado' || status === 'erro') return S.red;
+  if (status === 'aberta') return S.b;
+  if (status === 'cancelada') return S.dim;
+  return S.yellow;
+}
+
+function backtestExitLabel(reason: TrendBreakoutBacktestTrade['exitReason']): string {
+  const labels: Record<TrendBreakoutBacktestTrade['exitReason'], string> = {
+    stop: 'Stop',
+    target: 'Alvo',
+    maximum_holding: 'Tempo máximo',
+    end_of_data: 'Fim dos dados',
+  };
+
+  return labels[reason];
+}
+
+async function functionErrorMessage(error: unknown): Promise<string> {
+  const fallback =
+    error instanceof Error ? error.message : 'A função retornou um erro.';
+  const context = (error as { context?: { json?: () => Promise<unknown>; text?: () => Promise<string> } } | null)?.context;
+
+  if (context?.json) {
+    try {
+      const body = await context.json() as {
+        error?: string;
+        message?: string;
+        code?: string;
+        details?: { message?: string };
+      };
+      const message = body?.error ?? body?.message ?? body?.details?.message;
+      if (message) return body?.code ? `${message} (${body.code})` : message;
+    } catch {
+      // O corpo pode já ter sido consumido pelo cliente.
+    }
+  }
+
+  if (context?.text) {
+    try {
+      const body = await context.text();
+      if (body) return body.slice(0, 500);
+    } catch {
+      // Mantém a mensagem original.
+    }
+  }
+
+  return fallback;
+}
+
 // ---------------------------------------------------------------------------
 // Página
 // ---------------------------------------------------------------------------
@@ -700,6 +1012,60 @@ export default function DayTradePage() {
   const [error, setError] = useState('');
   const [report, setReport] = useState('');
   const [history, setHistory] = useState<HistoryRecord[]>([]);
+
+  // Valores educacionais informados manualmente. Nenhum saldo é movimentado.
+  const [accountBalance, setAccountBalance] = useState('1000');
+  const [availableBalance, setAvailableBalance] = useState('1000');
+  const [riskPercent, setRiskPercent] = useState('1');
+
+
+  // Persistência e execução controlada.
+  const [serverSetup, setServerSetup] = useState<ServerSetupRecord | null>(null);
+  const [serverAction, setServerAction] = useState<RemoteActionState>({
+    status: 'idle',
+    message: '',
+  });
+  const [testnetPreview, setTestnetPreview] = useState<TestnetPreviewPayload | null>(null);
+  const [testnetAction, setTestnetAction] = useState<RemoteActionState>({
+    status: 'idle',
+    message: '',
+  });
+  const [confirmTestnet, setConfirmTestnet] = useState(false);
+
+  // Diário sincronizado pelo monitorar-ordens.
+  const [journal, setJournal] = useState<DayTradeJournalRecord[]>([]);
+  const [journalAction, setJournalAction] = useState<RemoteActionState>({
+    status: 'idle',
+    message: '',
+  });
+
+  // Regras automáticas de alerta do playbook.
+  const [alertRule, setAlertRule] = useState<DayTradeAlertRuleRecord | null>(null);
+  const [alertEnabled, setAlertEnabled] = useState(true);
+  const [alertCooldownMinutes, setAlertCooldownMinutes] = useState('30');
+  const [alertNotifyStatuses, setAlertNotifyStatuses] = useState<DayTradeAlertableStatus[]>([
+    'condicoes_atendidas',
+  ]);
+  const [alertAction, setAlertAction] = useState<RemoteActionState>({
+    status: 'idle',
+    message: '',
+  });
+
+  // Backtest server-side com o mesmo playbook.
+  const [backtestCandleCount, setBacktestCandleCount] = useState(
+    String(BACKTEST_DEFAULT_CANDLES),
+  );
+  const [backtestInitialCapital, setBacktestInitialCapital] = useState('1000');
+  const [backtestRiskPercent, setBacktestRiskPercent] = useState('1');
+  const [backtestFeeRate, setBacktestFeeRate] = useState('0.1');
+  const [backtestSlippage, setBacktestSlippage] = useState('0.05');
+  const [backtestPriority, setBacktestPriority] = useState<'stop_first' | 'target_first'>('stop_first');
+  const [backtestMaximumHolding, setBacktestMaximumHolding] = useState('0');
+  const [backtestResponse, setBacktestResponse] = useState<BacktestApiResponse | null>(null);
+  const [backtestAction, setBacktestAction] = useState<RemoteActionState>({
+    status: 'idle',
+    message: '',
+  });
 
   const [liveA, setLiveA] = useState<LiveCandle | null>(null);
   const [liveB, setLiveB] = useState<LiveCandle | null>(null);
@@ -790,6 +1156,13 @@ export default function DayTradePage() {
     setReport('');
     setLiveA(null);
     setLiveB(null);
+    setServerSetup(null);
+    setServerAction({ status: 'idle', message: '' });
+    setTestnetPreview(null);
+    setTestnetAction({ status: 'idle', message: '' });
+    setConfirmTestnet(false);
+    setBacktestResponse(null);
+    setBacktestAction({ status: 'idle', message: '' });
 
     try {
       const [candlesA, candlesB] = await Promise.all([
@@ -956,9 +1329,16 @@ export default function DayTradePage() {
           if (live.isClosed) {
             setClockTick(Date.now());
             const config = TIMEFRAMES[usedTimeframe];
+            const requiredIndicatorCandles = getRequiredCandleCount(
+              DAYTRADE_TIMEFRAME_INDICATOR_OPTIONS[usedTimeframe],
+            );
+            const retainedWarmupCandles = Math.max(
+              config.volWindow + 6,
+              requiredIndicatorCandles + 6,
+            );
             const minimumOpenTime = Date.now()
               - usedPeriod.durationMs
-              - (config.volWindow + 6) * config.intervalMs;
+              - retainedWarmupCandles * config.intervalMs;
             const closed: Candle = {
               openTime: live.openTime,
               closeTime: live.closeTime,
@@ -1061,9 +1441,615 @@ export default function DayTradePage() {
     clockTick,
   ]);
 
+  const setupAnalysis = useMemo<{
+    indicators: DayTradeIndicators | null;
+    evaluation: TrendBreakoutEvaluation | null;
+    error: string;
+  }>(() => {
+    if (rawA.length < 2) {
+      return { indicators: null, evaluation: null, error: '' };
+    }
+
+    try {
+      const result = analyzeTrendBreakout({
+        candles: rawA,
+        indicatorOptions:
+          DAYTRADE_TIMEFRAME_INDICATOR_OPTIONS[usedTimeframe],
+        livePrice: liveA?.close ?? null,
+      });
+
+      return {
+        indicators: result.indicators,
+        evaluation: result.evaluation,
+        error: '',
+      };
+    } catch (setupError) {
+      return {
+        indicators: null,
+        evaluation: null,
+        error:
+          setupError instanceof Error
+            ? setupError.message
+            : 'Não foi possível avaliar o playbook.',
+      };
+    }
+  }, [rawA, usedTimeframe, liveA?.close]);
+
+
+  const loadJournal = useCallback(async () => {
+    if (!session) {
+      setJournal([]);
+      setJournalAction({ status: 'idle', message: '' });
+      return;
+    }
+
+    setJournalAction({ status: 'loading', message: 'Atualizando diário...' });
+
+    const { data, error: journalError } = await supabase
+      .from('daytrade_journal')
+      .select(
+        'id,setup_id,order_id,mode,status,symbol,timeframe,strategy,entry_reference,stop_reference,target_reference,risk_reward_ratio,planned_quantity,planned_notional,risk_usdt,risk_percent,entry_price,exit_price,quantity,fees_usdt,pnl_usdt,result_r,notes,aberto_em,fechado_em,criado_em,atualizado_em',
+      )
+      .order('criado_em', { ascending: false })
+      .limit(JOURNAL_LIMIT);
+
+    if (journalError) {
+      setJournalAction({
+        status: 'error',
+        message: `Não foi possível carregar o diário: ${journalError.message}`,
+      });
+      return;
+    }
+
+    setJournal((data ?? []) as DayTradeJournalRecord[]);
+    setJournalAction({
+      status: 'success',
+      message: `${(data ?? []).length} registro(s) carregado(s).`,
+    });
+  }, [session, supabase]);
+
+  const loadAlertRule = useCallback(async () => {
+    if (!session) {
+      setAlertRule(null);
+      setAlertAction({ status: 'idle', message: '' });
+      return;
+    }
+
+    const activeSymbol = status === 'done' ? usedSymbolA : symbolA;
+    const activeTimeframe = status === 'done' ? usedTimeframe : timeframe;
+
+    setAlertAction({ status: 'loading', message: 'Consultando regra de alerta...' });
+
+    const { data, error: alertError } = await supabase
+      .from('daytrade_alert_rules')
+      .select(
+        'id,symbol,timeframe,strategy,notify_statuses,canal,ativo,cooldown_minutes,last_status,last_candle_open_time,last_triggered_at,criado_em,atualizado_em',
+      )
+      .eq('symbol', activeSymbol)
+      .eq('timeframe', activeTimeframe)
+      .eq('strategy', 'trend_breakout')
+      .maybeSingle();
+
+    if (alertError) {
+      setAlertRule(null);
+      setAlertAction({
+        status: 'error',
+        message: `Não foi possível consultar alertas: ${alertError.message}`,
+      });
+      return;
+    }
+
+    const rule = (data ?? null) as DayTradeAlertRuleRecord | null;
+    setAlertRule(rule);
+    setAlertEnabled(rule?.ativo ?? true);
+    setAlertCooldownMinutes(String(rule?.cooldown_minutes ?? 30));
+    setAlertNotifyStatuses(
+      rule?.notify_statuses?.length
+        ? rule.notify_statuses
+        : ['condicoes_atendidas'],
+    );
+    setAlertAction({
+      status: 'success',
+      message: rule ? 'Regra existente carregada.' : 'Nenhuma regra criada para este mercado.',
+    });
+  }, [
+    session,
+    status,
+    usedSymbolA,
+    usedTimeframe,
+    symbolA,
+    timeframe,
+    supabase,
+  ]);
+
+  useEffect(() => {
+    void loadJournal();
+  }, [loadJournal]);
+
+  useEffect(() => {
+    void loadAlertRule();
+  }, [loadAlertRule]);
+
+  const persistCurrentSetup = useCallback(async (
+    announce = true,
+  ): Promise<ServerSetupRecord> => {
+    if (!session) throw new Error('Entre na sua conta para salvar o setup.');
+    if (status !== 'done' || rawA.length < 2) {
+      throw new Error('Execute primeiro a análise do ativo e timeframe selecionados.');
+    }
+
+    if (announce) {
+      setServerAction({ status: 'loading', message: 'Reavaliando e salvando o setup...' });
+    }
+
+    const { data, error: invokeError } = await supabase.functions.invoke(
+      'avaliar-daytrade',
+      {
+        body: {
+          symbol: usedSymbolA,
+          timeframe: usedTimeframe,
+          persist: true,
+          live_price: liveA?.close ?? undefined,
+        },
+      },
+    );
+
+    if (invokeError) throw new Error(await functionErrorMessage(invokeError));
+    if (!data?.ok || !data?.setup?.id) {
+      throw new Error(data?.error ?? 'A função não retornou o setup persistido.');
+    }
+
+    const saved = data.setup as ServerSetupRecord;
+    setServerSetup(saved);
+
+    if (announce) {
+      setServerAction({
+        status: 'success',
+        message: `Setup salvo como “${TREND_BREAKOUT_STATUS_LABELS[saved.status]?.label ?? saved.status}”.`,
+      });
+    }
+
+    return saved;
+  }, [
+    session,
+    status,
+    rawA.length,
+    supabase,
+    usedSymbolA,
+    usedTimeframe,
+    liveA?.close,
+  ]);
+
+  const handlePersistSetup = useCallback(async () => {
+    try {
+      await persistCurrentSetup(true);
+    } catch (persistError) {
+      setServerAction({
+        status: 'error',
+        message: persistError instanceof Error ? persistError.message : 'Falha ao salvar o setup.',
+      });
+    }
+  }, [persistCurrentSetup]);
+
+  const handlePreviewTestnet = useCallback(async () => {
+    setTestnetAction({ status: 'loading', message: 'Validando conta, mercado e risco na Testnet...' });
+    setTestnetPreview(null);
+    setConfirmTestnet(false);
+
+    try {
+      const setup = await persistCurrentSetup(false);
+      setServerAction({
+        status: 'success',
+        message: `Setup ${setup.symbol}/${setup.timeframe} atualizado antes da prévia.`,
+      });
+
+      const { data, error: invokeError } = await supabase.functions.invoke(
+        'executar-daytrade-testnet',
+        {
+          body: {
+            action: 'preview',
+            setup_id: setup.id,
+            risk_percent: parseUserNumber(riskPercent),
+          },
+        },
+      );
+
+      if (invokeError) throw new Error(await functionErrorMessage(invokeError));
+      if (!data?.ok || !data?.preview) {
+        throw new Error(data?.error ?? 'A Testnet não retornou uma prévia executável.');
+      }
+
+      const response = data as TestnetPreviewResponse;
+      setTestnetPreview(response.preview);
+      setTestnetAction({
+        status: 'success',
+        message: 'Prévia aprovada. Revise os valores antes de confirmar a ordem simulada.',
+      });
+    } catch (previewError) {
+      setTestnetAction({
+        status: 'error',
+        message: previewError instanceof Error ? previewError.message : 'Falha na prévia Testnet.',
+      });
+    }
+  }, [persistCurrentSetup, riskPercent, supabase]);
+
+  const handleExecuteTestnet = useCallback(async () => {
+    if (!testnetPreview) {
+      setTestnetAction({ status: 'error', message: 'Gere uma prévia válida antes da execução.' });
+      return;
+    }
+    if (!confirmTestnet) {
+      setTestnetAction({ status: 'error', message: 'Marque a confirmação explícita da Testnet.' });
+      return;
+    }
+
+    setTestnetAction({ status: 'loading', message: 'Enviando compra e proteção OCO para a Binance Spot Testnet...' });
+
+    try {
+      const { data, error: invokeError } = await supabase.functions.invoke(
+        'executar-daytrade-testnet',
+        {
+          body: {
+            action: 'execute',
+            setup_id: testnetPreview.setup.id,
+            risk_percent: parseUserNumber(riskPercent),
+            confirm_testnet: true,
+          },
+        },
+      );
+
+      if (invokeError) throw new Error(await functionErrorMessage(invokeError));
+      if (!data?.ok) {
+        throw new Error(data?.error ?? 'A ordem Testnet não foi confirmada.');
+      }
+
+      const duplicate = Boolean(data?.duplicate);
+      setTestnetAction({
+        status: 'success',
+        message: duplicate
+          ? 'Este setup já havia sido processado; nenhuma compra duplicada foi criada.'
+          : 'Ordem enviada à Testnet. O monitor acompanhará a OCO e atualizará o diário.',
+      });
+      setConfirmTestnet(false);
+      await loadJournal();
+    } catch (executeError) {
+      setTestnetAction({
+        status: 'error',
+        message: executeError instanceof Error ? executeError.message : 'Falha na execução Testnet.',
+      });
+      await loadJournal();
+    }
+  }, [
+    testnetPreview,
+    confirmTestnet,
+    supabase,
+    riskPercent,
+    loadJournal,
+  ]);
+
+  const toggleAlertStatus = useCallback((value: DayTradeAlertableStatus) => {
+    setAlertNotifyStatuses((current) => {
+      if (current.includes(value)) {
+        return current.length === 1
+          ? current
+          : current.filter((statusValue) => statusValue !== value);
+      }
+      return [...current, value];
+    });
+  }, []);
+
+  const handleSaveAlertRule = useCallback(async () => {
+    if (!session) {
+      setAlertAction({ status: 'error', message: 'Entre na sua conta para criar alertas.' });
+      return;
+    }
+
+    const cooldown = Number(alertCooldownMinutes);
+    if (!Number.isInteger(cooldown) || cooldown < 0 || cooldown > 1440) {
+      setAlertAction({ status: 'error', message: 'O cooldown deve ser um inteiro entre 0 e 1440 minutos.' });
+      return;
+    }
+
+    const activeSymbol = status === 'done' ? usedSymbolA : symbolA;
+    const activeTimeframe = status === 'done' ? usedTimeframe : timeframe;
+    setAlertAction({ status: 'loading', message: 'Salvando regra de alerta...' });
+
+    const payload = {
+      user_id: session.user.id,
+      symbol: activeSymbol,
+      timeframe: activeTimeframe,
+      strategy: 'trend_breakout',
+      notify_statuses: alertNotifyStatuses,
+      canal: 'email',
+      ativo: alertEnabled,
+      cooldown_minutes: cooldown,
+    };
+
+    const { data, error: saveError } = await supabase
+      .from('daytrade_alert_rules')
+      .upsert(payload, {
+        onConflict: 'user_id,symbol,timeframe,strategy',
+      })
+      .select(
+        'id,symbol,timeframe,strategy,notify_statuses,canal,ativo,cooldown_minutes,last_status,last_candle_open_time,last_triggered_at,criado_em,atualizado_em',
+      )
+      .single();
+
+    if (saveError) {
+      setAlertAction({ status: 'error', message: saveError.message });
+      return;
+    }
+
+    setAlertRule(data as DayTradeAlertRuleRecord);
+    setAlertAction({
+      status: 'success',
+      message: alertEnabled
+        ? 'Regra ativa. O cron avaliará o mercado a cada cinco minutos.'
+        : 'Regra salva, porém pausada.',
+    });
+  }, [
+    session,
+    alertCooldownMinutes,
+    status,
+    usedSymbolA,
+    usedTimeframe,
+    symbolA,
+    timeframe,
+    alertNotifyStatuses,
+    alertEnabled,
+    supabase,
+  ]);
+
+  const handleDeleteAlertRule = useCallback(async () => {
+    if (!alertRule) return;
+    setAlertAction({ status: 'loading', message: 'Removendo regra...' });
+
+    const { error: deleteError } = await supabase
+      .from('daytrade_alert_rules')
+      .delete()
+      .eq('id', alertRule.id);
+
+    if (deleteError) {
+      setAlertAction({ status: 'error', message: deleteError.message });
+      return;
+    }
+
+    setAlertRule(null);
+    setAlertEnabled(true);
+    setAlertNotifyStatuses(['condicoes_atendidas']);
+    setAlertCooldownMinutes('30');
+    setAlertAction({ status: 'success', message: 'Regra removida.' });
+  }, [alertRule, supabase]);
+
+  const handleRunBacktest = useCallback(async () => {
+    if (!session) {
+      setBacktestAction({ status: 'error', message: 'Entre na sua conta para executar o backtest.' });
+      return;
+    }
+
+    const candleCount = Number(backtestCandleCount);
+    const initialCapital = parseUserNumber(backtestInitialCapital);
+    const testRiskPercent = parseUserNumber(backtestRiskPercent);
+    const feeRate = parseUserNumber(backtestFeeRate);
+    const slippage = parseUserNumber(backtestSlippage);
+    const maximumHolding = Number(backtestMaximumHolding);
+
+    if (!Number.isInteger(candleCount) || candleCount < 350 || candleCount > 3000) {
+      setBacktestAction({ status: 'error', message: 'Use entre 350 e 3000 candles.' });
+      return;
+    }
+    if (!(initialCapital > 0)) {
+      setBacktestAction({ status: 'error', message: 'O patrimônio inicial deve ser maior que zero.' });
+      return;
+    }
+    if (!(testRiskPercent > 0) || testRiskPercent > 2) {
+      setBacktestAction({ status: 'error', message: 'O risco do backtest deve estar entre 0 e 2%.' });
+      return;
+    }
+    if (!(feeRate >= 0) || !(slippage >= 0)) {
+      setBacktestAction({ status: 'error', message: 'Taxa e slippage não podem ser negativos.' });
+      return;
+    }
+    if (!Number.isInteger(maximumHolding) || maximumHolding < 0) {
+      setBacktestAction({ status: 'error', message: 'O limite de candles deve ser um inteiro não negativo.' });
+      return;
+    }
+
+    setBacktestAction({ status: 'loading', message: 'Baixando histórico e simulando o playbook...' });
+    setBacktestResponse(null);
+
+    const { data, error: invokeError } = await supabase.functions.invoke(
+      'backtest-daytrade',
+      {
+        body: {
+          symbol: status === 'done' ? usedSymbolA : symbolA,
+          timeframe: status === 'done' ? usedTimeframe : timeframe,
+          candle_count: candleCount,
+          backtest_options: {
+            initialCapitalUsdt: initialCapital,
+            riskPercent: testRiskPercent,
+            feeRatePct: feeRate,
+            slippagePct: slippage,
+            intrabarPriority: backtestPriority,
+            maximumHoldingCandles: maximumHolding,
+          },
+        },
+      },
+    );
+
+    if (invokeError) {
+      setBacktestAction({ status: 'error', message: await functionErrorMessage(invokeError) });
+      return;
+    }
+    if (!data?.ok || !data?.result) {
+      setBacktestAction({ status: 'error', message: data?.error ?? 'Backtest sem resultado.' });
+      return;
+    }
+
+    const response = data as BacktestApiResponse;
+    setBacktestResponse(response);
+    setBacktestAction({
+      status: 'success',
+      message: `Simulação concluída em ${response.execution_ms} ms com ${response.result.metrics.totalTrades} operação(ões).`,
+    });
+  }, [
+    session,
+    backtestCandleCount,
+    backtestInitialCapital,
+    backtestRiskPercent,
+    backtestFeeRate,
+    backtestSlippage,
+    backtestMaximumHolding,
+    supabase,
+    status,
+    usedSymbolA,
+    symbolA,
+    usedTimeframe,
+    timeframe,
+    backtestPriority,
+  ]);
+
+  const setupQuestions = useMemo(() => {
+    const evaluation = setupAnalysis.evaluation;
+    if (!evaluation) return [];
+
+    const byId = new Map(
+      evaluation.conditions.map((condition) => [condition.id, condition]),
+    );
+    const trendOk =
+      Boolean(byId.get('preco_acima_ema_lenta')?.passed) &&
+      Boolean(byId.get('emas_alinhadas')?.passed);
+    const volatilityRegime = evaluation.diagnostics.volatilityRegime;
+
+    return [
+      {
+        question: 'A tendência está favorável?',
+        answer: trendOk ? 'Sim' : 'Ainda não',
+        positive: trendOk,
+        detail: trendOk
+          ? 'Preço acima da EMA 200 e médias de curto prazo alinhadas.'
+          : 'Uma ou mais condições de tendência ainda não foram confirmadas.',
+      },
+      {
+        question: 'Existe rompimento confirmado?',
+        answer: byId.get('rompimento_confirmado')?.passed ? 'Sim' : 'Não',
+        positive: Boolean(byId.get('rompimento_confirmado')?.passed),
+        detail:
+          byId.get('rompimento_confirmado')?.explanation ??
+          'Aguardando dados.',
+      },
+      {
+        question: 'O volume confirmou?',
+        answer: byId.get('volume_confirmado')?.passed ? 'Sim' : 'Não',
+        positive: Boolean(byId.get('volume_confirmado')?.passed),
+        detail:
+          byId.get('volume_confirmado')?.explanation ??
+          'Aguardando dados.',
+      },
+      {
+        question: 'A volatilidade está elevada?',
+        answer:
+          volatilityRegime === 'extremo'
+            ? 'Extrema'
+            : volatilityRegime === 'volátil'
+              ? 'Elevada'
+              : volatilityRegime === 'indisponível'
+                ? 'Indisponível'
+                : 'Não',
+        positive:
+          volatilityRegime !== 'extremo' &&
+          volatilityRegime !== 'indisponível',
+        detail: `Regime atual: ${volatilityRegime}.`,
+      },
+      {
+        question: 'Existe uma entrada válida agora?',
+        answer:
+          evaluation.status === 'condicoes_atendidas'
+            ? 'Condições atendidas'
+            : evaluation.status === 'entrada_atrasada'
+              ? 'Preço atrasado'
+              : evaluation.status === 'invalidado'
+                ? 'Setup invalidado'
+                : 'Não',
+        positive: evaluation.status === 'condicoes_atendidas',
+        detail: TREND_BREAKOUT_STATUS_LABELS[evaluation.status].shortDescription,
+      },
+    ];
+  }, [setupAnalysis.evaluation]);
+
+  const actionablePlan = useMemo(() => {
+    const evaluation = setupAnalysis.evaluation;
+    if (!evaluation?.plan) return null;
+
+    if (
+      evaluation.status === 'condicoes_atendidas' ||
+      evaluation.status === 'entrada_atrasada' ||
+      evaluation.status === 'invalidado'
+    ) {
+      return evaluation.plan;
+    }
+
+    return null;
+  }, [setupAnalysis.evaluation]);
+
+  const positionSizing = useMemo<PositionSizingResult | null>(() => {
+    if (!actionablePlan) return null;
+
+    return calculatePositionSizeFromPlan({
+      accountBalance: parseUserNumber(accountBalance),
+      availableBalance: parseUserNumber(availableBalance),
+      riskPercent: parseUserNumber(riskPercent),
+      plan: actionablePlan,
+      allowLeverage: false,
+      policy: {
+        recommendedRiskPercent: 1,
+        maximumRiskPercent: 2,
+      },
+    });
+  }, [actionablePlan, accountBalance, availableBalance, riskPercent]);
+
+
+  const journalSummary = useMemo(() => {
+    const closed = journal.filter((row) => row.fechado_em !== null);
+    const netPnl = closed.reduce(
+      (sum, row) => sum + (nullableNumber(row.pnl_usdt) ?? 0),
+      0,
+    );
+    const averageRValues = closed
+      .map((row) => nullableNumber(row.result_r))
+      .filter((value): value is number => value !== null);
+    const averageR = averageRValues.length
+      ? averageRValues.reduce((sum, value) => sum + value, 0) / averageRValues.length
+      : null;
+    const open = journal.filter((row) => row.status === 'aberta').length;
+
+    return { closed: closed.length, open, netPnl, averageR };
+  }, [journal]);
+
+  const backtestEquityData = useMemo(() => {
+    const curve = backtestResponse?.result.equityCurve ?? [];
+    if (!curve.length) return [];
+    const step = Math.max(1, Math.floor(curve.length / 500));
+    const sampled = curve.filter((_, index) => index % step === 0);
+    if (sampled[sampled.length - 1] !== curve[curve.length - 1]) {
+      sampled.push(curve[curve.length - 1]);
+    }
+
+    return sampled.map((point) => ({
+      label: new Date(point.time).toLocaleDateString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+      }),
+      Patrimônio: Number(point.equityUsdt.toFixed(2)),
+      Drawdown: Number(point.drawdownPct.toFixed(2)),
+    }));
+  }, [backtestResponse]);
+
   const charts = useMemo(() => {
     const { visibleA, visibleB, volA, volB } = derived;
-    if (!visibleA.length) return { performance: [], volatility: [], volume: [] };
+    if (!visibleA.length) {
+      return { performance: [], volatility: [], volume: [], technical: [] };
+    }
 
     const volAByTime = new Map(
       rawA.map((candle, index) => [candle.openTime, volA[index]]),
@@ -1130,7 +2116,28 @@ export default function DayTradePage() {
       volume.push(volumePoint);
     }
 
-    return { performance, volatility, volume };
+    const indicatorPointByTime = new Map(
+      (setupAnalysis.indicators?.series ?? []).map((point) => [
+        point.openTime,
+        point,
+      ]),
+    );
+
+    const technical = indexes.map((index) => {
+      const candle = visibleA[index];
+      const point = indicatorPointByTime.get(candle.openTime);
+
+      return {
+        label: chartLabel(candle.openTime, usedPeriod.durationMs),
+        Preço: Number(candle.close.toFixed(8)),
+        'EMA 20': point?.emaFast ?? undefined,
+        'EMA 50': point?.emaMedium ?? undefined,
+        'EMA 200': point?.emaSlow ?? undefined,
+        Rompimento: point?.priorHighestHigh ?? undefined,
+      };
+    });
+
+    return { performance, volatility, volume, technical };
   }, [
     derived,
     rawA,
@@ -1138,6 +2145,7 @@ export default function DayTradePage() {
     usedSymbolA,
     usedSymbolB,
     usedPeriod.durationMs,
+    setupAnalysis.indicators,
   ]);
 
   const generateReport = useCallback(() => {
@@ -1337,37 +2345,31 @@ export default function DayTradePage() {
               Day Trade
             </div>
             <div style={{ fontSize: 11, color: S.dim }}>
-              candles encerrados · atualização ao vivo
+              candles encerrados · atualização ao vivo · decisão sua
             </div>
           </div>
         </div>
 
-<nav
-  style={{
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 20,
-    marginTop: 8,
-    fontSize: 13,
-  }}
->
-<a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
-  Análise
-</a>
-
-<span style={{ color: S.b, fontWeight: 600 }}>
-  Day Trade
-</span>
-
-<a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
-  Alertas
-</a>
-
-<a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
-  Conta Binance
-</a>
+        <nav
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            gap: 20,
+            marginTop: 8,
+            fontSize: 13,
+            flexWrap: 'wrap',
+          }}
+        >
+          <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
+            Análise
+          </a>
+          <span style={{ color: S.b, fontWeight: 700 }}>Day Trade</span>
+          <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
+            Alertas
+          </a>
+          <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
+            Conta Binance
+          </a>
           {!session ? (
             <a href="/alertas" style={{ color: S.green, textDecoration: 'none' }}>
               Entrar
@@ -1563,6 +2565,1237 @@ export default function DayTradePage() {
           )}
         </Card>
 
+        {status === 'done' && setupAnalysis.evaluation && (
+          <>
+            <Card
+              style={{
+                borderColor: `${SETUP_STATUS_COLORS[setupAnalysis.evaluation.status]}88`,
+              }}
+            >
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                  gap: 16,
+                  alignItems: 'center',
+                }}
+              >
+                <div style={{ textAlign: 'center' }}>
+                  <div
+                    style={{
+                      color: S.dim,
+                      fontSize: 11,
+                      textTransform: 'uppercase',
+                      letterSpacing: 0.7,
+                      marginBottom: 8,
+                    }}
+                  >
+                    Playbook: tendência com rompimento
+                  </div>
+                  <SetupStatusBadge status={setupAnalysis.evaluation.status} />
+                  <div
+                    style={{
+                      color: S.text,
+                      fontSize: 14,
+                      lineHeight: 1.5,
+                      marginTop: 10,
+                    }}
+                  >
+                    {setupAnalysis.evaluation.summary}
+                  </div>
+                </div>
+
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ color: S.dim, fontSize: 11, textTransform: 'uppercase' }}>
+                    Condições atendidas
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 30,
+                      fontWeight: 800,
+                      marginTop: 4,
+                      color: SETUP_STATUS_COLORS[setupAnalysis.evaluation.status],
+                    }}
+                  >
+                    {setupAnalysis.evaluation.passedConditions}/{setupAnalysis.evaluation.totalConditions}
+                  </div>
+                  <div
+                    style={{
+                      height: 8,
+                      maxWidth: 220,
+                      margin: '9px auto 0',
+                      borderRadius: 999,
+                      overflow: 'hidden',
+                      background: S.bg,
+                      border: `1px solid ${S.border}`,
+                    }}
+                  >
+                    <div
+                      style={{
+                        height: '100%',
+                        width: `${Math.max(0, Math.min(100, setupAnalysis.evaluation.scorePct))}%`,
+                        background: SETUP_STATUS_COLORS[setupAnalysis.evaluation.status],
+                      }}
+                    />
+                  </div>
+                  <div style={{ color: S.dim, fontSize: 11, marginTop: 5 }}>
+                    {fmt(setupAnalysis.evaluation.scorePct, 0)}% do checklist
+                  </div>
+                </div>
+
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ color: S.dim, fontSize: 11, textTransform: 'uppercase' }}>
+                    Próxima condição
+                  </div>
+                  <div
+                    style={{
+                      color: S.text,
+                      fontSize: 13,
+                      lineHeight: 1.5,
+                      marginTop: 7,
+                    }}
+                  >
+                    {setupAnalysis.evaluation.nextTrigger}
+                  </div>
+                  <div style={{ color: S.dim, fontSize: 10, marginTop: 8 }}>
+                    Candle avaliado:{' '}
+                    {new Date(setupAnalysis.evaluation.candleCloseTime).toLocaleString('pt-BR')}
+                  </div>
+                </div>
+              </div>
+
+              {setupAnalysis.evaluation.warnings.length > 0 && (
+                <div
+                  style={{
+                    marginTop: 14,
+                    padding: '10px 12px',
+                    background: `${S.yellow}12`,
+                    border: `1px solid ${S.yellow}44`,
+                    borderRadius: 8,
+                    color: S.yellow,
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {setupAnalysis.evaluation.warnings.map((warning) => (
+                    <div key={warning}>• {warning}</div>
+                  ))}
+                </div>
+              )}
+            </Card>
+
+            <Card>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 700,
+                  textAlign: 'center',
+                  marginBottom: 12,
+                }}
+              >
+                Respostas diretas para quem está começando
+              </div>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
+                  gap: 10,
+                }}
+              >
+                {setupQuestions.map((item) => (
+                  <div
+                    key={item.question}
+                    style={{
+                      background: S.panelSoft,
+                      border: `1px solid ${S.border}`,
+                      borderRadius: 8,
+                      padding: 12,
+                      textAlign: 'center',
+                    }}
+                  >
+                    <div style={{ color: S.dim, fontSize: 11 }}>
+                      {item.question}
+                    </div>
+                    <div
+                      style={{
+                        color: item.positive ? S.green : S.yellow,
+                        fontSize: 16,
+                        fontWeight: 800,
+                        marginTop: 5,
+                      }}
+                    >
+                      {item.answer}
+                    </div>
+                    <div
+                      style={{
+                        color: S.dim,
+                        fontSize: 10,
+                        lineHeight: 1.4,
+                        marginTop: 5,
+                      }}
+                    >
+                      {item.detail}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            <Card style={{ overflowX: 'auto' }}>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 700,
+                  textAlign: 'center',
+                  marginBottom: 10,
+                }}
+              >
+                Checklist objetivo do playbook
+              </div>
+              <table
+                style={{
+                  width: '100%',
+                  minWidth: 760,
+                  borderCollapse: 'collapse',
+                  fontSize: 12,
+                }}
+              >
+                <thead>
+                  <tr>
+                    <th style={{ padding: 9, color: S.dim, borderBottom: `1px solid ${S.border}` }}>Status</th>
+                    <th style={{ padding: 9, color: S.dim, borderBottom: `1px solid ${S.border}` }}>Condição</th>
+                    <th style={{ padding: 9, color: S.dim, borderBottom: `1px solid ${S.border}` }}>Valor atual</th>
+                    <th style={{ padding: 9, color: S.dim, borderBottom: `1px solid ${S.border}` }}>Necessário</th>
+                    <th style={{ padding: 9, color: S.dim, borderBottom: `1px solid ${S.border}` }}>Explicação</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {setupAnalysis.evaluation.conditions.map((condition) => (
+                    <tr key={condition.id}>
+                      <td
+                        style={{
+                          padding: 9,
+                          textAlign: 'center',
+                          borderBottom: `1px solid ${S.border}`,
+                          color: !condition.available
+                            ? S.dim
+                            : condition.passed
+                              ? S.green
+                              : S.red,
+                          fontWeight: 800,
+                        }}
+                      >
+                        {!condition.available ? '○' : condition.passed ? '✓' : '×'}
+                      </td>
+                      <td style={{ padding: 9, borderBottom: `1px solid ${S.border}`, color: S.text }}>
+                        {condition.label}
+                      </td>
+                      <td style={{ padding: 9, textAlign: 'center', borderBottom: `1px solid ${S.border}`, color: S.text }}>
+                        {formatConditionValue(condition.currentValue)}
+                      </td>
+                      <td style={{ padding: 9, textAlign: 'center', borderBottom: `1px solid ${S.border}`, color: S.dim }}>
+                        {condition.requiredValue}
+                      </td>
+                      <td style={{ padding: 9, borderBottom: `1px solid ${S.border}`, color: S.dim, lineHeight: 1.4 }}>
+                        {condition.explanation}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+
+            {actionablePlan ? (
+              <Card
+                style={{
+                  borderColor:
+                    setupAnalysis.evaluation.status === 'condicoes_atendidas'
+                      ? `${S.green}77`
+                      : `${SETUP_STATUS_COLORS[setupAnalysis.evaluation.status]}66`,
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    marginBottom: 14,
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 800 }}>
+                      Plano técnico de referência
+                    </div>
+                    <div style={{ color: S.dim, fontSize: 11, marginTop: 3 }}>
+                      Calculado pelo último candle encerrado. Não é uma ordem automática.
+                    </div>
+                  </div>
+                  <SetupStatusBadge status={setupAnalysis.evaluation.status} />
+                </div>
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))',
+                    gap: 10,
+                  }}
+                >
+                  {[
+                    ['Entrada de referência', `${fmtPrice(actionablePlan.entryReference)} USDT`, S.a],
+                    ['Invalidação / stop', `${fmtPrice(actionablePlan.stopReference)} USDT`, S.red],
+                    ['Alvo matemático', `${fmtPrice(actionablePlan.targetReference)} USDT`, S.green],
+                    ['Relação alvo/risco', `${fmt(actionablePlan.riskRewardRatio)}R`, S.text],
+                    ['Risco por unidade', `${fmtPrice(actionablePlan.riskPerUnit)} USDT`, S.text],
+                    ['Entrada aceitável até', `${fmtPrice(actionablePlan.latestAcceptableEntry)} USDT`, S.yellow],
+                  ].map(([label, value, color]) => (
+                    <div
+                      key={String(label)}
+                      style={{
+                        background: S.panelSoft,
+                        border: `1px solid ${S.border}`,
+                        borderRadius: 8,
+                        padding: 12,
+                        textAlign: 'center',
+                      }}
+                    >
+                      <div style={{ color: S.dim, fontSize: 10, textTransform: 'uppercase' }}>
+                        {label}
+                      </div>
+                      <div style={{ color, fontSize: 15, fontWeight: 800, marginTop: 5 }}>
+                        {value}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {setupAnalysis.evaluation.status !== 'condicoes_atendidas' && (
+                  <div
+                    style={{
+                      marginTop: 12,
+                      color: SETUP_STATUS_COLORS[setupAnalysis.evaluation.status],
+                      background: `${SETUP_STATUS_COLORS[setupAnalysis.evaluation.status]}12`,
+                      border: `1px solid ${SETUP_STATUS_COLORS[setupAnalysis.evaluation.status]}44`,
+                      borderRadius: 8,
+                      padding: 11,
+                      textAlign: 'center',
+                      fontSize: 12,
+                    }}
+                  >
+                    O plano está visível para explicar a formação, mas uma nova entrada está bloqueada no status atual.
+                  </div>
+                )}
+
+                <div
+                  style={{
+                    marginTop: 16,
+                    paddingTop: 16,
+                    borderTop: `1px solid ${S.border}`,
+                  }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 700, textAlign: 'center', marginBottom: 12 }}>
+                    Calculadora educacional de tamanho da posição
+                  </div>
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      alignItems: 'flex-end',
+                      justifyContent: 'center',
+                      gap: 12,
+                    }}
+                  >
+                    {[
+                      {
+                        label: 'Saldo total (USDT)',
+                        value: accountBalance,
+                        setter: setAccountBalance,
+                        step: '0.01',
+                      },
+                      {
+                        label: 'Saldo disponível (USDT)',
+                        value: availableBalance,
+                        setter: setAvailableBalance,
+                        step: '0.01',
+                      },
+                      {
+                        label: 'Risco máximo (%)',
+                        value: riskPercent,
+                        setter: setRiskPercent,
+                        step: '0.1',
+                      },
+                    ].map((input) => (
+                      <label
+                        key={input.label}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 5,
+                          color: S.dim,
+                          fontSize: 11,
+                          textAlign: 'center',
+                        }}
+                      >
+                        {input.label}
+                        <input
+                          type="number"
+                          min="0"
+                          step={input.step}
+                          value={input.value}
+                          onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+                            input.setter(event.target.value)
+                          }
+                          style={{
+                            width: 170,
+                            maxWidth: '100%',
+                            background: S.bg,
+                            color: S.text,
+                            border: `1px solid ${S.border}`,
+                            borderRadius: 7,
+                            padding: '9px 10px',
+                            fontSize: 14,
+                            textAlign: 'center',
+                          }}
+                        />
+                      </label>
+                    ))}
+                  </div>
+
+                  {positionSizing && (
+                    <div style={{ marginTop: 14 }}>
+                      {positionSizing.ok ? (
+                        <>
+                          <div
+                            style={{
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                              gap: 10,
+                            }}
+                          >
+                            {[
+                              ['Quantidade máxima', fmt(positionSizing.quantity, 8)],
+                              ['Valor da posição', `${fmt(positionSizing.notional)} USDT`],
+                              ['Perda máxima estimada', `${fmt(positionSizing.estimatedTotalRiskUsdt)} USDT`],
+                              ['Risco efetivo', `${fmt(positionSizing.estimatedTotalRiskPct, 2)}%`],
+                              ['Alvo líquido estimado', positionSizing.estimatedNetRewardUsdt === null ? '—' : `${fmt(positionSizing.estimatedNetRewardUsdt)} USDT`],
+                              ['Risco/retorno líquido', positionSizing.estimatedNetRiskRewardRatio === null ? '—' : `${fmt(positionSizing.estimatedNetRiskRewardRatio)}R`],
+                            ].map(([label, value]) => (
+                              <div
+                                key={label}
+                                style={{
+                                  background: S.panelSoft,
+                                  border: `1px solid ${S.border}`,
+                                  borderRadius: 8,
+                                  padding: 10,
+                                  textAlign: 'center',
+                                }}
+                              >
+                                <div style={{ color: S.dim, fontSize: 10 }}>{label}</div>
+                                <div style={{ color: S.text, fontSize: 14, fontWeight: 800, marginTop: 4 }}>
+                                  {value}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          {positionSizing.warnings.length > 0 && (
+                            <div style={{ color: S.yellow, fontSize: 11, lineHeight: 1.5, marginTop: 10, textAlign: 'center' }}>
+                              {positionSizing.warnings.join(' ')}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div
+                          style={{
+                            color: S.red,
+                            background: `${S.red}12`,
+                            border: `1px solid ${S.red}44`,
+                            borderRadius: 8,
+                            padding: 11,
+                            fontSize: 12,
+                            lineHeight: 1.5,
+                            textAlign: 'center',
+                          }}
+                        >
+                          {positionSizing.errors.join(' ')}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div style={{ color: S.dim, fontSize: 10, textAlign: 'center', marginTop: 10, lineHeight: 1.4 }}>
+                    Estimativa sem alavancagem. Taxas e slippage são considerados pelo motor de risco, mas os filtros exatos do ativo serão confirmados apenas na futura integração com a Testnet.
+                  </div>
+                </div>
+              </Card>
+            ) : (
+              <Card style={{ textAlign: 'center' }}>
+                <div style={{ color: S.dim, fontSize: 11, textTransform: 'uppercase' }}>
+                  Plano de operação
+                </div>
+                <div style={{ color: S.text, fontSize: 14, marginTop: 7 }}>
+                  Ainda não existe um plano válido de entrada, invalidação e alvo.
+                </div>
+                <div style={{ color: S.dim, fontSize: 11, marginTop: 5 }}>
+                  {setupAnalysis.evaluation.nextTrigger}
+                </div>
+              </Card>
+            )}
+          </>
+        )}
+
+        {status === 'done' && setupAnalysis.error && (
+          <Card style={{ borderColor: `${S.red}66`, color: S.red, textAlign: 'center' }}>
+            Erro no playbook: {setupAnalysis.error}
+          </Card>
+        )}
+
+
+        <Card>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 12,
+              flexWrap: 'wrap',
+              marginBottom: 14,
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 800 }}>
+                Setup persistido e Binance Testnet
+              </div>
+              <div style={{ color: S.dim, fontSize: 11, marginTop: 3 }}>
+                O servidor reavalia o candle encerrado antes de liberar qualquer prévia.
+              </div>
+            </div>
+            {!session && (
+              <a href="/alertas" style={{ color: S.green, fontSize: 12 }}>
+                Entre para usar os recursos conectados
+              </a>
+            )}
+          </div>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+              gap: 12,
+            }}
+          >
+            <div
+              style={{
+                background: S.panelSoft,
+                border: `1px solid ${S.border}`,
+                borderRadius: 9,
+                padding: 14,
+              }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 700 }}>1. Setup no servidor</div>
+              <div style={{ color: S.dim, fontSize: 11, lineHeight: 1.5, marginTop: 5 }}>
+                Salva uma fotografia auditável do checklist, indicadores, entrada, stop e alvo.
+              </div>
+              <button
+                onClick={handlePersistSetup}
+                disabled={!session || status !== 'done' || serverAction.status === 'loading'}
+                style={{
+                  width: '100%',
+                  marginTop: 12,
+                  background: S.b,
+                  color: '#08131e',
+                  border: 'none',
+                  borderRadius: 7,
+                  padding: '10px 12px',
+                  fontWeight: 800,
+                  cursor: !session || status !== 'done' ? 'not-allowed' : 'pointer',
+                  opacity: !session || status !== 'done' ? 0.5 : 1,
+                }}
+              >
+                {serverAction.status === 'loading' ? 'Salvando...' : 'Salvar ou atualizar setup'}
+              </button>
+
+              {serverSetup && (
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                    gap: 8,
+                    marginTop: 12,
+                  }}
+                >
+                  {[
+                    ['Mercado', `${serverSetup.symbol} · ${serverSetup.timeframe}`],
+                    ['Status', TREND_BREAKOUT_STATUS_LABELS[serverSetup.status]?.label ?? serverSetup.status],
+                    ['Checklist', `${serverSetup.score}/${serverSetup.total_conditions}`],
+                    ['Candle', formatDateTime(serverSetup.candle_close_time)],
+                  ].map(([label, value]) => (
+                    <div key={label} style={{ textAlign: 'center' }}>
+                      <div style={{ color: S.dim, fontSize: 10 }}>{label}</div>
+                      <div style={{ fontSize: 12, fontWeight: 700, marginTop: 3 }}>{value}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {serverAction.message && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    color: serverAction.status === 'error' ? S.red : serverAction.status === 'success' ? S.green : S.dim,
+                    fontSize: 11,
+                    lineHeight: 1.45,
+                    textAlign: 'center',
+                  }}
+                >
+                  {serverAction.message}
+                </div>
+              )}
+            </div>
+
+            <div
+              style={{
+                background: S.panelSoft,
+                border: `1px solid ${S.border}`,
+                borderRadius: 9,
+                padding: 14,
+              }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 700 }}>2. Ordem simulada na Testnet</div>
+              <div style={{ color: S.dim, fontSize: 11, lineHeight: 1.5, marginTop: 5 }}>
+                A prévia valida saldo, limite por ordem, filtros do ativo, atraso da entrada e risco máximo.
+              </div>
+
+              <button
+                onClick={handlePreviewTestnet}
+                disabled={!session || status !== 'done' || testnetAction.status === 'loading'}
+                style={{
+                  width: '100%',
+                  marginTop: 12,
+                  background: S.a,
+                  color: '#1a1206',
+                  border: 'none',
+                  borderRadius: 7,
+                  padding: '10px 12px',
+                  fontWeight: 800,
+                  cursor: !session || status !== 'done' ? 'not-allowed' : 'pointer',
+                  opacity: !session || status !== 'done' ? 0.5 : 1,
+                }}
+              >
+                {testnetAction.status === 'loading' ? 'Validando...' : 'Gerar prévia Testnet'}
+              </button>
+
+              {testnetPreview && (
+                <>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                      gap: 8,
+                      marginTop: 12,
+                    }}
+                  >
+                    {[
+                      ['Preço Testnet', `${fmtPrice(testnetPreview.market.testnet_price)} USDT`],
+                      ['Valor da ordem', `${fmt(testnetPreview.execution.quote_amount)} USDT`],
+                      ['Stop', `${fmtPrice(testnetPreview.plan.stop_reference)} USDT`],
+                      ['Alvo', `${fmtPrice(testnetPreview.plan.target_reference)} USDT`],
+                      ['Risco estimado', `${fmt(nullableNumber(testnetPreview.sizing.estimatedTotalRiskUsdt) ?? 0)} USDT`],
+                      ['Expira em', formatDateTime(testnetPreview.setup.expires_at)],
+                    ].map(([label, value]) => (
+                      <div
+                        key={label}
+                        style={{
+                          border: `1px solid ${S.border}`,
+                          borderRadius: 7,
+                          padding: 8,
+                          textAlign: 'center',
+                        }}
+                      >
+                        <div style={{ color: S.dim, fontSize: 9 }}>{label}</div>
+                        <div style={{ fontSize: 12, fontWeight: 750, marginTop: 3 }}>{value}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 8,
+                      marginTop: 12,
+                      color: S.text,
+                      fontSize: 11,
+                      lineHeight: 1.45,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={confirmTestnet}
+                      onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+                        setConfirmTestnet(event.target.checked)
+                      }
+                      style={{ marginTop: 2 }}
+                    />
+                    Confirmo que esta ordem será enviada exclusivamente à Binance Spot Testnet e poderá gerar saldo e resultados simulados.
+                  </label>
+
+                  <button
+                    onClick={handleExecuteTestnet}
+                    disabled={!confirmTestnet || testnetAction.status === 'loading'}
+                    style={{
+                      width: '100%',
+                      marginTop: 10,
+                      background: confirmTestnet ? S.green : S.border,
+                      color: confirmTestnet ? '#07140c' : S.dim,
+                      border: 'none',
+                      borderRadius: 7,
+                      padding: '10px 12px',
+                      fontWeight: 800,
+                      cursor: confirmTestnet ? 'pointer' : 'not-allowed',
+                    }}
+                  >
+                    Confirmar ordem na Testnet
+                  </button>
+                </>
+              )}
+
+              {testnetAction.message && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    color: testnetAction.status === 'error' ? S.red : testnetAction.status === 'success' ? S.green : S.dim,
+                    fontSize: 11,
+                    lineHeight: 1.45,
+                    textAlign: 'center',
+                  }}
+                >
+                  {testnetAction.message}
+                </div>
+              )}
+            </div>
+          </div>
+        </Card>
+
+        <Card>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 12,
+              flexWrap: 'wrap',
+              marginBottom: 12,
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 800 }}>Alertas automáticos do playbook</div>
+              <div style={{ color: S.dim, fontSize: 11, marginTop: 3 }}>
+                Mercado atual: {status === 'done' ? usedSymbolA : symbolA} · {status === 'done' ? usedTimeframe : timeframe}
+              </div>
+            </div>
+            {alertRule && (
+              <div style={{ color: alertRule.ativo ? S.green : S.dim, fontSize: 11, fontWeight: 700 }}>
+                {alertRule.ativo ? '● REGRA ATIVA' : '○ REGRA PAUSADA'}
+              </div>
+            )}
+          </div>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+              gap: 12,
+              alignItems: 'start',
+            }}
+          >
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                color: S.text,
+                fontSize: 12,
+                paddingTop: 8,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={alertEnabled}
+                onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+                  setAlertEnabled(event.target.checked)
+                }
+              />
+              Monitoramento ativo
+            </label>
+
+            <label style={{ color: S.dim, fontSize: 11, textAlign: 'center' }}>
+              Cooldown em minutos
+              <input
+                type="number"
+                min="0"
+                max="1440"
+                step="1"
+                value={alertCooldownMinutes}
+                onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+                  setAlertCooldownMinutes(event.target.value)
+                }
+                style={{
+                  width: '100%',
+                  boxSizing: 'border-box',
+                  marginTop: 5,
+                  background: S.bg,
+                  color: S.text,
+                  border: `1px solid ${S.border}`,
+                  borderRadius: 7,
+                  padding: '8px 10px',
+                  textAlign: 'center',
+                }}
+              />
+            </label>
+
+            <div style={{ gridColumn: '1 / -1' }}>
+              <div style={{ color: S.dim, fontSize: 11, textAlign: 'center', marginBottom: 7 }}>
+                Avisar quando o setup entrar em:
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: 10 }}>
+                {([
+                  ['observar', 'Observar'],
+                  ['condicoes_atendidas', 'Condições atendidas'],
+                  ['entrada_atrasada', 'Entrada atrasada'],
+                  ['invalidado', 'Invalidado'],
+                ] as Array<[DayTradeAlertableStatus, string]>).map(([value, label]) => (
+                  <label
+                    key={value}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      border: `1px solid ${S.border}`,
+                      borderRadius: 7,
+                      padding: '7px 9px',
+                      color: S.text,
+                      fontSize: 11,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={alertNotifyStatuses.includes(value)}
+                      onChange={() => toggleAlertStatus(value)}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'center', gap: 10, flexWrap: 'wrap', marginTop: 13 }}>
+            <button
+              onClick={handleSaveAlertRule}
+              disabled={!session || alertAction.status === 'loading'}
+              style={{
+                background: S.green,
+                color: '#07140c',
+                border: 'none',
+                borderRadius: 7,
+                padding: '9px 15px',
+                fontWeight: 800,
+                cursor: session ? 'pointer' : 'not-allowed',
+                opacity: session ? 1 : 0.5,
+              }}
+            >
+              {alertRule ? 'Atualizar alerta' : 'Criar alerta'}
+            </button>
+            {alertRule && (
+              <button
+                onClick={handleDeleteAlertRule}
+                disabled={alertAction.status === 'loading'}
+                style={{
+                  background: 'transparent',
+                  color: S.red,
+                  border: `1px solid ${S.red}66`,
+                  borderRadius: 7,
+                  padding: '9px 15px',
+                  cursor: 'pointer',
+                }}
+              >
+                Remover regra
+              </button>
+            )}
+          </div>
+
+          {alertRule?.last_status && (
+            <div style={{ color: S.dim, fontSize: 10, textAlign: 'center', marginTop: 9 }}>
+              Último status: {TREND_BREAKOUT_STATUS_LABELS[alertRule.last_status]?.label ?? alertRule.last_status}
+              {' · '}último disparo: {formatDateTime(alertRule.last_triggered_at)}
+            </div>
+          )}
+
+          {alertAction.message && (
+            <div
+              style={{
+                color: alertAction.status === 'error' ? S.red : alertAction.status === 'success' ? S.green : S.dim,
+                fontSize: 11,
+                textAlign: 'center',
+                marginTop: 10,
+              }}
+            >
+              {alertAction.message}
+            </div>
+          )}
+        </Card>
+
+        <Card>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              flexWrap: 'wrap',
+              marginBottom: 12,
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 800 }}>Diário de operações</div>
+              <div style={{ color: S.dim, fontSize: 11, marginTop: 3 }}>
+                Atualizado pelo monitor de ordens após entrada, alvo, stop ou erro de proteção.
+              </div>
+            </div>
+            <button
+              onClick={() => void loadJournal()}
+              disabled={!session || journalAction.status === 'loading'}
+              style={{
+                background: 'transparent',
+                color: S.b,
+                border: `1px solid ${S.border}`,
+                borderRadius: 7,
+                padding: '7px 11px',
+                cursor: session ? 'pointer' : 'not-allowed',
+              }}
+            >
+              Atualizar diário
+            </button>
+          </div>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+              gap: 9,
+              marginBottom: 12,
+            }}
+          >
+            {[
+              ['Registros', String(journal.length)],
+              ['Abertas', String(journalSummary.open)],
+              ['Encerradas', String(journalSummary.closed)],
+              ['PnL líquido', `${fmt(journalSummary.netPnl)} USDT`],
+              ['Média em R', journalSummary.averageR === null ? '—' : `${fmt(journalSummary.averageR)}R`],
+            ].map(([label, value]) => (
+              <div
+                key={label}
+                style={{
+                  background: S.panelSoft,
+                  border: `1px solid ${S.border}`,
+                  borderRadius: 8,
+                  padding: 10,
+                  textAlign: 'center',
+                }}
+              >
+                <div style={{ color: S.dim, fontSize: 10 }}>{label}</div>
+                <div style={{ fontSize: 14, fontWeight: 800, marginTop: 3 }}>{value}</div>
+              </div>
+            ))}
+          </div>
+
+          {journal.length > 0 ? (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, minWidth: 880 }}>
+                <thead>
+                  <tr>
+                    {['Data', 'Mercado', 'Modo', 'Status', 'Entrada', 'Saída', 'PnL', 'Resultado'].map((label) => (
+                      <th
+                        key={label}
+                        style={{
+                          color: S.dim,
+                          borderBottom: `1px solid ${S.border}`,
+                          padding: '8px 7px',
+                          textAlign: 'center',
+                        }}
+                      >
+                        {label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {journal.map((row) => {
+                    const pnl = nullableNumber(row.pnl_usdt);
+                    const resultR = nullableNumber(row.result_r);
+                    return (
+                      <tr key={row.id}>
+                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}` }}>
+                          {formatDateTime(row.criado_em)}
+                        </td>
+                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}`, fontWeight: 700 }}>
+                          {row.symbol} · {row.timeframe}
+                        </td>
+                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}` }}>
+                          {row.mode}
+                        </td>
+                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}`, color: journalStatusColor(row.status), fontWeight: 700 }}>
+                          {journalStatusLabel(row.status)}
+                        </td>
+                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}` }}>
+                          {fmtPrice(nullableNumber(row.entry_price) ?? nullableNumber(row.entry_reference) ?? 0)}
+                        </td>
+                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}` }}>
+                          {row.exit_price === null ? '—' : fmtPrice(nullableNumber(row.exit_price) ?? 0)}
+                        </td>
+                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}`, color: pnl === null ? S.dim : pnl >= 0 ? S.green : S.red }}>
+                          {pnl === null ? '—' : `${fmt(pnl)} USDT`}
+                        </td>
+                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}`, color: resultR === null ? S.dim : resultR >= 0 ? S.green : S.red }}>
+                          {resultR === null ? '—' : `${fmt(resultR)}R`}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div style={{ color: S.dim, fontSize: 11, textAlign: 'center', padding: 10 }}>
+              {session ? 'Nenhuma operação registrada.' : 'Entre para consultar o diário.'}
+            </div>
+          )}
+
+          {journalAction.status === 'error' && (
+            <div style={{ color: S.red, fontSize: 11, textAlign: 'center', marginTop: 9 }}>
+              {journalAction.message}
+            </div>
+          )}
+        </Card>
+
+        <Card>
+          <div style={{ textAlign: 'center', marginBottom: 13 }}>
+            <div style={{ fontSize: 15, fontWeight: 800 }}>Backtest do playbook</div>
+            <div style={{ color: S.dim, fontSize: 11, lineHeight: 1.5, marginTop: 4 }}>
+              Sinal no fechamento, entrada na abertura seguinte, uma posição por vez e custos incluídos.
+            </div>
+          </div>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+              gap: 10,
+              alignItems: 'end',
+            }}
+          >
+            {[
+              ['Candles', backtestCandleCount, setBacktestCandleCount, '1'],
+              ['Capital inicial', backtestInitialCapital, setBacktestInitialCapital, '0.01'],
+              ['Risco (%)', backtestRiskPercent, setBacktestRiskPercent, '0.1'],
+              ['Taxa por execução (%)', backtestFeeRate, setBacktestFeeRate, '0.01'],
+              ['Slippage (%)', backtestSlippage, setBacktestSlippage, '0.01'],
+              ['Máx. candles na posição', backtestMaximumHolding, setBacktestMaximumHolding, '1'],
+            ].map(([label, value, setter, step]) => (
+              <label key={String(label)} style={{ color: S.dim, fontSize: 10, textAlign: 'center' }}>
+                {label}
+                <input
+                  type="number"
+                  min="0"
+                  step={String(step)}
+                  value={String(value)}
+                  onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+                    (setter as (next: string) => void)(event.target.value)
+                  }
+                  style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    marginTop: 5,
+                    background: S.bg,
+                    color: S.text,
+                    border: `1px solid ${S.border}`,
+                    borderRadius: 7,
+                    padding: '8px 9px',
+                    textAlign: 'center',
+                  }}
+                />
+              </label>
+            ))}
+
+            <label style={{ color: S.dim, fontSize: 10, textAlign: 'center' }}>
+              Mesmo candle toca stop e alvo
+              <select
+                value={backtestPriority}
+                onChange={(event: React.ChangeEvent<HTMLSelectElement>) =>
+                  setBacktestPriority(event.target.value as 'stop_first' | 'target_first')
+                }
+                style={{
+                  width: '100%',
+                  marginTop: 5,
+                  background: S.bg,
+                  color: S.text,
+                  border: `1px solid ${S.border}`,
+                  borderRadius: 7,
+                  padding: '8px 9px',
+                  textAlign: 'center',
+                }}
+              >
+                <option value="stop_first">Stop primeiro — conservador</option>
+                <option value="target_first">Alvo primeiro</option>
+              </select>
+            </label>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: 13 }}>
+            <button
+              onClick={handleRunBacktest}
+              disabled={!session || backtestAction.status === 'loading'}
+              style={{
+                background: S.b,
+                color: '#08131e',
+                border: 'none',
+                borderRadius: 7,
+                padding: '10px 22px',
+                fontWeight: 800,
+                cursor: session ? 'pointer' : 'not-allowed',
+                opacity: session ? 1 : 0.5,
+              }}
+            >
+              {backtestAction.status === 'loading' ? 'Simulando...' : `Executar backtest de ${status === 'done' ? usedSymbolA : symbolA}`}
+            </button>
+          </div>
+
+          {backtestAction.message && (
+            <div
+              style={{
+                color: backtestAction.status === 'error' ? S.red : backtestAction.status === 'success' ? S.green : S.dim,
+                fontSize: 11,
+                textAlign: 'center',
+                marginTop: 10,
+              }}
+            >
+              {backtestAction.message}
+            </div>
+          )}
+
+          {backtestResponse && (
+            <>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))',
+                  gap: 9,
+                  marginTop: 15,
+                }}
+              >
+                {[
+                  ['Capital final', `${fmt(backtestResponse.result.metrics.finalCapitalUsdt)} USDT`],
+                  ['Retorno líquido', `${fmt(backtestResponse.result.metrics.netReturnPct)}%`],
+                  ['Operações', String(backtestResponse.result.metrics.totalTrades)],
+                  ['Taxa de acerto', `${fmt(backtestResponse.result.metrics.winRatePct)}%`],
+                  ['Fator de lucro', backtestResponse.result.metrics.profitFactor === null ? '—' : fmt(backtestResponse.result.metrics.profitFactor)],
+                  ['Média', `${fmt(backtestResponse.result.metrics.averageR)}R`],
+                  ['Drawdown máximo', `${fmt(backtestResponse.result.metrics.maximumDrawdownPct)}%`],
+                  ['Sequência de perdas', String(backtestResponse.result.metrics.maximumConsecutiveLosses)],
+                  ['Exposição', `${fmt(backtestResponse.result.metrics.exposurePct)}%`],
+                ].map(([label, value]) => (
+                  <div
+                    key={label}
+                    style={{
+                      background: S.panelSoft,
+                      border: `1px solid ${S.border}`,
+                      borderRadius: 8,
+                      padding: 10,
+                      textAlign: 'center',
+                    }}
+                  >
+                    <div style={{ color: S.dim, fontSize: 9 }}>{label}</div>
+                    <div style={{ fontSize: 14, fontWeight: 800, marginTop: 3 }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+
+              {backtestEquityData.length > 0 && (
+                <div style={{ height: 330, marginTop: 16 }}>
+                  <div style={{ color: S.dim, fontSize: 11, textAlign: 'center', marginBottom: 6 }}>
+                    Curva de patrimônio — {backtestResponse.symbol} · {backtestResponse.timeframe}
+                  </div>
+                  <ResponsiveContainer width="100%" height="92%">
+                    <LineChart data={backtestEquityData} margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
+                      <CartesianGrid stroke={S.border} strokeDasharray="3 3" />
+                      <XAxis dataKey="label" stroke={S.dim} tick={{ fontSize: 10 }} minTickGap={28} />
+                      <YAxis stroke={S.dim} tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
+                      <Tooltip contentStyle={tooltipStyle} />
+                      <Legend />
+                      <Line type="monotone" dataKey="Patrimônio" stroke={S.green} strokeWidth={2.2} dot={false} isAnimationActive={false} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              {backtestResponse.result.trades.length > 0 && (
+                <div style={{ overflowX: 'auto', marginTop: 12 }}>
+                  <div style={{ color: S.dim, fontSize: 11, textAlign: 'center', marginBottom: 5 }}>
+                    Últimas operações simuladas
+                  </div>
+                  <table style={{ width: '100%', minWidth: 850, borderCollapse: 'collapse', fontSize: 10 }}>
+                    <thead>
+                      <tr>
+                        {['Entrada', 'Saída', 'Motivo', 'Qtd.', 'PnL líquido', 'R', 'Patrimônio'].map((label) => (
+                          <th key={label} style={{ color: S.dim, borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center' }}>
+                            {label}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {backtestResponse.result.trades.slice(-15).reverse().map((trade) => (
+                        <tr key={trade.id}>
+                          <td style={{ borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center' }}>
+                            {formatDateTime(trade.entryTime)}<br />{fmtPrice(trade.entryPrice)}
+                          </td>
+                          <td style={{ borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center' }}>
+                            {formatDateTime(trade.exitTime)}<br />{fmtPrice(trade.exitPrice)}
+                          </td>
+                          <td style={{ borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center' }}>
+                            {backtestExitLabel(trade.exitReason)}
+                          </td>
+                          <td style={{ borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center' }}>
+                            {fmt(trade.quantity, 8)}
+                          </td>
+                          <td style={{ borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center', color: trade.netPnlUsdt >= 0 ? S.green : S.red }}>
+                            {fmt(trade.netPnlUsdt)} USDT
+                          </td>
+                          <td style={{ borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center', color: trade.resultR >= 0 ? S.green : S.red }}>
+                            {fmt(trade.resultR)}R
+                          </td>
+                          <td style={{ borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center' }}>
+                            {fmt(trade.equityAfter)} USDT
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {backtestResponse.result.warnings.length > 0 && (
+                <div style={{ color: S.yellow, fontSize: 10, lineHeight: 1.5, textAlign: 'center', marginTop: 10 }}>
+                  {backtestResponse.result.warnings.join(' ')}
+                </div>
+              )}
+            </>
+          )}
+        </Card>
+
         {history.length > 0 && (
           <Card>
             <div
@@ -1709,6 +3942,26 @@ export default function DayTradePage() {
               </Card>
             )}
 
+            <Card style={{ height: 410 }}>
+              <div style={{ textAlign: 'center', color: S.dim, fontSize: 13, marginBottom: 8 }}>
+                Preço, médias e nível de rompimento — {usedSymbolA}
+              </div>
+              <ResponsiveContainer width="100%" height="92%">
+                <LineChart data={charts.technical} margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
+                  <CartesianGrid stroke={S.border} strokeDasharray="3 3" />
+                  <XAxis dataKey="label" stroke={S.dim} tick={{ fontSize: 11 }} minTickGap={30} />
+                  <YAxis stroke={S.dim} tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
+                  <Tooltip contentStyle={tooltipStyle} />
+                  <Legend />
+                  <Line type="monotone" dataKey="Preço" stroke={S.text} strokeWidth={2.2} dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="EMA 20" stroke={S.green} strokeWidth={1.5} dot={false} connectNulls isAnimationActive={false} />
+                  <Line type="monotone" dataKey="EMA 50" stroke={S.a} strokeWidth={1.5} dot={false} connectNulls isAnimationActive={false} />
+                  <Line type="monotone" dataKey="EMA 200" stroke={S.b} strokeWidth={1.7} dot={false} connectNulls isAnimationActive={false} />
+                  <Line type="stepAfter" dataKey="Rompimento" stroke={S.yellow} strokeWidth={1.4} strokeDasharray="5 4" dot={false} connectNulls isAnimationActive={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </Card>
+
             <Card style={{ height: 390 }}>
               <div style={{ textAlign: 'center', color: S.dim, fontSize: 13, marginBottom: 8 }}>
                 Performance (base 100 no primeiro candle alinhado) — {TIMEFRAMES[usedTimeframe].label} · {usedPeriod.label}
@@ -1803,7 +4056,7 @@ export default function DayTradePage() {
                 </div>
               ) : (
                 <div style={{ textAlign: 'center', color: S.dim, fontSize: 12 }}>
-                  O resumo é produzido localmente a partir das métricas exibidas.
+                  O resumo é produzido localmente a partir das métricas exibidas e não consome créditos de IA.
                 </div>
               )}
             </Card>
@@ -1812,7 +4065,7 @@ export default function DayTradePage() {
 
         <div style={{ color: S.dim, fontSize: 11, textAlign: 'center', lineHeight: 1.5, paddingBottom: 8 }}>
           Dados públicos de mercado da Binance. O preço ao vivo pode mudar até o fechamento do candle.
-          Esta ferramenta é descritiva e não constitui recomendação de investimento.
+          O playbook, os alertas, a Testnet e o backtest são ferramentas educacionais e de simulação; não constituem recomendação de investimento nem promessa de resultado.
         </div>
       </div>
     </main>
