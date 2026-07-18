@@ -1422,8 +1422,8 @@ export default function AnalisePage() {
 
                 <div
                   style={{
-                    fontSize: 17,
-                    fontWeight: 700,
+                    fontSize: 15,
+                    fontWeight: 600,
                     marginTop: 4,
                     color: S.b,
                   }}
