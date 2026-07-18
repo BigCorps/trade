@@ -1337,7 +1337,7 @@ export default function DayTradePage() {
               Day Trade
             </div>
             <div style={{ fontSize: 11, color: S.dim }}>
-              candles encerrados · atualização ao vivo · decisão sua
+              candles encerrados · atualização ao vivo
             </div>
           </div>
         </div>
@@ -1355,7 +1355,6 @@ export default function DayTradePage() {
           <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
             Análise
           </a>
-          <span style={{ color: S.b, fontWeight: 700 }}>Day Trade</span>
           <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
             Alertas
           </a>
@@ -1797,7 +1796,7 @@ export default function DayTradePage() {
                 </div>
               ) : (
                 <div style={{ textAlign: 'center', color: S.dim, fontSize: 12 }}>
-                  O resumo é produzido localmente a partir das métricas exibidas e não consome créditos de IA.
+                  O resumo é produzido localmente a partir das métricas exibidas.
                 </div>
               )}
             </Card>
