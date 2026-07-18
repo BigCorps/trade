@@ -1015,6 +1015,10 @@ export default function DayTradePage() {
     status: 'idle',
     message: '',
   });
+  const [copyAction, setCopyAction] = useState<RemoteActionState>({
+    status: 'idle',
+    message: '',
+  });
   const [history, setHistory] = useState<HistoryRecord[]>([]);
 
   // Valores educacionais informados manualmente. Nenhum saldo é movimentado.
@@ -1159,6 +1163,7 @@ export default function DayTradePage() {
     setError('');
     setReport('');
     setReportAction({ status: 'idle', message: '' });
+    setCopyAction({ status: 'idle', message: '' });
     setLiveA(null);
     setLiveB(null);
     setServerSetup(null);
@@ -2294,6 +2299,409 @@ export default function DayTradePage() {
     setupAnalysis.indicators,
     reportAction.status,
     updateLatestHistoryReport,
+  ]);
+
+  const copyAnalysisMarkdown = useCallback(async () => {
+    if (!derived.statsA) {
+      setCopyAction({
+        status: 'error',
+        message: 'Execute uma análise antes de copiar o Markdown.',
+      });
+      return;
+    }
+
+    const statsA = derived.statsA;
+    const statsB = derived.statsB;
+    const evaluation = setupAnalysis.evaluation;
+    const indicators = setupAnalysis.indicators;
+    const plan = evaluation?.plan ?? null;
+    const metrics = backtestResponse?.result.metrics ?? null;
+    const backtestTrades = backtestResponse?.result.trades.slice(-15).reverse() ?? [];
+    const generatedAt = new Date();
+    const officialCloseTime =
+      evaluation?.candleCloseTime ??
+      rawA[rawA.length - 1]?.closeTime ??
+      null;
+
+    const mdNumber = (
+      value: number | null | undefined,
+      digits = 2,
+    ): string =>
+      value === null || value === undefined || !Number.isFinite(value)
+        ? '—'
+        : fmt(value, digits);
+
+    const mdPrice = (
+      value: number | null | undefined,
+    ): string =>
+      value === null || value === undefined || !Number.isFinite(value)
+        ? '—'
+        : fmtPrice(value);
+
+    const mdPct = (
+      value: number | null | undefined,
+      digits = 2,
+    ): string =>
+      value === null || value === undefined || !Number.isFinite(value)
+        ? '—'
+        : fmtPct(value, digits);
+
+    const mdDate = (
+      value: string | number | null | undefined,
+    ): string => {
+      if (value === null || value === undefined || value === '') return '—';
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime())
+        ? '—'
+        : parsed.toLocaleString('pt-BR');
+    };
+
+    const cleanCell = (
+      value: string | number | null | undefined,
+    ): string =>
+      String(value ?? '—')
+        .replaceAll('|', '\\|')
+        .replace(/\r?\n/g, ' ')
+        .trim();
+
+    const statusLabel = evaluation
+      ? TREND_BREAKOUT_STATUS_LABELS[evaluation.status]?.label ??
+        evaluation.status
+      : 'Não calculado';
+
+    const lines: string[] = [
+      '# VigIA Trade — Snapshot completo da análise Day Trade',
+      '',
+      '> Revise este snapshot como uma segunda opinião técnica independente. Verifique a consistência entre métricas, indicadores, checklist, plano matemático, dimensionamento e backtest. Não invente dados externos, não altere números sem demonstrar a fórmula e não trate o status como recomendação de investimento.',
+      '',
+      '## Contexto da análise',
+      '',
+      `- **Gerado em:** ${generatedAt.toLocaleString('pt-BR')}`,
+      `- **Ativo principal:** ${usedSymbolA}`,
+      `- **Ativo de comparação:** ${usedSymbolB === 'nenhum' ? 'não utilizado' : usedSymbolB}`,
+      `- **Timeframe:** ${TIMEFRAMES[usedTimeframe].label} (${usedTimeframe})`,
+      `- **Período analisado:** ${usedPeriod.label}`,
+      `- **Candles oficiais:** somente candles encerrados`,
+      `- **Fechamento oficial mais recente:** ${mdDate(officialCloseTime)}`,
+      `- **Preço do candle encerrado:** ${mdPrice(statsA.lastPrice)} USDT`,
+      `- **Preço ao vivo do candle em formação:** ${liveA ? `${mdPrice(liveA.close)} USDT` : 'indisponível'}`,
+      `- **Status oficial do playbook:** ${statusLabel}`,
+      '',
+      '## Métricas do ativo principal',
+      '',
+      '| Métrica | Valor |',
+      '|---|---:|',
+      `| Último fechamento | ${mdPrice(statsA.lastPrice)} USDT |`,
+      `| Retorno no período | ${mdPct(statsA.returnPct)} |`,
+      `| Drawdown máximo | ${mdPct(statsA.maxDrawdownPct)} |`,
+      `| Drawdown atual | ${mdPct(statsA.currentDrawdownPct)} |`,
+      `| Tempo abaixo de um topo anterior | ${mdNumber(statsA.timeInDrawdownPct, 0)}% |`,
+      `| Volatilidade média anualizada | ${mdNumber(statsA.annualVolPct, 1)}% |`,
+      `| Volatilidade atual anualizada | ${mdNumber(statsA.currentVolPct, 1)}% |`,
+      `| Regime | ${statsA.regime} |`,
+      `| Sharpe intradiário | ${mdNumber(statsA.sharpe)} |`,
+      `| Candles positivos | ${mdNumber(statsA.pctPositive, 0)}% |`,
+      `| Melhor candle | ${mdPct(statsA.bestCandlePct)} |`,
+      `| Pior candle | ${mdPct(statsA.worstCandlePct)} |`,
+      `| Máxima do período | ${mdPrice(statsA.periodHigh)} USDT |`,
+      `| Mínima do período | ${mdPrice(statsA.periodLow)} USDT |`,
+      `| Amplitude | ${mdNumber(statsA.amplitudePct)}% |`,
+      `| Volume médio financeiro por candle | ${mdNumber(statsA.averageQuoteVolume, 2)} USDT |`,
+      `| Volume financeiro do último candle | ${mdNumber(statsA.lastQuoteVolume, 2)} USDT |`,
+    ];
+
+    if (statsB) {
+      lines.push(
+        '',
+        `## Comparação com ${statsB.symbol}`,
+        '',
+        '| Métrica | Valor |',
+        '|---|---:|',
+        `| Último fechamento | ${mdPrice(statsB.lastPrice)} USDT |`,
+        `| Retorno no período | ${mdPct(statsB.returnPct)} |`,
+        `| Drawdown máximo | ${mdPct(statsB.maxDrawdownPct)} |`,
+        `| Drawdown atual | ${mdPct(statsB.currentDrawdownPct)} |`,
+        `| Tempo abaixo de um topo anterior | ${mdNumber(statsB.timeInDrawdownPct, 0)}% |`,
+        `| Volatilidade atual anualizada | ${mdNumber(statsB.currentVolPct, 1)}% |`,
+        `| Regime | ${statsB.regime} |`,
+        `| Sharpe intradiário | ${mdNumber(statsB.sharpe)} |`,
+        `| Correlação dos retornos | ${derived.correlation === null ? 'indisponível' : `${mdNumber(derived.correlation, 4)} (${correlationText(derived.correlation)})`} |`,
+      );
+    }
+
+    lines.push('', '## Indicadores determinísticos', '');
+
+    if (indicators) {
+      lines.push(
+        '| Indicador | Valor |',
+        '|---|---:|',
+        `| Candles disponíveis / necessários | ${indicators.candleCount} / ${indicators.requiredCandles} |`,
+        `| EMA ${indicators.options.emaFastPeriod} | ${mdPrice(indicators.emaFast)} USDT |`,
+        `| EMA ${indicators.options.emaMediumPeriod} | ${mdPrice(indicators.emaMedium)} USDT |`,
+        `| EMA ${indicators.options.emaSlowPeriod} | ${mdPrice(indicators.emaSlow)} USDT |`,
+        `| ATR ${indicators.options.atrPeriod} | ${mdPrice(indicators.atr)} USDT |`,
+        `| ATR sobre o preço | ${mdNumber(indicators.atrPct, 4)}% |`,
+        `| Nível de rompimento | ${mdPrice(indicators.breakoutLevel)} USDT |`,
+        `| Suporte de referência | ${mdPrice(indicators.supportLevel)} USDT |`,
+        `| Distância até o rompimento | ${mdPct(indicators.distanceToBreakoutPct, 4)} |`,
+        `| Distância da EMA lenta | ${mdPct(indicators.distanceFromSlowEmaPct, 4)} |`,
+        `| Volume atual | ${mdNumber(indicators.currentVolume, 4)} |`,
+        `| Volume médio | ${mdNumber(indicators.averageVolume, 4)} |`,
+        `| Volume relativo | ${mdNumber(indicators.relativeVolume, 4)}x |`,
+        `| Volatilidade anualizada | ${mdNumber(indicators.annualizedVolatilityPct, 2)}% |`,
+        `| Regime de volatilidade | ${indicators.volatilityRegime} |`,
+        `| Percentil de volatilidade | ${mdNumber(indicators.volatilityPercentile, 2)} |`,
+      );
+    } else {
+      lines.push('Indicadores indisponíveis para este snapshot.');
+    }
+
+    lines.push('', '## Checklist oficial do playbook', '');
+
+    if (evaluation) {
+      lines.push(
+        `- **Estratégia:** ${evaluation.strategy}`,
+        `- **Versão:** ${evaluation.strategyVersion}`,
+        `- **Status:** ${statusLabel} (\`${evaluation.status}\`)`,
+        `- **Condições atendidas:** ${evaluation.passedConditions} de ${evaluation.totalConditions}`,
+        `- **Pontuação do checklist:** ${mdNumber(evaluation.scorePct, 2)}%`,
+        `- **Resumo determinístico:** ${evaluation.summary}`,
+        `- **Próximo gatilho:** ${evaluation.nextTrigger}`,
+        '',
+        '| Resultado | Condição | Valor atual | Exigência | Explicação |',
+        '|:---:|---|---:|---|---|',
+      );
+
+      for (const condition of evaluation.conditions) {
+        lines.push(
+          `| ${condition.available ? (condition.passed ? '✅' : '❌') : '⚪'} | ${cleanCell(condition.label)} | ${cleanCell(formatConditionValue(condition.currentValue))} | ${cleanCell(condition.requiredValue)} | ${cleanCell(condition.explanation)} |`,
+        );
+      }
+
+      if (evaluation.warnings.length) {
+        lines.push('', '**Avisos do motor determinístico:**');
+        for (const warning of evaluation.warnings) {
+          lines.push(`- ${warning}`);
+        }
+      }
+    } else {
+      lines.push('O checklist ainda não foi calculado.');
+    }
+
+    lines.push('', '## Plano matemático do playbook', '');
+
+    if (plan) {
+      lines.push(
+        '| Parâmetro | Valor |',
+        '|---|---:|',
+        `| Direção modelada | ${plan.direction} |`,
+        `| Entrada de referência | ${mdPrice(plan.entryReference)} USDT |`,
+        `| Invalidação / stop de referência | ${mdPrice(plan.stopReference)} USDT |`,
+        `| Alvo matemático | ${mdPrice(plan.targetReference)} USDT |`,
+        `| Risco por unidade | ${mdPrice(plan.riskPerUnit)} USDT |`,
+        `| Retorno por unidade | ${mdPrice(plan.rewardPerUnit)} USDT |`,
+        `| Relação risco-retorno | ${mdNumber(plan.riskRewardRatio, 2)}R |`,
+        `| Distância do stop | ${mdNumber(plan.stopDistancePct, 4)}% |`,
+        `| Distância do alvo | ${mdNumber(plan.targetDistancePct, 4)}% |`,
+        `| Stop em múltiplos de ATR | ${mdNumber(plan.stopDistanceAtr, 4)} ATR |`,
+        `| Maior entrada ainda aceitável | ${mdPrice(plan.latestAcceptableEntry)} USDT |`,
+      );
+    } else {
+      lines.push(
+        'Nenhum plano executável foi formado. Isso ocorre quando as condições determinísticas não justificam criar entrada, stop e alvo.',
+      );
+    }
+
+    lines.push('', '## Dimensionamento educacional', '');
+
+    if (positionSizing?.ok) {
+      lines.push(
+        '| Parâmetro | Valor |',
+        '|---|---:|',
+        `| Saldo informado | ${mdNumber(positionSizing.accountBalance)} USDT |`,
+        `| Saldo disponível informado | ${mdNumber(positionSizing.availableBalance)} USDT |`,
+        `| Risco configurado | ${mdNumber(positionSizing.riskPercent, 2)}% |`,
+        `| Quantidade máxima estimada | ${mdNumber(positionSizing.quantity, 8)} |`,
+        `| Valor da posição | ${mdNumber(positionSizing.notional)} USDT |`,
+        `| Perda total estimada no stop | ${mdNumber(positionSizing.estimatedTotalRiskUsdt)} USDT |`,
+        `| Risco efetivo | ${mdNumber(positionSizing.estimatedTotalRiskPct, 4)}% |`,
+        `| Retorno líquido estimado | ${mdNumber(positionSizing.estimatedNetRewardUsdt)} USDT |`,
+        `| Relação risco-retorno líquida | ${mdNumber(positionSizing.estimatedNetRiskRewardRatio, 4)}R |`,
+      );
+
+      if (positionSizing.warnings.length) {
+        lines.push('', `- **Avisos:** ${positionSizing.warnings.join(' ')}`);
+      }
+    } else if (positionSizing) {
+      lines.push(
+        `O dimensionamento não ficou disponível: ${positionSizing.errors.join(' ')}`,
+      );
+    } else {
+      lines.push('Dimensionamento indisponível porque ainda não existe um plano completo.');
+    }
+
+    lines.push('', '## Persistência e alerta', '');
+
+    lines.push(
+      `- **Setup salvo no servidor:** ${serverSetup ? 'sim' : 'não'}`,
+      `- **Status salvo:** ${serverSetup ? TREND_BREAKOUT_STATUS_LABELS[serverSetup.status]?.label ?? serverSetup.status : '—'}`,
+      `- **Regra de alerta:** ${alertRule ? (alertRule.ativo ? 'ativa' : 'pausada') : 'não configurada'}`,
+      `- **Status monitorados:** ${alertRule ? alertRule.notify_statuses.join(', ') : '—'}`,
+      `- **Cooldown:** ${alertRule ? `${alertRule.cooldown_minutes} minutos` : '—'}`,
+      `- **Último status observado pelo alerta:** ${alertRule?.last_status ?? '—'}`,
+      `- **Último disparo:** ${mdDate(alertRule?.last_triggered_at)}`,
+    );
+
+    lines.push('', '## Backtest exibido na página', '');
+
+    if (metrics && backtestResponse) {
+      lines.push(
+        `- **Símbolo:** ${backtestResponse.symbol}`,
+        `- **Timeframe:** ${backtestResponse.timeframe}`,
+        `- **Candles solicitados:** ${backtestResponse.requested_candles}`,
+        `- **Tempo de execução:** ${backtestResponse.execution_ms} ms`,
+        '',
+        '| Métrica | Valor |',
+        '|---|---:|',
+        `| Capital inicial | ${mdNumber(metrics.initialCapitalUsdt)} USDT |`,
+        `| Capital final | ${mdNumber(metrics.finalCapitalUsdt)} USDT |`,
+        `| PnL líquido | ${mdNumber(metrics.netPnlUsdt)} USDT |`,
+        `| Retorno líquido | ${mdPct(metrics.netReturnPct)} |`,
+        `| Sinais encontrados | ${metrics.signals} |`,
+        `| Operações realizadas | ${metrics.totalTrades} |`,
+        `| Sinais ignorados | ${metrics.skippedSignals} |`,
+        `| Vitórias / derrotas / empates | ${metrics.wins} / ${metrics.losses} / ${metrics.breakeven} |`,
+        `| Taxa de acerto | ${mdNumber(metrics.winRatePct)}% |`,
+        `| Fator de lucro | ${mdNumber(metrics.profitFactor, 4)} |`,
+        `| Média por operação | ${mdNumber(metrics.averagePnlUsdt)} USDT |`,
+        `| Média em R | ${mdNumber(metrics.averageR, 4)}R |`,
+        `| Melhor / pior resultado | ${mdNumber(metrics.bestR, 4)}R / ${mdNumber(metrics.worstR, 4)}R |`,
+        `| Drawdown máximo | ${mdPct(metrics.maximumDrawdownPct)} |`,
+        `| Maior sequência de perdas | ${metrics.maximumConsecutiveLosses} |`,
+        `| Exposição | ${mdNumber(metrics.exposurePct)}% |`,
+      );
+
+      if (backtestTrades.length) {
+        lines.push(
+          '',
+          '### Últimas operações mostradas no backtest',
+          '',
+          '| Entrada | Saída | Resultado | Motivo | PnL líquido | R |',
+          '|---|---|---|---|---:|---:|',
+        );
+
+        for (const trade of backtestTrades) {
+          lines.push(
+            `| ${mdDate(trade.entryTime)} | ${mdDate(trade.exitTime)} | ${trade.result} | ${backtestExitLabel(trade.exitReason)} | ${mdNumber(trade.netPnlUsdt)} USDT | ${mdNumber(trade.resultR, 4)}R |`,
+          );
+        }
+      }
+
+      if (backtestResponse.result.warnings.length) {
+        lines.push('', '**Avisos do backtest:**');
+        for (const warning of backtestResponse.result.warnings) {
+          lines.push(`- ${warning}`);
+        }
+      }
+    } else {
+      lines.push('Nenhum backtest foi executado nesta sessão.');
+    }
+
+    lines.push('', '## Diário carregado na página', '');
+
+    if (journal.length) {
+      lines.push(
+        '| Data | Ativo | Modo | Status | Entrada | Saída | PnL | R |',
+        '|---|---|---|---|---:|---:|---:|---:|',
+      );
+
+      for (const item of journal) {
+        lines.push(
+          `| ${mdDate(item.criado_em)} | ${item.symbol}/${item.timeframe} | ${item.mode} | ${cleanCell(journalStatusLabel(item.status))} | ${mdPrice(nullableNumber(item.entry_price))} | ${mdPrice(nullableNumber(item.exit_price))} | ${mdNumber(nullableNumber(item.pnl_usdt))} USDT | ${mdNumber(nullableNumber(item.result_r), 4)}R |`,
+        );
+      }
+    } else {
+      lines.push('Nenhum registro de diário foi carregado.');
+    }
+
+    lines.push(
+      '',
+      '## Relatório explicativo do VigIA',
+      '',
+      report
+        ? report
+        : 'O relatório interno com IA não foi gerado. Use as métricas e o checklist acima para fazer uma revisão independente.',
+      '',
+      '## Perguntas sugeridas para a IA revisora',
+      '',
+      '1. O status oficial é coerente com as condições aprovadas e reprovadas?',
+      '2. Há alguma inconsistência matemática entre entrada, stop, alvo e relação risco-retorno?',
+      '3. O dimensionamento respeita o risco informado e o saldo disponível?',
+      '4. O backtest possui amostra suficiente, custos realistas e drawdown aceitável para continuar sendo testado?',
+      '5. Quais dados adicionais seriam necessários antes de tirar qualquer conclusão?',
+      '',
+      '> Os números deste snapshot descrevem dados históricos e regras do sistema. Eles não antecipam o próximo movimento e não constituem recomendação de investimento.',
+    );
+
+    const markdown = lines.join('\n');
+
+    setCopyAction({
+      status: 'loading',
+      message: 'Preparando o Markdown...',
+    });
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(markdown);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = markdown;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+
+        const copied = document.execCommand('copy');
+        document.body.removeChild(textarea);
+
+        if (!copied) {
+          throw new Error('O navegador recusou o acesso à área de transferência.');
+        }
+      }
+
+      setCopyAction({
+        status: 'success',
+        message:
+          `Markdown completo copiado (${markdown.length.toLocaleString('pt-BR')} caracteres). Cole na IA de sua preferência.`,
+      });
+    } catch (copyError) {
+      setCopyAction({
+        status: 'error',
+        message:
+          copyError instanceof Error
+            ? `Não foi possível copiar: ${copyError.message}`
+            : 'Não foi possível copiar o Markdown.',
+      });
+    }
+  }, [
+    derived.statsA,
+    derived.statsB,
+    derived.correlation,
+    setupAnalysis.evaluation,
+    setupAnalysis.indicators,
+    backtestResponse,
+    rawA,
+    usedSymbolA,
+    usedSymbolB,
+    usedTimeframe,
+    usedPeriod.label,
+    liveA,
+    positionSizing,
+    serverSetup,
+    alertRule,
+    journal,
+    report,
   ]);
 
   const clearHistory = () => {
@@ -4159,32 +4567,72 @@ export default function DayTradePage() {
                   marginBottom: 12,
                 }}
               >
-                <button
-                  onClick={generateReport}
-                  disabled={reportAction.status === 'loading'}
+                <div
                   style={{
-                    background:
-                      reportAction.status === 'loading' ? S.border : S.a,
-                    color:
-                      reportAction.status === 'loading' ? S.dim : '#1a1206',
-                    border: 'none',
-                    borderRadius: 8,
-                    padding: '10px 20px',
-                    fontSize: 13,
-                    fontWeight: 700,
-                    cursor:
-                      reportAction.status === 'loading'
-                        ? 'not-allowed'
-                        : 'pointer',
-                    opacity: reportAction.status === 'loading' ? 0.75 : 1,
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    justifyContent: 'center',
+                    gap: 10,
                   }}
                 >
-                  {reportAction.status === 'loading'
-                    ? 'Analisando com IA...'
-                    : report
-                      ? 'Gerar nova análise com IA'
-                      : 'Gerar análise intradiária com IA'}
-                </button>
+                  <button
+                    onClick={generateReport}
+                    disabled={reportAction.status === 'loading'}
+                    style={{
+                      background:
+                        reportAction.status === 'loading' ? S.border : S.a,
+                      color:
+                        reportAction.status === 'loading' ? S.dim : '#1a1206',
+                      border: 'none',
+                      borderRadius: 8,
+                      padding: '10px 20px',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      cursor:
+                        reportAction.status === 'loading'
+                          ? 'not-allowed'
+                          : 'pointer',
+                      opacity: reportAction.status === 'loading' ? 0.75 : 1,
+                    }}
+                  >
+                    {reportAction.status === 'loading'
+                      ? 'Analisando com IA...'
+                      : report
+                        ? 'Gerar nova análise com IA'
+                        : 'Gerar análise intradiária com IA'}
+                  </button>
+
+                  <button
+                    onClick={copyAnalysisMarkdown}
+                    disabled={copyAction.status === 'loading'}
+                    style={{
+                      background:
+                        copyAction.status === 'success'
+                          ? `${S.green}22`
+                          : S.panelSoft,
+                      color:
+                        copyAction.status === 'success' ? S.green : S.text,
+                      border: `1px solid ${
+                        copyAction.status === 'success' ? `${S.green}88` : S.border
+                      }`,
+                      borderRadius: 8,
+                      padding: '10px 20px',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      cursor:
+                        copyAction.status === 'loading'
+                          ? 'not-allowed'
+                          : 'pointer',
+                      opacity: copyAction.status === 'loading' ? 0.75 : 1,
+                    }}
+                  >
+                    {copyAction.status === 'loading'
+                      ? 'Copiando...'
+                      : copyAction.status === 'success'
+                        ? '✓ Markdown copiado'
+                        : 'Copiar Markdown'}
+                  </button>
+                </div>
 
                 {reportAction.message && (
                   <div
@@ -4204,6 +4652,25 @@ export default function DayTradePage() {
                     }}
                   >
                     {reportAction.message}
+                  </div>
+                )}
+
+                {copyAction.message && (
+                  <div
+                    style={{
+                      color:
+                        copyAction.status === 'success'
+                          ? S.green
+                          : copyAction.status === 'error'
+                            ? S.red
+                            : S.dim,
+                      fontSize: 11,
+                      lineHeight: 1.45,
+                      textAlign: 'center',
+                      maxWidth: 760,
+                    }}
+                  >
+                    {copyAction.message}
                   </div>
                 )}
               </div>
@@ -4231,7 +4698,7 @@ export default function DayTradePage() {
                 </div>
               ) : (
                 <div style={{ textAlign: 'center', color: S.dim, fontSize: 12, lineHeight: 1.55 }}>
-                  A IA explicará o cenário usando somente as métricas, os indicadores e o checklist calculados pelo VigIA. Ela não altera o status do setup, não libera ordens e não recomenda compra ou venda.
+                  Gere a explicação pelo VigIA ou copie o snapshot completo em Markdown para revisar na IA de sua preferência. O Markdown funciona mesmo sem gerar o relatório interno e não inclui chaves, tokens ou segredos.
                 </div>
               )}
             </Card>

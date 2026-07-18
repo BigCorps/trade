@@ -2186,7 +2186,7 @@ export default function AnalisePage() {
                       ? 'Copiando...'
                       : copyStatus === 'success'
                         ? '✓ Markdown copiado'
-                        : 'Copiar Markdown para outra IA'}
+                        : 'Copiar Markdown'}
                   </button>
                 </div>
 
