@@ -11,6 +11,7 @@
  * - Calcula Sharpe histórico com retornos logarítmicos e desvio-padrão amostral.
  * - Valida amostra dos dois ativos antes de exibir ou persistir a análise.
  * - Evita que falhas de persistência derrubem a análise já concluída.
+ * - Busca candles extras para aquecer a volatilidade sem ampliar o período exibido.
  */
 
 import { useState, useMemo, useCallback, useEffect } from 'react';
@@ -235,11 +236,10 @@ const STATUS_LABEL: Record<string, { label: string; color: string }> = {
 async function fetchKlines(
   symbol: string,
   interval: string,
-  days: number,
+  requestedStart: number,
+  requestedEnd: number,
   onProgress: (message: string) => void,
 ): Promise<Candle[]> {
-  const requestedEnd = Date.now();
-  const requestedStart = requestedEnd - days * 24 * 60 * 60 * 1000;
   let cursor = requestedStart;
 
   const candlesByTime = new Map<number, Candle>();
@@ -527,9 +527,40 @@ function computeStats(
   };
 }
 
+const DAY_MS = 24 * 60 * 60 * 1_000;
+
 function minimumCandlesFor(timeframe: Timeframe): number {
   const config = TIMEFRAMES[timeframe];
   return Math.max(MIN_ALIGNED_RETURNS, config.volWindow + 10);
+}
+
+function volatilityWarmupDays(timeframe: Timeframe): number {
+  const config = TIMEFRAMES[timeframe];
+  const candlesNeeded = config.volWindow + 2;
+
+  // O semanal não possui uma quantidade inteira de candles por dia.
+  // Acrescentamos duas semanas de margem para feriados, alinhamento do candle
+  // e para garantir que a primeira janela visível já esteja completa.
+  if (timeframe === '1w') return candlesNeeded * 7;
+
+  return Math.ceil(candlesNeeded / config.candlesPorDia);
+}
+
+function alignVolatilityToVisibleCandles(
+  fullCandles: Candle[],
+  fullVolatility: (number | null)[],
+  visibleCandles: Candle[],
+): (number | null)[] {
+  const volatilityByTime = new Map<number, number | null>(
+    fullCandles.map((candle, index) => [
+      candle.openTime,
+      fullVolatility[index] ?? null,
+    ]),
+  );
+
+  return visibleCandles.map(
+    (candle) => volatilityByTime.get(candle.openTime) ?? null,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -608,6 +639,8 @@ export default function AnalisePage() {
 
   const [dataA, setDataA] = useState<Candle[]>([]);
   const [dataB, setDataB] = useState<Candle[]>([]);
+  const [volA, setVolA] = useState<(number | null)[]>([]);
+  const [volB, setVolB] = useState<(number | null)[]>([]);
   const [report, setReport] = useState('');
   const [reportLoading, setReportLoading] = useState(false);
 
@@ -725,21 +758,61 @@ export default function AnalisePage() {
     setCurrentAnalysisId(null);
 
     try {
-      const candlesA = await fetchKlines(
+      const analysisEnd = Date.now();
+      const analysisStart = analysisEnd - selectedPeriod.days * DAY_MS;
+      const warmupStart = analysisStart - volatilityWarmupDays(selectedTf) * DAY_MS;
+
+      const fullCandlesA = await fetchKlines(
         selectedA,
         config.api,
-        selectedPeriod.days,
+        warmupStart,
+        analysisEnd,
         setProgress,
       );
 
-      const candlesB = selectedB !== 'nenhum'
+      const fullCandlesB = selectedB !== 'nenhum'
         ? await fetchKlines(
           selectedB,
           config.api,
-          selectedPeriod.days,
+          warmupStart,
+          analysisEnd,
           setProgress,
         )
         : [];
+
+      // Os candles anteriores ao período escolhido existem apenas para formar
+      // a primeira janela de volatilidade. Retorno, drawdown, correlação,
+      // performance e eixo do gráfico continuam restritos ao período solicitado.
+      const candlesA = fullCandlesA.filter(
+        (candle) => candle.openTime >= analysisStart,
+      );
+      const candlesB = fullCandlesB.filter(
+        (candle) => candle.openTime >= analysisStart,
+      );
+
+      const fullVolA = rollingVol(
+        logReturns(fullCandlesA),
+        config.volWindow,
+        config.periodsPerYear,
+      );
+      const fullVolB = fullCandlesB.length
+        ? rollingVol(
+          logReturns(fullCandlesB),
+          config.volWindow,
+          config.periodsPerYear,
+        )
+        : [];
+
+      const visibleVolA = alignVolatilityToVisibleCandles(
+        fullCandlesA,
+        fullVolA,
+        candlesA,
+      );
+      const visibleVolB = alignVolatilityToVisibleCandles(
+        fullCandlesB,
+        fullVolB,
+        candlesB,
+      );
 
       const minimum = minimumCandlesFor(selectedTf);
 
@@ -767,6 +840,8 @@ export default function AnalisePage() {
 
       setDataA(candlesA);
       setDataB(candlesB);
+      setVolA(visibleVolA);
+      setVolB(visibleVolB);
       setUsedSymbolA(selectedA);
       setUsedSymbolB(selectedB);
       setUsedTf(selectedTf);
@@ -778,15 +853,10 @@ export default function AnalisePage() {
       // de mercado que já foram calculados e exibidos corretamente.
       if (session) {
         try {
-          const volSeriesA = rollingVol(
-            logReturns(candlesA),
-            config.volWindow,
-            config.periodsPerYear,
-          );
           const statsForA = computeStats(
             selectedA,
             candlesA,
-            volSeriesA,
+            visibleVolA,
             config,
           );
 
@@ -794,16 +864,10 @@ export default function AnalisePage() {
           let correlationValue: number | null = null;
 
           if (candlesB.length) {
-            const volSeriesB = rollingVol(
-              logReturns(candlesB),
-              config.volWindow,
-              config.periodsPerYear,
-            );
-
             statsForB = computeStats(
               selectedB,
               candlesB,
-              volSeriesB,
+              visibleVolB,
               config,
             );
             correlationValue = correlation(candlesA, candlesB);
@@ -856,20 +920,6 @@ export default function AnalisePage() {
   // Derivados da última análise concluída, nunca dos controles que ainda não
   // foram executados.
   const tf = TIMEFRAMES[usedTf];
-
-  const volA = useMemo(
-    () => dataA.length
-      ? rollingVol(logReturns(dataA), tf.volWindow, tf.periodsPerYear)
-      : [],
-    [dataA, tf],
-  );
-
-  const volB = useMemo(
-    () => dataB.length
-      ? rollingVol(logReturns(dataB), tf.volWindow, tf.periodsPerYear)
-      : [],
-    [dataB, tf],
-  );
 
   const statsA = useMemo(
     () => dataA.length
