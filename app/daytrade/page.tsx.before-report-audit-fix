@@ -54,7 +54,6 @@ import {
 } from '../../lib/daytrade/strategies/trendBreakout';
 import {
   calculatePositionSizeFromPlan,
-  calculateRiskReward,
   type PositionSizingResult,
 } from '../../lib/daytrade/risk';
 import type {
@@ -879,10 +878,10 @@ function buildReport(
     `${statsB.symbol} apresentou retorno de ${fmtPct(statsB.returnPct)}, volatilidade ` +
     `atual anualizada de ${fmt(statsB.currentVolPct, 1)}%, drawdown máximo de ` +
     `${fmtPct(statsB.maxDrawdownPct)} e drawdown atual de ` +
-    `${fmtPct(statsB.currentDrawdownPct)}. O Sharpe anualizado da amostra foi ` +
+    `${fmtPct(statsB.currentDrawdownPct)}. O Sharpe intradiário foi ` +
     `${fmt(statsA.sharpe)} para ${statsA.symbol} e ${fmt(statsB.sharpe)} para ` +
     `${statsB.symbol}; essa métrica compara retorno médio com volatilidade e não ` +
-    `representa sozinha todo o risco de um ativo. Em janelas intradiárias curtas, a anualização pode produzir valores extremos e deve ser interpretada com cautela.`;
+    `representa sozinha todo o risco de um ativo.`;
 
   const correlationParagraph = correlationValue === null
     ? 'A correlação não foi calculada porque não havia retornos alinhados suficientes.'
@@ -2317,50 +2316,12 @@ export default function DayTradePage() {
     const indicators = setupAnalysis.indicators;
     const plan = evaluation?.plan ?? null;
     const metrics = backtestResponse?.result.metrics ?? null;
-    const backtestTrades =
-      backtestResponse?.result.trades.slice(-15).reverse() ?? [];
+    const backtestTrades = backtestResponse?.result.trades.slice(-15).reverse() ?? [];
     const generatedAt = new Date();
     const officialCloseTime =
       evaluation?.candleCloseTime ??
       rawA[rawA.length - 1]?.closeTime ??
       null;
-    const intervalMs = TIMEFRAMES[usedTimeframe].intervalMs;
-    const nextExpectedCloseTime =
-      officialCloseTime === null ? null : officialCloseTime + intervalMs;
-    const visibleReturnCount = Math.max(0, statsA.candleCount - 1);
-    const indicatorCandleCount =
-      indicators?.candleCount ?? rawA.length;
-    const warmupCandleCount = Math.max(
-      0,
-      indicatorCandleCount - statsA.candleCount,
-    );
-    const executableStatuses: TrendBreakoutStatus[] = [
-      'condicoes_atendidas',
-      'entrada_atrasada',
-      'invalidado',
-    ];
-    const planWasConfirmed =
-      evaluation !== null &&
-      executableStatuses.includes(evaluation.status);
-    const planIsCurrentlyExecutable =
-      evaluation?.status === 'condicoes_atendidas';
-    const pendingConditions =
-      evaluation?.conditions.filter(
-        (condition) => condition.available && !condition.passed,
-      ) ?? [];
-
-    const assumedFeeRatePct = 0.1;
-    const assumedSlippagePct = 0.05;
-    const costEstimate = plan
-      ? calculateRiskReward({
-          direction: plan.direction,
-          entryPrice: plan.entryReference,
-          stopPrice: plan.stopReference,
-          targetPrice: plan.targetReference,
-          feeRatePct: assumedFeeRatePct,
-          slippagePct: assumedSlippagePct,
-        })
-      : null;
 
     const mdNumber = (
       value: number | null | undefined,
@@ -2403,97 +2364,28 @@ export default function DayTradePage() {
         .replace(/\r?\n/g, ' ')
         .trim();
 
-    const countMissingCandles = (candles: Candle[]): number => {
-      let missing = 0;
-
-      for (let index = 1; index < candles.length; index += 1) {
-        const distance =
-          candles[index].openTime - candles[index - 1].openTime;
-        const steps = Math.round(distance / intervalMs);
-        if (steps > 1) missing += steps - 1;
-      }
-
-      return missing;
-    };
-
-    const alignedPairCount = (() => {
-      if (!derived.visibleB.length) return 0;
-      const timesB = new Set(
-        derived.visibleB.map((candle) => candle.openTime),
-      );
-      return derived.visibleA.filter(
-        (candle) => timesB.has(candle.openTime),
-      ).length;
-    })();
-
     const statusLabel = evaluation
       ? TREND_BREAKOUT_STATUS_LABELS[evaluation.status]?.label ??
         evaluation.status
       : 'Não calculado';
 
-    const shortSampleWarning =
-      usedPeriod.durationMs < 7 * DAY || visibleReturnCount < 500
-        ? 'A amostra é curta para inferência estatística. O Sharpe foi anualizado matematicamente e pode ficar muito elevado ou muito negativo por pequenas variações intradiárias.'
-        : 'O Sharpe continua sendo uma descrição histórica da amostra e não uma previsão.';
-
-    const planHeading =
-      evaluation?.status === 'condicoes_atendidas'
-        ? '## Plano técnico confirmado pelo playbook'
-        : evaluation?.status === 'entrada_atrasada'
-          ? '## Plano técnico confirmado, mas com entrada atrasada'
-          : evaluation?.status === 'invalidado'
-            ? '## Plano técnico invalidado'
-            : '## Simulação matemática prévia — não executável';
-
-    const planExplanation =
-      evaluation?.status === 'condicoes_atendidas'
-        ? 'Todas as condições foram atendidas no candle encerrado. Os valores abaixo continuam sendo referências educacionais, não uma ordem.'
-        : evaluation?.status === 'entrada_atrasada'
-          ? 'O setup foi confirmado anteriormente, mas o preço ao vivo ultrapassou o limite previsto. Uma nova entrada está bloqueada.'
-          : evaluation?.status === 'invalidado'
-            ? 'O setup foi confirmado anteriormente, mas atingiu o nível de invalidação. Uma nova entrada está bloqueada.'
-            : 'As condições ainda não foram todas atendidas. Entrada, stop e alvo abaixo são apenas uma projeção usando o candle atual e serão recalculados após eventual confirmação.';
-
     const lines: string[] = [
       '# VigIA Trade — Snapshot completo da análise Day Trade',
       '',
-      '> Revise este snapshot como uma segunda opinião técnica independente. Verifique a consistência entre métricas, indicadores, checklist, plano matemático, custos, dimensionamento e backtest. Não invente dados externos, não altere números sem demonstrar a fórmula e não trate o status como recomendação de investimento.',
+      '> Revise este snapshot como uma segunda opinião técnica independente. Verifique a consistência entre métricas, indicadores, checklist, plano matemático, dimensionamento e backtest. Não invente dados externos, não altere números sem demonstrar a fórmula e não trate o status como recomendação de investimento.',
       '',
       '## Contexto da análise',
       '',
       `- **Gerado em:** ${generatedAt.toLocaleString('pt-BR')}`,
       `- **Ativo principal:** ${usedSymbolA}`,
-      `- **Ativo de comparação:** ${
-        usedSymbolB === 'nenhum' ? 'não utilizado' : usedSymbolB
-      }`,
+      `- **Ativo de comparação:** ${usedSymbolB === 'nenhum' ? 'não utilizado' : usedSymbolB}`,
       `- **Timeframe:** ${TIMEFRAMES[usedTimeframe].label} (${usedTimeframe})`,
-      `- **Período visível analisado:** ${usedPeriod.label}`,
-      '- **Candles oficiais:** somente candles encerrados',
-      `- **Candles visíveis do ativo principal:** ${statsA.candleCount}`,
-      `- **Retornos visíveis calculados:** ${visibleReturnCount}`,
-      `- **Candles totais usados pelos indicadores:** ${indicatorCandleCount}`,
-      `- **Candles anteriores usados para aquecimento:** ${warmupCandleCount}`,
-      `- **Candles ausentes dentro da janela visível:** ${countMissingCandles(
-        derived.visibleA,
-      )}`,
+      `- **Período analisado:** ${usedPeriod.label}`,
+      `- **Candles oficiais:** somente candles encerrados`,
       `- **Fechamento oficial mais recente:** ${mdDate(officialCloseTime)}`,
-      `- **Próximo encerramento esperado:** ${mdDate(nextExpectedCloseTime)}`,
-      '- **Candle atual em formação:** não participa das métricas nem confirma rompimento',
       `- **Preço do candle encerrado:** ${mdPrice(statsA.lastPrice)} USDT`,
-      `- **Preço ao vivo do candle em formação:** ${
-        liveA ? `${mdPrice(liveA.close)} USDT` : 'indisponível'
-      }`,
+      `- **Preço ao vivo do candle em formação:** ${liveA ? `${mdPrice(liveA.close)} USDT` : 'indisponível'}`,
       `- **Status oficial do playbook:** ${statusLabel}`,
-      '',
-      '## Metodologia e limitações',
-      '',
-      '- Retorno, drawdown e Sharpe usam fechamentos de candles encerrados.',
-      '- Drawdown máximo e atual são calculados contra o maior fechamento anterior, não contra a máxima intraperíodo.',
-      '- Volatilidade usa retornos logarítmicos, desvio-padrão populacional na janela móvel e anualização pela raiz quadrada da quantidade de candles por ano.',
-      '- Sharpe usa média dos retornos logarítmicos, desvio-padrão amostral, taxa livre de risco igual a zero e anualização. Em amostras intradiárias curtas, o valor é estatisticamente instável.',
-      '- O volume financeiro médio usa todos os candles do período visível. O volume médio do indicador de rompimento usa a janela anterior configurada pelo playbook.',
-      '- A relação risco-retorno do plano é bruta. Taxas e slippage podem reduzir materialmente o resultado líquido.',
-      `- **Aviso sobre o Sharpe:** ${shortSampleWarning}`,
       '',
       '## Métricas do ativo principal',
       '',
@@ -2501,44 +2393,21 @@ export default function DayTradePage() {
       '|---|---:|',
       `| Último fechamento | ${mdPrice(statsA.lastPrice)} USDT |`,
       `| Retorno no período | ${mdPct(statsA.returnPct)} |`,
-      `| Drawdown máximo por fechamento | ${mdPct(
-        statsA.maxDrawdownPct,
-      )} |`,
-      `| Drawdown atual por fechamento | ${mdPct(
-        statsA.currentDrawdownPct,
-      )} |`,
-      `| Tempo abaixo de um topo anterior | ${mdNumber(
-        statsA.timeInDrawdownPct,
-        0,
-      )}% |`,
-      `| Volatilidade média anualizada | ${mdNumber(
-        statsA.annualVolPct,
-        1,
-      )}% |`,
-      `| Volatilidade atual anualizada | ${mdNumber(
-        statsA.currentVolPct,
-        1,
-      )}% |`,
+      `| Drawdown máximo | ${mdPct(statsA.maxDrawdownPct)} |`,
+      `| Drawdown atual | ${mdPct(statsA.currentDrawdownPct)} |`,
+      `| Tempo abaixo de um topo anterior | ${mdNumber(statsA.timeInDrawdownPct, 0)}% |`,
+      `| Volatilidade média anualizada | ${mdNumber(statsA.annualVolPct, 1)}% |`,
+      `| Volatilidade atual anualizada | ${mdNumber(statsA.currentVolPct, 1)}% |`,
       `| Regime | ${statsA.regime} |`,
-      `| Sharpe anualizado da amostra | ${mdNumber(
-        statsA.sharpe,
-      )} |`,
-      `| Retornos positivos | ${mdNumber(statsA.pctPositive, 0)}% |`,
+      `| Sharpe intradiário | ${mdNumber(statsA.sharpe)} |`,
+      `| Candles positivos | ${mdNumber(statsA.pctPositive, 0)}% |`,
       `| Melhor candle | ${mdPct(statsA.bestCandlePct)} |`,
       `| Pior candle | ${mdPct(statsA.worstCandlePct)} |`,
-      `| Máxima intraperíodo | ${mdPrice(statsA.periodHigh)} USDT |`,
-      `| Mínima intraperíodo | ${mdPrice(statsA.periodLow)} USDT |`,
-      `| Amplitude máxima/mínima | ${mdNumber(
-        statsA.amplitudePct,
-      )}% |`,
-      `| Volume financeiro médio no período visível | ${mdNumber(
-        statsA.averageQuoteVolume,
-        2,
-      )} USDT |`,
-      `| Volume financeiro do último candle | ${mdNumber(
-        statsA.lastQuoteVolume,
-        2,
-      )} USDT |`,
+      `| Máxima do período | ${mdPrice(statsA.periodHigh)} USDT |`,
+      `| Mínima do período | ${mdPrice(statsA.periodLow)} USDT |`,
+      `| Amplitude | ${mdNumber(statsA.amplitudePct)}% |`,
+      `| Volume médio financeiro por candle | ${mdNumber(statsA.averageQuoteVolume, 2)} USDT |`,
+      `| Volume financeiro do último candle | ${mdNumber(statsA.lastQuoteVolume, 2)} USDT |`,
     ];
 
     if (statsB) {
@@ -2546,44 +2415,17 @@ export default function DayTradePage() {
         '',
         `## Comparação com ${statsB.symbol}`,
         '',
-        `- **Candles visíveis:** ${statsB.candleCount}`,
-        `- **Retornos alinhados usados na correlação:** ${Math.max(
-          0,
-          alignedPairCount - 1,
-        )}`,
-        `- **Candles ausentes dentro da janela visível:** ${countMissingCandles(
-          derived.visibleB,
-        )}`,
-        '',
         '| Métrica | Valor |',
         '|---|---:|',
         `| Último fechamento | ${mdPrice(statsB.lastPrice)} USDT |`,
         `| Retorno no período | ${mdPct(statsB.returnPct)} |`,
-        `| Drawdown máximo por fechamento | ${mdPct(
-          statsB.maxDrawdownPct,
-        )} |`,
-        `| Drawdown atual por fechamento | ${mdPct(
-          statsB.currentDrawdownPct,
-        )} |`,
-        `| Tempo abaixo de um topo anterior | ${mdNumber(
-          statsB.timeInDrawdownPct,
-          0,
-        )}% |`,
-        `| Volatilidade atual anualizada | ${mdNumber(
-          statsB.currentVolPct,
-          1,
-        )}% |`,
+        `| Drawdown máximo | ${mdPct(statsB.maxDrawdownPct)} |`,
+        `| Drawdown atual | ${mdPct(statsB.currentDrawdownPct)} |`,
+        `| Tempo abaixo de um topo anterior | ${mdNumber(statsB.timeInDrawdownPct, 0)}% |`,
+        `| Volatilidade atual anualizada | ${mdNumber(statsB.currentVolPct, 1)}% |`,
         `| Regime | ${statsB.regime} |`,
-        `| Sharpe anualizado da amostra | ${mdNumber(
-          statsB.sharpe,
-        )} |`,
-        `| Correlação dos retornos | ${
-          derived.correlation === null
-            ? 'indisponível'
-            : `${mdNumber(derived.correlation, 4)} (${correlationText(
-                derived.correlation,
-              )})`
-        } |`,
+        `| Sharpe intradiário | ${mdNumber(statsB.sharpe)} |`,
+        `| Correlação dos retornos | ${derived.correlation === null ? 'indisponível' : `${mdNumber(derived.correlation, 4)} (${correlationText(derived.correlation)})`} |`,
       );
     }
 
@@ -2593,59 +2435,22 @@ export default function DayTradePage() {
       lines.push(
         '| Indicador | Valor |',
         '|---|---:|',
-        `| Candles totais / mínimo necessário | ${indicators.candleCount} / ${indicators.requiredCandles} |`,
-        `| EMA ${indicators.options.emaFastPeriod} | ${mdPrice(
-          indicators.emaFast,
-        )} USDT |`,
-        `| EMA ${indicators.options.emaMediumPeriod} | ${mdPrice(
-          indicators.emaMedium,
-        )} USDT |`,
-        `| EMA ${indicators.options.emaSlowPeriod} | ${mdPrice(
-          indicators.emaSlow,
-        )} USDT |`,
-        `| ATR ${indicators.options.atrPeriod} | ${mdPrice(
-          indicators.atr,
-        )} USDT |`,
+        `| Candles disponíveis / necessários | ${indicators.candleCount} / ${indicators.requiredCandles} |`,
+        `| EMA ${indicators.options.emaFastPeriod} | ${mdPrice(indicators.emaFast)} USDT |`,
+        `| EMA ${indicators.options.emaMediumPeriod} | ${mdPrice(indicators.emaMedium)} USDT |`,
+        `| EMA ${indicators.options.emaSlowPeriod} | ${mdPrice(indicators.emaSlow)} USDT |`,
+        `| ATR ${indicators.options.atrPeriod} | ${mdPrice(indicators.atr)} USDT |`,
         `| ATR sobre o preço | ${mdNumber(indicators.atrPct, 4)}% |`,
-        `| Nível de rompimento | ${mdPrice(
-          indicators.breakoutLevel,
-        )} USDT |`,
-        `| Suporte de referência | ${mdPrice(
-          indicators.supportLevel,
-        )} USDT |`,
-        `| Distância até o rompimento | ${mdPct(
-          indicators.distanceToBreakoutPct,
-          4,
-        )} |`,
-        `| Distância da EMA lenta | ${mdPct(
-          indicators.distanceFromSlowEmaPct,
-          4,
-        )} |`,
-        `| Volume base do candle atual | ${mdNumber(
-          indicators.currentVolume,
-          4,
-        )} |`,
-        `| Volume base médio da janela anterior | ${mdNumber(
-          indicators.averageVolume,
-          4,
-        )} |`,
-        `| Volume relativo | ${mdNumber(
-          indicators.relativeVolume,
-          4,
-        )}x |`,
-        `| Volatilidade anualizada do indicador | ${mdNumber(
-          indicators.annualizedVolatilityPct,
-          2,
-        )}% |`,
+        `| Nível de rompimento | ${mdPrice(indicators.breakoutLevel)} USDT |`,
+        `| Suporte de referência | ${mdPrice(indicators.supportLevel)} USDT |`,
+        `| Distância até o rompimento | ${mdPct(indicators.distanceToBreakoutPct, 4)} |`,
+        `| Distância da EMA lenta | ${mdPct(indicators.distanceFromSlowEmaPct, 4)} |`,
+        `| Volume atual | ${mdNumber(indicators.currentVolume, 4)} |`,
+        `| Volume médio | ${mdNumber(indicators.averageVolume, 4)} |`,
+        `| Volume relativo | ${mdNumber(indicators.relativeVolume, 4)}x |`,
+        `| Volatilidade anualizada | ${mdNumber(indicators.annualizedVolatilityPct, 2)}% |`,
         `| Regime de volatilidade | ${indicators.volatilityRegime} |`,
-        `| Percentil de volatilidade | ${mdNumber(
-          indicators.volatilityPercentile,
-          2,
-        )}% |`,
-        `| Distância até o rompimento em ATR | ${mdNumber(
-          evaluation?.diagnostics.distanceToBreakoutAtr,
-          4,
-        )} ATR |`,
+        `| Percentil de volatilidade | ${mdNumber(indicators.volatilityPercentile, 2)} |`,
       );
     } else {
       lines.push('Indicadores indisponíveis para este snapshot.');
@@ -2659,22 +2464,9 @@ export default function DayTradePage() {
         `- **Versão:** ${evaluation.strategyVersion}`,
         `- **Status:** ${statusLabel} (\`${evaluation.status}\`)`,
         `- **Condições atendidas:** ${evaluation.passedConditions} de ${evaluation.totalConditions}`,
-        `- **Pontuação do checklist:** ${mdNumber(
-          evaluation.scorePct,
-          2,
-        )}%`,
+        `- **Pontuação do checklist:** ${mdNumber(evaluation.scorePct, 2)}%`,
         `- **Resumo determinístico:** ${evaluation.summary}`,
-        `- **Próximo gatilho completo:** ${evaluation.nextTrigger}`,
-        `- **Condições ainda pendentes:** ${
-          pendingConditions.length
-            ? pendingConditions
-                .map(
-                  (condition) =>
-                    `${condition.label} — ${condition.requiredValue}`,
-                )
-                .join('; ')
-            : 'nenhuma'
-        }`,
+        `- **Próximo gatilho:** ${evaluation.nextTrigger}`,
         '',
         '| Resultado | Condição | Valor atual | Exigência | Explicação |',
         '|:---:|---|---:|---|---|',
@@ -2682,17 +2474,7 @@ export default function DayTradePage() {
 
       for (const condition of evaluation.conditions) {
         lines.push(
-          `| ${
-            condition.available
-              ? condition.passed
-                ? '✅'
-                : '❌'
-              : '⚪'
-          } | ${cleanCell(condition.label)} | ${cleanCell(
-            formatConditionValue(condition.currentValue),
-          )} | ${cleanCell(condition.requiredValue)} | ${cleanCell(
-            condition.explanation,
-          )} |`,
+          `| ${condition.available ? (condition.passed ? '✅' : '❌') : '⚪'} | ${cleanCell(condition.label)} | ${cleanCell(formatConditionValue(condition.currentValue))} | ${cleanCell(condition.requiredValue)} | ${cleanCell(condition.explanation)} |`,
         );
       }
 
@@ -2706,200 +2488,68 @@ export default function DayTradePage() {
       lines.push('O checklist ainda não foi calculado.');
     }
 
-    lines.push('', planHeading, '', planExplanation, '');
+    lines.push('', '## Plano matemático do playbook', '');
 
     if (plan) {
       lines.push(
         '| Parâmetro | Valor |',
         '|---|---:|',
-        `| Natureza do plano | ${
-          planIsCurrentlyExecutable
-            ? 'confirmado no candle encerrado'
-            : planWasConfirmed
-              ? 'confirmado anteriormente, mas não executável no status atual'
-              : 'simulação prévia não confirmada'
-        } |`,
         `| Direção modelada | ${plan.direction} |`,
-        `| Entrada de referência | ${mdPrice(
-          plan.entryReference,
-        )} USDT |`,
-        `| Invalidação / stop de referência | ${mdPrice(
-          plan.stopReference,
-        )} USDT |`,
-        `| Alvo matemático | ${mdPrice(
-          plan.targetReference,
-        )} USDT |`,
+        `| Entrada de referência | ${mdPrice(plan.entryReference)} USDT |`,
+        `| Invalidação / stop de referência | ${mdPrice(plan.stopReference)} USDT |`,
+        `| Alvo matemático | ${mdPrice(plan.targetReference)} USDT |`,
         `| Risco por unidade | ${mdPrice(plan.riskPerUnit)} USDT |`,
-        `| Retorno bruto por unidade | ${mdPrice(
-          plan.rewardPerUnit,
-        )} USDT |`,
-        `| Relação risco-retorno bruta | ${mdNumber(
-          plan.riskRewardRatio,
-          2,
-        )}R |`,
-        `| Distância do stop | ${mdNumber(
-          plan.stopDistancePct,
-          4,
-        )}% |`,
-        `| Distância do alvo | ${mdNumber(
-          plan.targetDistancePct,
-          4,
-        )}% |`,
-        `| Stop em múltiplos de ATR | ${mdNumber(
-          plan.stopDistanceAtr,
-          4,
-        )} ATR |`,
+        `| Retorno por unidade | ${mdPrice(plan.rewardPerUnit)} USDT |`,
+        `| Relação risco-retorno | ${mdNumber(plan.riskRewardRatio, 2)}R |`,
+        `| Distância do stop | ${mdNumber(plan.stopDistancePct, 4)}% |`,
+        `| Distância do alvo | ${mdNumber(plan.targetDistancePct, 4)}% |`,
+        `| Stop em múltiplos de ATR | ${mdNumber(plan.stopDistanceAtr, 4)} ATR |`,
+        `| Maior entrada ainda aceitável | ${mdPrice(plan.latestAcceptableEntry)} USDT |`,
       );
-
-      if (planWasConfirmed) {
-        lines.push(
-          `| Limite de entrada calculado para o setup confirmado | ${mdPrice(
-            plan.latestAcceptableEntry,
-          )} USDT |`,
-        );
-      }
-
-      lines.push(
-        '',
-        '### Estimativa de custos sobre o plano',
-        '',
-        `- **Taxa hipotética por execução:** ${mdNumber(
-          assumedFeeRatePct,
-          4,
-        )}%`,
-        `- **Slippage adversa hipotética por execução:** ${mdNumber(
-          assumedSlippagePct,
-          4,
-        )}%`,
-        '- **Aplicação:** entrada e saída',
-      );
-
-      if (costEstimate?.valid) {
-        lines.push(
-          `- **Relação risco-retorno bruta:** ${mdNumber(
-            costEstimate.grossRiskRewardRatio,
-            4,
-          )}R`,
-          `- **Relação risco-retorno líquida estimada:** ${mdNumber(
-            costEstimate.estimatedNetRiskRewardRatio,
-            4,
-          )}R`,
-          `- **Risco estimado por unidade com custos:** ${mdPrice(
-            costEstimate.estimatedRiskPerUnit,
-          )} USDT`,
-          `- **Retorno líquido estimado por unidade:** ${mdPrice(
-            costEstimate.estimatedNetRewardPerUnit,
-          )} USDT`,
-        );
-      } else {
-        lines.push(
-          '- Não foi possível estimar o risco-retorno líquido com as premissas de custo.',
-        );
-      }
     } else {
       lines.push(
-        'Não foi possível construir nem mesmo uma simulação matemática com os dados atuais.',
+        'Nenhum plano executável foi formado. Isso ocorre quando as condições determinísticas não justificam criar entrada, stop e alvo.',
       );
     }
 
     lines.push('', '## Dimensionamento educacional', '');
 
-    if (!planIsCurrentlyExecutable && evaluation) {
-      lines.push(
-        `O dimensionamento foi bloqueado porque o status atual é **${statusLabel}**. Ele só é liberado quando o candle encerrado está em \`condicoes_atendidas\`.`,
-      );
-    } else if (positionSizing?.ok) {
+    if (positionSizing?.ok) {
       lines.push(
         '| Parâmetro | Valor |',
         '|---|---:|',
-        `| Saldo informado | ${mdNumber(
-          positionSizing.accountBalance,
-        )} USDT |`,
-        `| Saldo disponível informado | ${mdNumber(
-          positionSizing.availableBalance,
-        )} USDT |`,
-        `| Risco configurado | ${mdNumber(
-          positionSizing.riskPercent,
-          2,
-        )}% |`,
-        `| Quantidade máxima estimada | ${mdNumber(
-          positionSizing.quantity,
-          8,
-        )} |`,
-        `| Valor da posição | ${mdNumber(
-          positionSizing.notional,
-        )} USDT |`,
-        `| Perda total estimada no stop | ${mdNumber(
-          positionSizing.estimatedTotalRiskUsdt,
-        )} USDT |`,
-        `| Risco efetivo | ${mdNumber(
-          positionSizing.estimatedTotalRiskPct,
-          4,
-        )}% |`,
-        `| Retorno líquido estimado | ${mdNumber(
-          positionSizing.estimatedNetRewardUsdt,
-        )} USDT |`,
-        `| Relação risco-retorno líquida | ${mdNumber(
-          positionSizing.estimatedNetRiskRewardRatio,
-          4,
-        )}R |`,
-        `| Taxa por execução usada | ${mdNumber(
-          positionSizing.feeRatePct,
-          4,
-        )}% |`,
-        `| Slippage por execução usado | ${mdNumber(
-          positionSizing.slippagePct,
-          4,
-        )}% |`,
+        `| Saldo informado | ${mdNumber(positionSizing.accountBalance)} USDT |`,
+        `| Saldo disponível informado | ${mdNumber(positionSizing.availableBalance)} USDT |`,
+        `| Risco configurado | ${mdNumber(positionSizing.riskPercent, 2)}% |`,
+        `| Quantidade máxima estimada | ${mdNumber(positionSizing.quantity, 8)} |`,
+        `| Valor da posição | ${mdNumber(positionSizing.notional)} USDT |`,
+        `| Perda total estimada no stop | ${mdNumber(positionSizing.estimatedTotalRiskUsdt)} USDT |`,
+        `| Risco efetivo | ${mdNumber(positionSizing.estimatedTotalRiskPct, 4)}% |`,
+        `| Retorno líquido estimado | ${mdNumber(positionSizing.estimatedNetRewardUsdt)} USDT |`,
+        `| Relação risco-retorno líquida | ${mdNumber(positionSizing.estimatedNetRiskRewardRatio, 4)}R |`,
       );
 
       if (positionSizing.warnings.length) {
-        lines.push(
-          '',
-          `- **Avisos:** ${positionSizing.warnings.join(' ')}`,
-        );
+        lines.push('', `- **Avisos:** ${positionSizing.warnings.join(' ')}`);
       }
     } else if (positionSizing) {
       lines.push(
-        `O dimensionamento não ficou disponível: ${positionSizing.errors.join(
-          ' ',
-        )}`,
+        `O dimensionamento não ficou disponível: ${positionSizing.errors.join(' ')}`,
       );
     } else {
-      lines.push(
-        'O dimensionamento está indisponível porque não existe um setup confirmado e executável.',
-      );
+      lines.push('Dimensionamento indisponível porque ainda não existe um plano completo.');
     }
 
     lines.push('', '## Persistência e alerta', '');
 
     lines.push(
       `- **Setup salvo no servidor:** ${serverSetup ? 'sim' : 'não'}`,
-      `- **Status salvo:** ${
-        serverSetup
-          ? TREND_BREAKOUT_STATUS_LABELS[serverSetup.status]?.label ??
-            serverSetup.status
-          : '—'
-      }`,
-      `- **Regra de alerta:** ${
-        alertRule
-          ? alertRule.ativo
-            ? 'ativa'
-            : 'pausada'
-          : 'não configurada'
-      }`,
-      `- **Status monitorados:** ${
-        alertRule ? alertRule.notify_statuses.join(', ') : '—'
-      }`,
-      `- **Cooldown:** ${
-        alertRule ? `${alertRule.cooldown_minutes} minutos` : '—'
-      }`,
-      `- **Último status observado pelo alerta:** ${
-        alertRule?.last_status ?? '—'
-      }`,
-      `- **Último disparo:** ${mdDate(
-        alertRule?.last_triggered_at,
-      )}`,
+      `- **Status salvo:** ${serverSetup ? TREND_BREAKOUT_STATUS_LABELS[serverSetup.status]?.label ?? serverSetup.status : '—'}`,
+      `- **Regra de alerta:** ${alertRule ? (alertRule.ativo ? 'ativa' : 'pausada') : 'não configurada'}`,
+      `- **Status monitorados:** ${alertRule ? alertRule.notify_statuses.join(', ') : '—'}`,
+      `- **Cooldown:** ${alertRule ? `${alertRule.cooldown_minutes} minutos` : '—'}`,
+      `- **Último status observado pelo alerta:** ${alertRule?.last_status ?? '—'}`,
+      `- **Último disparo:** ${mdDate(alertRule?.last_triggered_at)}`,
     );
 
     lines.push('', '## Backtest exibido na página', '');
@@ -2910,23 +2560,11 @@ export default function DayTradePage() {
         `- **Timeframe:** ${backtestResponse.timeframe}`,
         `- **Candles solicitados:** ${backtestResponse.requested_candles}`,
         `- **Tempo de execução:** ${backtestResponse.execution_ms} ms`,
-        `- **Taxa configurada por execução:** ${mdNumber(
-          parseUserNumber(backtestFeeRate),
-          4,
-        )}%`,
-        `- **Slippage configurada por execução:** ${mdNumber(
-          parseUserNumber(backtestSlippage),
-          4,
-        )}%`,
         '',
         '| Métrica | Valor |',
         '|---|---:|',
-        `| Capital inicial | ${mdNumber(
-          metrics.initialCapitalUsdt,
-        )} USDT |`,
-        `| Capital final | ${mdNumber(
-          metrics.finalCapitalUsdt,
-        )} USDT |`,
+        `| Capital inicial | ${mdNumber(metrics.initialCapitalUsdt)} USDT |`,
+        `| Capital final | ${mdNumber(metrics.finalCapitalUsdt)} USDT |`,
         `| PnL líquido | ${mdNumber(metrics.netPnlUsdt)} USDT |`,
         `| Retorno líquido | ${mdPct(metrics.netReturnPct)} |`,
         `| Sinais encontrados | ${metrics.signals} |`,
@@ -2934,21 +2572,11 @@ export default function DayTradePage() {
         `| Sinais ignorados | ${metrics.skippedSignals} |`,
         `| Vitórias / derrotas / empates | ${metrics.wins} / ${metrics.losses} / ${metrics.breakeven} |`,
         `| Taxa de acerto | ${mdNumber(metrics.winRatePct)}% |`,
-        `| Fator de lucro | ${mdNumber(
-          metrics.profitFactor,
-          4,
-        )} |`,
-        `| Média por operação | ${mdNumber(
-          metrics.averagePnlUsdt,
-        )} USDT |`,
+        `| Fator de lucro | ${mdNumber(metrics.profitFactor, 4)} |`,
+        `| Média por operação | ${mdNumber(metrics.averagePnlUsdt)} USDT |`,
         `| Média em R | ${mdNumber(metrics.averageR, 4)}R |`,
-        `| Melhor / pior resultado | ${mdNumber(
-          metrics.bestR,
-          4,
-        )}R / ${mdNumber(metrics.worstR, 4)}R |`,
-        `| Drawdown máximo | ${mdPct(
-          metrics.maximumDrawdownPct,
-        )} |`,
+        `| Melhor / pior resultado | ${mdNumber(metrics.bestR, 4)}R / ${mdNumber(metrics.worstR, 4)}R |`,
+        `| Drawdown máximo | ${mdPct(metrics.maximumDrawdownPct)} |`,
         `| Maior sequência de perdas | ${metrics.maximumConsecutiveLosses} |`,
         `| Exposição | ${mdNumber(metrics.exposurePct)}% |`,
       );
@@ -2964,14 +2592,7 @@ export default function DayTradePage() {
 
         for (const trade of backtestTrades) {
           lines.push(
-            `| ${mdDate(trade.entryTime)} | ${mdDate(
-              trade.exitTime,
-            )} | ${trade.result} | ${backtestExitLabel(
-              trade.exitReason,
-            )} | ${mdNumber(trade.netPnlUsdt)} USDT | ${mdNumber(
-              trade.resultR,
-              4,
-            )}R |`,
+            `| ${mdDate(trade.entryTime)} | ${mdDate(trade.exitTime)} | ${trade.result} | ${backtestExitLabel(trade.exitReason)} | ${mdNumber(trade.netPnlUsdt)} USDT | ${mdNumber(trade.resultR, 4)}R |`,
           );
         }
       }
@@ -2983,9 +2604,7 @@ export default function DayTradePage() {
         }
       }
     } else {
-      lines.push(
-        'Nenhum backtest foi executado nesta sessão. Sem backtest, não há evidência histórica da frequência, dos custos, da taxa de acerto ou do drawdown da estratégia.',
-      );
+      lines.push('Nenhum backtest foi executado nesta sessão.');
     }
 
     lines.push('', '## Diário carregado na página', '');
@@ -2998,20 +2617,7 @@ export default function DayTradePage() {
 
       for (const item of journal) {
         lines.push(
-          `| ${mdDate(item.criado_em)} | ${item.symbol}/${
-            item.timeframe
-          } | ${item.mode} | ${cleanCell(
-            journalStatusLabel(item.status),
-          )} | ${mdPrice(
-            nullableNumber(item.entry_price),
-          )} | ${mdPrice(
-            nullableNumber(item.exit_price),
-          )} | ${mdNumber(
-            nullableNumber(item.pnl_usdt),
-          )} USDT | ${mdNumber(
-            nullableNumber(item.result_r),
-            4,
-          )}R |`,
+          `| ${mdDate(item.criado_em)} | ${item.symbol}/${item.timeframe} | ${item.mode} | ${cleanCell(journalStatusLabel(item.status))} | ${mdPrice(nullableNumber(item.entry_price))} | ${mdPrice(nullableNumber(item.exit_price))} | ${mdNumber(nullableNumber(item.pnl_usdt))} USDT | ${mdNumber(nullableNumber(item.result_r), 4)}R |`,
         );
       }
     } else {
@@ -3024,17 +2630,15 @@ export default function DayTradePage() {
       '',
       report
         ? report
-        : 'O relatório interno com IA não foi gerado. Use as métricas, as condições pendentes e as limitações acima para fazer uma revisão independente.',
+        : 'O relatório interno com IA não foi gerado. Use as métricas e o checklist acima para fazer uma revisão independente.',
       '',
       '## Perguntas sugeridas para a IA revisora',
       '',
-      '1. O status oficial é coerente com todas as condições aprovadas e reprovadas?',
-      '2. O próximo gatilho inclui rompimento, volume e manutenção das demais condições?',
-      '3. O plano está corretamente classificado como confirmado, atrasado, invalidado ou apenas simulado?',
-      '4. Entrada, stop, alvo, ATR e relação risco-retorno bruta são matematicamente consistentes?',
-      '5. As taxas e a slippage tornam a relação risco-retorno líquida aceitável apenas para continuar em teste?',
-      '6. O Sharpe foi interpretado como uma anualização instável de amostra curta, e não como qualidade comprovada?',
-      '7. O backtest possui amostra, custos e drawdown suficientes para continuar sendo avaliado?',
+      '1. O status oficial é coerente com as condições aprovadas e reprovadas?',
+      '2. Há alguma inconsistência matemática entre entrada, stop, alvo e relação risco-retorno?',
+      '3. O dimensionamento respeita o risco informado e o saldo disponível?',
+      '4. O backtest possui amostra suficiente, custos realistas e drawdown aceitável para continuar sendo testado?',
+      '5. Quais dados adicionais seriam necessários antes de tirar qualquer conclusão?',
       '',
       '> Os números deste snapshot descrevem dados históricos e regras do sistema. Eles não antecipam o próximo movimento e não constituem recomendação de investimento.',
     );
@@ -3062,18 +2666,14 @@ export default function DayTradePage() {
         document.body.removeChild(textarea);
 
         if (!copied) {
-          throw new Error(
-            'O navegador recusou o acesso à área de transferência.',
-          );
+          throw new Error('O navegador recusou o acesso à área de transferência.');
         }
       }
 
       setCopyAction({
         status: 'success',
         message:
-          `Markdown completo copiado (${markdown.length.toLocaleString(
-            'pt-BR',
-          )} caracteres). Cole na IA de sua preferência.`,
+          `Markdown completo copiado (${markdown.length.toLocaleString('pt-BR')} caracteres). Cole na IA de sua preferência.`,
       });
     } catch (copyError) {
       setCopyAction({
@@ -3087,8 +2687,6 @@ export default function DayTradePage() {
   }, [
     derived.statsA,
     derived.statsB,
-    derived.visibleA,
-    derived.visibleB,
     derived.correlation,
     setupAnalysis.evaluation,
     setupAnalysis.indicators,
@@ -3098,15 +2696,12 @@ export default function DayTradePage() {
     usedSymbolB,
     usedTimeframe,
     usedPeriod.label,
-    usedPeriod.durationMs,
     liveA,
     positionSizing,
     serverSetup,
     alertRule,
     journal,
     report,
-    backtestFeeRate,
-    backtestSlippage,
   ]);
 
   const clearHistory = () => {
@@ -3199,8 +2794,8 @@ export default function DayTradePage() {
       get: (stats) => `${fmt(stats.currentVolPct, 0)}%`,
     },
     {
-      label: 'Sharpe anualizado da amostra (rf = 0)',
-      tip: 'Retorno médio por unidade de volatilidade, anualizado. Em amostras intradiárias curtas é estatisticamente instável e não mede todo o risco.',
+      label: 'Sharpe intradiário (rf = 0)',
+      tip: 'Retorno médio por unidade de volatilidade, anualizado. Não mede todo o risco.',
       get: (stats) => fmt(stats.sharpe),
       color: (stats) => stats.sharpe >= 0 ? S.green : S.red,
     },

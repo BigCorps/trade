@@ -129,10 +129,6 @@ INTERPRETAÇÕES OBRIGATÓRIAS:
 - Tempo em drawdown é a porcentagem dos candles em que o preço esteve abaixo de algum topo anterior. Não significa que o preço caiu continuamente durante todo esse tempo.
 - Correlação alta indica que os ativos se moveram de modo semelhante no período e que o benefício histórico de diversificação foi limitado. Nunca diga que diversificar "não melhoraria" ou "não reduziria" o risco, pois essa conclusão absoluta não está nos dados.
 - Drawdown atual é a distância do preço mais recente até o maior topo anterior do período; drawdown máximo é a maior dessas distâncias observada.
-- Os drawdowns fornecidos foram calculados com fechamentos de candles, não com máximas intraperíodo.
-- Retorno anualizado é uma extrapolação geométrica histórica pelo número de retornos observados; nunca o trate como previsão.
-- Sharpe usa retornos logarítmicos, desvio-padrão amostral, taxa livre de risco igual a zero e anualização. Em amostras curtas, pode ser estatisticamente instável.
-- O regime usa os quantis Q25, Q75 e Q95 da distribuição histórica de volatilidade do próprio ativo.
 
 FORMATO: texto corrido, sem markdown, títulos em markdown ou listas, dividido em duas partes.
 

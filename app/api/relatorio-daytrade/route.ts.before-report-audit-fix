@@ -93,20 +93,14 @@ REGRAS INVIOLÁVEIS:
 9. Se o status for "condicoes_atendidas", diga apenas que as regras do playbook foram atendidas naquele candle encerrado; não transforme isso em recomendação.
 10. RSI, MACD, notícias, sentimento, fluxo institucional ou qualquer indicador ausente não podem ser inventados.
 11. Dê destaque a volume, rompimento, alinhamento das EMAs, volatilidade, ATR e risco-retorno apenas quando estiverem disponíveis.
-12. Se setup.status não for "condicoes_atendidas", trate qualquer plano recebido como simulação matemática prévia ou como plano confirmado anteriormente, nunca como entrada válida agora.
-13. Quando rompimento e volume estiverem reprovados, explique que ambos precisam ser confirmados no mesmo candle encerrado, mantendo as demais condições.
-14. A relação risco-retorno do plano é bruta quando não houver custos líquidos no JSON. Diga explicitamente que taxas e slippage podem reduzir materialmente o resultado líquido.
-15. Sharpe intradiário anualizado em uma amostra curta é estatisticamente instável. Não o apresente como qualidade comprovada da estratégia.
-16. Diferencie volume financeiro médio do período visível de volume base médio da janela anterior usada pelo indicador.
-17. Termine exatamente com: "${REQUIRED_DISCLAIMER}"
+12. Termine exatamente com: "${REQUIRED_DISCLAIMER}"
 
 ESTILO:
 - Produza de 4 a 7 parágrafos curtos, sem títulos em markdown e sem listas.
 - Não use sempre a mesma ordem de assuntos. Comece pelo aspecto mais relevante deste cenário: status, condição faltante, volatilidade, rompimento ou volume.
 - Explique claramente o checklist, informando quantas condições passaram.
 - Destaque pelo nome as condições que falharam e as que foram decisivas, sem repetir todas mecanicamente quando isso não acrescentar informação.
-- Havendo plano com status diferente de "condicoes_atendidas", chame-o de simulação prévia, plano atrasado ou plano invalidado conforme o status. Só use "plano confirmado" quando o status oficial permitir.
-- Ao citar risco-retorno sem custos líquidos fornecidos, use a expressão "relação risco-retorno bruta" e ressalte a ausência de confirmação líquida.
+- Havendo plano, explique entrada de referência, invalidação, alvo e relação risco-retorno como parâmetros matemáticos do playbook, não como instrução.
 - Havendo segundo ativo, use a comparação somente quando ela ajudar a contextualizar volatilidade, retorno, drawdown ou correlação.
 - Inclua um último parágrafo iniciado por "Em termos simples: " traduzindo a leitura para uma pessoa sem experiência.
 - Evite frases genéricas que serviriam para qualquer análise. Cada texto deve refletir os números e condições deste JSON.`;

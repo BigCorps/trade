@@ -390,13 +390,14 @@ function determineNextTrigger(
   indicators: DayTradeIndicators,
   plan: TrendBreakoutPlan | null,
   status: TrendBreakoutStatus,
+  options: ResolvedTrendBreakoutOptions,
 ): string {
   if (status === 'dados_insuficientes') {
     return `Carregue mais ${indicators.missingCandles} candle(s) encerrado(s) para completar os indicadores.`;
   }
 
   if (status === 'invalidado' && plan) {
-    return `A formação perdeu validade porque o preço atingiu ou ficou abaixo de ${formatNumber(plan.stopReference)}.`;
+    return `A formação perdeu validade porque o preço atingiu ou ficou abaixo de ${formatNumber(plan.stopReference)}. Aguarde uma nova formação completa.`;
   }
 
   if (status === 'entrada_atrasada' && plan) {
@@ -404,38 +405,69 @@ function determineNextTrigger(
   }
 
   if (status === 'condicoes_atendidas' && plan) {
-    return `O candle encerrado confirmou o rompimento acima de ${formatNumber(plan.breakoutLevel)} com as condições do playbook atendidas.`;
+    return `O candle encerrado confirmou o rompimento acima de ${formatNumber(plan.breakoutLevel)}, com o volume e as demais condições do playbook atendidas.`;
   }
 
+  const breakoutCondition = conditions.find(
+    (item) => item.id === 'rompimento_confirmado',
+  );
+  const volumeCondition = conditions.find(
+    (item) => item.id === 'volume_confirmado',
+  );
   const firstFailed = conditions.find(
     (item) => item.available && !item.passed,
   );
+
+  const breakoutLevel = indicators.breakoutLevel;
+  const atr = indicators.atr;
+  const observationLevel =
+    isFinitePositive(breakoutLevel) && isFinitePositive(atr)
+      ? breakoutLevel - atr * options.observationDistanceAtr
+      : null;
+  const volumeRequirement =
+    volumeCondition?.requiredValue ??
+    `Volume relativo ≥ ${formatNumber(options.minimumRelativeVolume, 2)}×`;
+
+  if (
+    status === 'observar' &&
+    isFinitePositive(breakoutLevel)
+  ) {
+    return `O preço está na zona de observação. A confirmação exige o fechamento de um candle acima de ${formatNumber(breakoutLevel)}, com ${volumeRequirement.toLowerCase()} e manutenção das demais condições do playbook.`;
+  }
 
   switch (firstFailed?.id) {
     case 'preco_acima_ema_lenta':
       return indicators.emaSlow === null
         ? 'Aguarde a EMA lenta ficar disponível.'
-        : `Aguarde um fechamento acima da EMA lenta em ${formatNumber(indicators.emaSlow)}.`;
+        : `Aguarde um fechamento acima da EMA lenta em ${formatNumber(indicators.emaSlow)}, mantendo as demais condições do playbook.`;
 
     case 'emas_alinhadas':
-      return 'Aguarde a EMA rápida ficar acima da EMA intermediária.';
+      return 'Aguarde a EMA rápida ficar acima da EMA intermediária, mantendo preço, volume e volatilidade dentro dos critérios do playbook.';
 
-    case 'rompimento_confirmado':
-      return indicators.breakoutLevel === null
-        ? 'Aguarde o nível de rompimento ficar disponível.'
-        : `Aguarde o fechamento de um candle acima de ${formatNumber(indicators.breakoutLevel)}.`;
+    case 'rompimento_confirmado': {
+      if (!isFinitePositive(breakoutLevel)) {
+        return 'Aguarde o nível de rompimento ficar disponível.';
+      }
+
+      const observationText =
+        observationLevel !== null && observationLevel > 0
+          ? ` O estágio de observação começa em torno de ${formatNumber(observationLevel)}.`
+          : '';
+
+      return `A confirmação exige o fechamento de um candle acima de ${formatNumber(breakoutLevel)}, com ${volumeRequirement.toLowerCase()} e manutenção das demais condições do playbook.${observationText}`;
+    }
 
     case 'volume_confirmado':
-      return 'Aguarde um candle encerrado com volume igual ou superior à média exigida.';
+      return `O preço cumpriu o critério anterior, mas a confirmação ainda exige ${volumeRequirement.toLowerCase()} no candle encerrado, mantendo as demais condições do playbook.`;
 
     case 'volatilidade_aceitavel':
-      return 'Aguarde a volatilidade sair do regime bloqueado pelo playbook.';
+      return 'Aguarde a volatilidade sair do regime bloqueado pelo playbook e confirme novamente rompimento, volume e alinhamento das médias no mesmo candle encerrado.';
 
     case 'plano_risco_retorno':
-      return 'Aguarde uma formação com distância de stop compatível com o ATR e alvo mínimo de 2R.';
+      return `Aguarde uma formação com distância de stop entre ${formatNumber(options.minimumStopDistanceAtr, 2)} e ${formatNumber(options.maximumStopDistanceAtr, 2)} ATR e alvo mínimo de ${formatNumber(options.minimumRiskRewardRatio, 2)}R.`;
 
     default:
-      return 'Aguarde a conclusão das condições técnicas restantes.';
+      return 'Aguarde a conclusão conjunta das condições técnicas restantes no mesmo candle encerrado.';
   }
 }
 
@@ -759,6 +791,7 @@ export function evaluateTrendBreakout(
       indicators,
       plan,
       status,
+      options,
     ),
     summary: determineSummary(
       status,

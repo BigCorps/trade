@@ -1097,13 +1097,6 @@ export default function AnalisePage() {
     const lastCandleA = dataA[dataA.length - 1] ?? null;
     const firstCandleB = dataB[0] ?? null;
     const lastCandleB = dataB[dataB.length - 1] ?? null;
-    const intervalMsByTimeframe: Record<Timeframe, number> = {
-      '1h': 60 * 60 * 1_000,
-      '4h': 4 * 60 * 60 * 1_000,
-      '1d': 24 * 60 * 60 * 1_000,
-      '1w': 7 * 24 * 60 * 60 * 1_000,
-    };
-    const intervalMs = intervalMsByTimeframe[usedTf];
 
     const mdNumber = (
       value: number | null | undefined,
@@ -1139,188 +1132,38 @@ export default function AnalisePage() {
         .replace(/\r?\n/g, ' ')
         .trim();
 
-    const countMissingCandles = (candles: Candle[]): number => {
-      let missing = 0;
-
-      for (let index = 1; index < candles.length; index += 1) {
-        const distance =
-          candles[index].openTime - candles[index - 1].openTime;
-        const steps = Math.round(distance / intervalMs);
-        if (steps > 1) missing += steps - 1;
-      }
-
-      return missing;
-    };
-
-    const volatilityProfile = (
-      values: (number | null)[],
-      current: number,
-    ): {
-      sampleCount: number;
-      q25: number | null;
-      q75: number | null;
-      q95: number | null;
-      percentile: number | null;
-    } => {
-      const sorted = values
-        .filter((value): value is number => value !== null)
-        .sort((left, right) => left - right);
-
-      if (!sorted.length) {
-        return {
-          sampleCount: 0,
-          q25: null,
-          q75: null,
-          q95: null,
-          percentile: null,
-        };
-      }
-
-      const quantile = (p: number) =>
-        sorted[Math.floor(p * (sorted.length - 1))];
-
-      const rank =
-        (sorted.filter((value) => value <= current).length /
-          sorted.length) *
-        100;
-
-      return {
-        sampleCount: sorted.length,
-        q25: quantile(0.25),
-        q75: quantile(0.75),
-        q95: quantile(0.95),
-        percentile: rank,
-      };
-    };
-
-    const alignedPairs = statsB
-      ? alignedCandlePairs(dataA, dataB)
-      : [];
-    const alignedReturnCount = Math.max(0, alignedPairs.length - 1);
-    const volProfileA = volatilityProfile(volA, statsA.currentVolPct);
-    const volProfileB = statsB
-      ? volatilityProfile(volB, statsB.currentVolPct)
-      : null;
-
     const appendAsset = (
       lines: string[],
       title: string,
       stats: AssetStats,
       candles: Candle[],
-      volatilityValues: (number | null)[],
       firstCandle: Candle | null,
       lastCandle: Candle | null,
     ) => {
-      const returnsCount = Math.max(0, candles.length - 1);
-      const missingCandles = countMissingCandles(candles);
-      const nextExpectedClose =
-        lastCandle === null
-          ? null
-          : lastCandle.closeTime + intervalMs;
-      const profile = volatilityProfile(
-        volatilityValues,
-        stats.currentVolPct,
-      );
-
       lines.push(
         '',
         `## ${title}: ${stats.symbol}`,
         '',
         `- **Candles encerrados utilizados:** ${candles.length}`,
-        `- **Retornos logarítmicos calculados:** ${returnsCount}`,
-        `- **Candles ausentes dentro da série:** ${missingCandles}`,
         `- **Primeiro candle:** ${mdDate(firstCandle?.openTime)}`,
-        `- **Último candle encerrado:** ${mdDate(
-          lastCandle?.closeTime,
-        )}`,
-        `- **Próximo encerramento esperado:** ${mdDate(
-          nextExpectedClose,
-        )}`,
-        '- **Candle atualmente em formação:** não incluído nas métricas',
+        `- **Último candle encerrado:** ${mdDate(lastCandle?.closeTime)}`,
         '',
         '| Métrica | Valor |',
         '|---|---:|',
-        `| Último fechamento | ${mdNumber(
-          stats.lastPrice,
-          8,
-        )} USDT |`,
+        `| Último fechamento | ${mdNumber(stats.lastPrice, 8)} USDT |`,
         `| Retorno no período | ${mdPct(stats.returnPct)} |`,
-        `| Retorno anualizado histórico | ${mdPct(
-          stats.annualReturnPct,
-        )} |`,
-        `| Drawdown máximo por fechamento | ${mdPct(
-          stats.maxDrawdownPct,
-        )} |`,
-        `| Drawdown atual por fechamento | ${mdPct(
-          stats.currentDrawdownPct,
-        )} |`,
-        `| Tempo abaixo de um topo anterior | ${mdNumber(
-          stats.timeInDrawdownPct,
-          0,
-        )}% |`,
-        `| Volatilidade média anualizada | ${mdNumber(
-          stats.annualVolPct,
-          2,
-        )}% |`,
-        `| Volatilidade atual anualizada | ${mdNumber(
-          stats.currentVolPct,
-          2,
-        )}% |`,
+        `| Retorno anualizado histórico | ${mdPct(stats.annualReturnPct)} |`,
+        `| Drawdown máximo | ${mdPct(stats.maxDrawdownPct)} |`,
+        `| Drawdown atual | ${mdPct(stats.currentDrawdownPct)} |`,
+        `| Tempo abaixo de um topo anterior | ${mdNumber(stats.timeInDrawdownPct, 0)}% |`,
+        `| Volatilidade média anualizada | ${mdNumber(stats.annualVolPct, 2)}% |`,
+        `| Volatilidade atual anualizada | ${mdNumber(stats.currentVolPct, 2)}% |`,
         `| Regime atual | ${stats.regime} |`,
-        `| Percentil empírico da volatilidade atual | ${mdNumber(
-          profile.percentile,
-          2,
-        )}% |`,
-        `| Limite do regime calmo — Q25 | ${mdNumber(
-          profile.q25,
-          2,
-        )}% |`,
-        `| Limite do regime normal — Q75 | ${mdNumber(
-          profile.q75,
-          2,
-        )}% |`,
-        `| Limite do regime volátil — Q95 | ${mdNumber(
-          profile.q95,
-          2,
-        )}% |`,
-        `| Janelas válidas de volatilidade | ${profile.sampleCount} |`,
-        `| Sharpe histórico simplificado | ${mdNumber(
-          stats.sharpe,
-          4,
-        )} |`,
-        `| Retornos positivos | ${mdNumber(
-          stats.pctPositive,
-          2,
-        )}% |`,
-        `| Melhor ${tf.unitLabel} | ${mdPct(
-          stats.bestUnitPct,
-        )} |`,
-        `| Pior ${tf.unitLabel} | ${mdPct(
-          stats.worstUnitPct,
-        )} |`,
+        `| Sharpe histórico simplificado | ${mdNumber(stats.sharpe, 4)} |`,
+        `| Candles positivos | ${mdNumber(stats.pctPositive, 2)}% |`,
+        `| Melhor ${tf.unitLabel} | ${mdPct(stats.bestUnitPct)} |`,
+        `| Pior ${tf.unitLabel} | ${mdPct(stats.worstUnitPct)} |`,
       );
-
-      if (firstCandle && lastCandle && returnsCount > 0) {
-        lines.push(
-          '',
-          '### Fórmulas reproduzíveis',
-          '',
-          `- **Retorno do período:** \`(${mdNumber(
-            lastCandle.close,
-            8,
-          )} ÷ ${mdNumber(
-            firstCandle.close,
-            8,
-          )} − 1) × 100\``,
-          `- **Retorno anualizado:** \`[exp(ln(último ÷ primeiro) × ${
-            tf.periodsPerYear
-          } ÷ ${returnsCount}) − 1] × 100\``,
-          `- **Volatilidade móvel:** desvio-padrão populacional dos retornos logarítmicos em ${tf.volWindow} períodos × \`√${tf.periodsPerYear}\` × 100`,
-          `- **Sharpe simplificado:** média dos retornos logarítmicos ÷ desvio-padrão amostral × \`√${tf.periodsPerYear}\`, com taxa livre de risco igual a zero`,
-          '- **Drawdown:** diferença percentual entre cada fechamento e o maior fechamento anterior da série',
-          '- **Regime:** calmo até Q25; normal acima de Q25 até Q75; volátil acima de Q75 até Q95; extremo acima de Q95',
-        );
-      }
 
       if (lastCandle) {
         lines.push(
@@ -1329,50 +1172,35 @@ export default function AnalisePage() {
           '',
           '| Abertura | Máxima | Mínima | Fechamento | Volume base |',
           '|---:|---:|---:|---:|---:|',
-          `| ${mdNumber(lastCandle.open, 8)} | ${mdNumber(
-            lastCandle.high,
-            8,
-          )} | ${mdNumber(lastCandle.low, 8)} | ${mdNumber(
-            lastCandle.close,
-            8,
-          )} | ${mdNumber(lastCandle.volume, 8)} |`,
+          `| ${mdNumber(lastCandle.open, 8)} | ${mdNumber(lastCandle.high, 8)} | ${mdNumber(lastCandle.low, 8)} | ${mdNumber(lastCandle.close, 8)} | ${mdNumber(lastCandle.volume, 8)} |`,
         );
       }
     };
 
     const lines: string[] = [
-      '# VigIA Trade — Snapshot auditável da análise de mercado',
+      '# VigIA Trade — Snapshot completo da análise de mercado',
       '',
-      '> Faça uma revisão quantitativa independente deste snapshot. Verifique fórmulas, número de observações, continuidade da série, limites dos regimes e interpretação das métricas. Não invente notícias ou dados externos, não altere números sem demonstrar a fórmula e não transforme a análise em recomendação de investimento.',
+      '> Faça uma revisão quantitativa independente deste snapshot. Verifique a consistência matemática, a interpretação das métricas, as limitações da amostra e eventuais contradições. Não invente notícias ou dados externos, não altere números sem demonstrar a fórmula e não transforme a análise em recomendação de investimento.',
       '',
       '## Contexto',
       '',
       `- **Gerado em:** ${generatedAt.toLocaleString('pt-BR')}`,
       `- **Ativo principal:** ${usedSymbolA}`,
-      `- **Ativo comparativo:** ${
-        statsB ? usedSymbolB : 'não utilizado'
-      }`,
+      `- **Ativo comparativo:** ${statsB ? usedSymbolB : 'não utilizado'}`,
       `- **Timeframe:** ${tf.label} (${usedTf})`,
       `- **Período analisado:** ${usedPeriodLabel}`,
-      `- **Janela de volatilidade:** ${tf.windowLabel} (${tf.volWindow} candles)`,
+      `- **Janela de volatilidade:** ${tf.windowLabel}`,
       '- **Fonte dos candles:** Binance',
       '- **Regra temporal:** somente candles encerrados',
-      `- **Data de corte do ativo principal:** ${mdDate(
-        lastCandleA?.closeTime,
-      )}`,
-      '- **Período atual em formação:** excluído dos cálculos',
       '',
-      '## Definições metodológicas',
+      '## Observações metodológicas',
       '',
       '- Retorno no período compara o primeiro e o último fechamento da janela.',
-      '- Retorno anualizado é uma extrapolação geométrica histórica pelo número de retornos observados; não é previsão.',
-      '- Volatilidade móvel usa retornos logarítmicos e desvio-padrão populacional; o valor é anualizado pela raiz quadrada dos períodos por ano.',
-      '- Sharpe usa média dos retornos logarítmicos, desvio-padrão amostral e taxa livre de risco igual a zero.',
-      '- Drawdown usa somente preços de fechamento. Máximas intraperíodo não formam o pico do cálculo.',
-      '- Tempo abaixo de um topo anterior é a fração de candles cujo fechamento ficou abaixo do maior fechamento observado até aquele ponto.',
-      '- O regime é determinado pelos quantis Q25, Q75 e Q95 da própria série de volatilidade do ativo.',
-      '- Correlação usa retornos logarítmicos de candles com o mesmo horário de abertura.',
-      '- Nenhuma dessas métricas, isoladamente ou em conjunto, prevê o próximo movimento.',
+      '- Retorno anualizado é uma extrapolação matemática do período observado e não uma previsão.',
+      '- Volatilidade anualizada mede amplitude das oscilações, não direção.',
+      '- Drawdown mede a distância abaixo de um topo anterior.',
+      '- Sharpe simplificado compara retorno médio com volatilidade usando taxa livre de risco igual a zero.',
+      '- O regime compara a volatilidade atual com a distribuição histórica do próprio ativo na amostra.',
     ];
 
     appendAsset(
@@ -1380,7 +1208,6 @@ export default function AnalisePage() {
       'Ativo principal',
       statsA,
       dataA,
-      volA,
       firstCandleA,
       lastCandleA,
     );
@@ -1391,7 +1218,6 @@ export default function AnalisePage() {
         'Ativo de comparação',
         statsB,
         dataB,
-        volB,
         firstCandleB,
         lastCandleB,
       );
@@ -1400,54 +1226,16 @@ export default function AnalisePage() {
         '',
         '## Comparação e correlação',
         '',
-        `- **Candles alinhados pelo horário:** ${alignedPairs.length}`,
-        `- **Retornos alinhados usados:** ${alignedReturnCount}`,
-        '- **Método:** correlação de Pearson entre retornos logarítmicos alinhados',
-        '',
         '| Item | Resultado |',
         '|---|---:|',
-        `| Retorno de ${statsA.symbol} | ${mdPct(
-          statsA.returnPct,
-        )} |`,
-        `| Retorno de ${statsB.symbol} | ${mdPct(
-          statsB.returnPct,
-        )} |`,
-        `| Volatilidade atual de ${statsA.symbol} | ${mdNumber(
-          statsA.currentVolPct,
-          2,
-        )}% a.a. |`,
-        `| Volatilidade atual de ${statsB.symbol} | ${mdNumber(
-          statsB.currentVolPct,
-          2,
-        )}% a.a. |`,
-        `| Drawdown máximo de ${statsA.symbol} | ${mdPct(
-          statsA.maxDrawdownPct,
-        )} |`,
-        `| Drawdown máximo de ${statsB.symbol} | ${mdPct(
-          statsB.maxDrawdownPct,
-        )} |`,
-        `| Correlação de Pearson | ${
-          corr === null ? 'indisponível' : mdNumber(corr, 4)
-        } |`,
-        `| Classificação da correlação | ${
-          corr === null
-            ? 'amostra insuficiente'
-            : cleanCell(correlationLabel(corr))
-        } |`,
-        `| Q25/Q75/Q95 de ${statsA.symbol} | ${mdNumber(
-          volProfileA.q25,
-          2,
-        )}% / ${mdNumber(volProfileA.q75, 2)}% / ${mdNumber(
-          volProfileA.q95,
-          2,
-        )}% |`,
-        `| Q25/Q75/Q95 de ${statsB.symbol} | ${mdNumber(
-          volProfileB?.q25,
-          2,
-        )}% / ${mdNumber(
-          volProfileB?.q75,
-          2,
-        )}% / ${mdNumber(volProfileB?.q95, 2)}% |`,
+        `| Retorno de ${statsA.symbol} | ${mdPct(statsA.returnPct)} |`,
+        `| Retorno de ${statsB.symbol} | ${mdPct(statsB.returnPct)} |`,
+        `| Volatilidade atual de ${statsA.symbol} | ${mdNumber(statsA.currentVolPct, 2)}% a.a. |`,
+        `| Volatilidade atual de ${statsB.symbol} | ${mdNumber(statsB.currentVolPct, 2)}% a.a. |`,
+        `| Drawdown máximo de ${statsA.symbol} | ${mdPct(statsA.maxDrawdownPct)} |`,
+        `| Drawdown máximo de ${statsB.symbol} | ${mdPct(statsB.maxDrawdownPct)} |`,
+        `| Correlação de Pearson | ${corr === null ? 'indisponível' : mdNumber(corr, 4)} |`,
+        `| Classificação da correlação | ${corr === null ? 'amostra insuficiente' : cleanCell(correlationLabel(corr))} |`,
       );
     }
 
@@ -1457,17 +1245,16 @@ export default function AnalisePage() {
       '',
       report
         ? report
-        : 'O relatório interno com IA ainda não foi gerado. Revise diretamente as métricas e fórmulas acima.',
+        : 'O relatório interno com IA ainda não foi gerado. Revise diretamente as métricas acima.',
       '',
       '## Perguntas sugeridas para a IA revisora',
       '',
-      '1. O retorno do período e o retorno anualizado conferem com o primeiro fechamento, o último fechamento e o número de retornos?',
-      '2. Drawdown máximo, drawdown atual e tempo abaixo de topo foram interpretados usando fechamentos?',
-      '3. Q25, Q75, Q95 e o percentil atual justificam o regime atribuído?',
-      '4. A volatilidade e o Sharpe foram anualizados com o fator correto para o timeframe?',
-      '5. A correlação usa quantidade suficiente de retornos alinhados e não foi confundida com causalidade?',
-      '6. Existem lacunas de candles ou diferenças de corte entre os ativos que limitam a comparação?',
-      '7. Quais conclusões são apenas descritivas e não podem ser transformadas em previsão?',
+      '1. Os retornos, drawdowns, volatilidades e extremos parecem internamente coerentes?',
+      '2. A interpretação do regime de volatilidade respeita a distribuição histórica do próprio ativo?',
+      '3. A correlação foi interpretada sem confundir associação com causalidade?',
+      '4. O Sharpe foi usado apenas como retorno por unidade de volatilidade, sem representar todo o risco?',
+      '5. A duração e a quantidade de candles são suficientes para a conclusão apresentada?',
+      '6. Quais limitações deveriam ser destacadas antes de comparar os ativos?',
       '',
       '> Este snapshot é descritivo, usa dados históricos e não constitui recomendação de investimento.',
     );
@@ -1493,17 +1280,13 @@ export default function AnalisePage() {
         document.body.removeChild(textarea);
 
         if (!copied) {
-          throw new Error(
-            'O navegador recusou o acesso à área de transferência.',
-          );
+          throw new Error('O navegador recusou o acesso à área de transferência.');
         }
       }
 
       setCopyStatus('success');
       setCopyMessage(
-        `Markdown completo copiado (${markdown.length.toLocaleString(
-          'pt-BR',
-        )} caracteres). Cole na IA de sua preferência.`,
+        `Markdown completo copiado (${markdown.length.toLocaleString('pt-BR')} caracteres). Cole na IA de sua preferência.`,
       );
     } catch (copyError) {
       setCopyStatus('error');
@@ -1518,8 +1301,6 @@ export default function AnalisePage() {
     statsB,
     dataA,
     dataB,
-    volA,
-    volB,
     corr,
     usedSymbolA,
     usedSymbolB,
