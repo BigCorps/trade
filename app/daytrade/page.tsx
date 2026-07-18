@@ -3597,23 +3597,24 @@ export default function DayTradePage() {
               alignItems: 'end',
             }}
           >
-            {[
+            {([
               ['Candles', backtestCandleCount, setBacktestCandleCount, '1'],
               ['Capital inicial', backtestInitialCapital, setBacktestInitialCapital, '0.01'],
               ['Risco (%)', backtestRiskPercent, setBacktestRiskPercent, '0.1'],
               ['Taxa por execução (%)', backtestFeeRate, setBacktestFeeRate, '0.01'],
               ['Slippage (%)', backtestSlippage, setBacktestSlippage, '0.01'],
               ['Máx. candles na posição', backtestMaximumHolding, setBacktestMaximumHolding, '1'],
-            ].map(([label, value, setter, step]) => (
-              <label key={String(label)} style={{ color: S.dim, fontSize: 10, textAlign: 'center' }}>
+            ] as Array<[string, string, (next: string) => void, string]>).map(
+              ([label, value, setter, step]) => (
+              <label key={label} style={{ color: S.dim, fontSize: 10, textAlign: 'center' }}>
                 {label}
                 <input
                   type="number"
                   min="0"
-                  step={String(step)}
-                  value={String(value)}
+                  step={step}
+                  value={value}
                   onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-                    (setter as (next: string) => void)(event.target.value)
+                    setter(event.target.value)
                   }
                   style={{
                     width: '100%',
