@@ -541,7 +541,7 @@ function buildHistoricalEvaluations(
     );
 
     evaluations[index] = evaluateTrendBreakout({
-      candles: candles.slice(0, index + 1),
+      candles: candles.slice(Math.max(0, index - 1), index + 1),
       indicators: snapshot,
       // No histórico, o único preço legitimamente conhecido no instante do
       // sinal é o fechamento do próprio candle.

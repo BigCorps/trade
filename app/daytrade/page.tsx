@@ -155,7 +155,7 @@ const HISTORY_KEY = 'vigia_daytrade_history_v1';
 const HISTORY_LIMIT = 20;
 
 const JOURNAL_LIMIT = 30;
-const BACKTEST_DEFAULT_CANDLES = 1500;
+const BACKTEST_DEFAULT_CANDLES = 750;
 
 type RemoteActionStatus = 'idle' | 'loading' | 'success' | 'error';
 type DayTradeAlertableStatus =
