@@ -13,7 +13,7 @@
  * - Preço e candle em formação acompanhados por WebSocket da Binance.
  * - Performance, volatilidade anualizada e volume financeiro.
  * - Retorno, drawdown, amplitude, correlação e extremos intradiários.
- * - Resumo descritivo local, sem custo de IA e sem recomendação.
+ * - Relatório explicativo com IA, fallback local e sem recomendação.
  * - Histórico separado no localStorage, sem misturar com análises de longo prazo.
  * - Playbook educacional de tendência com rompimento, checklist e semáforo.
  * - Plano de entrada, invalidação, alvo e calculadora de tamanho da posição.
@@ -157,7 +157,7 @@ const HISTORY_LIMIT = 20;
 const JOURNAL_LIMIT = 30;
 const BACKTEST_DEFAULT_CANDLES = 750;
 
-type RemoteActionStatus = 'idle' | 'loading' | 'success' | 'error';
+type RemoteActionStatus = 'idle' | 'loading' | 'success' | 'error' | 'fallback';
 type DayTradeAlertableStatus =
   | 'observar'
   | 'condicoes_atendidas'
@@ -1011,6 +1011,10 @@ export default function DayTradePage() {
   const [progress, setProgress] = useState('');
   const [error, setError] = useState('');
   const [report, setReport] = useState('');
+  const [reportAction, setReportAction] = useState<RemoteActionState>({
+    status: 'idle',
+    message: '',
+  });
   const [history, setHistory] = useState<HistoryRecord[]>([]);
 
   // Valores educacionais informados manualmente. Nenhum saldo é movimentado.
@@ -1154,6 +1158,7 @@ export default function DayTradePage() {
     setProgress('');
     setError('');
     setReport('');
+    setReportAction({ status: 'idle', message: '' });
     setLiveA(null);
     setLiveB(null);
     setServerSetup(null);
@@ -2148,23 +2153,146 @@ export default function DayTradePage() {
     setupAnalysis.indicators,
   ]);
 
-  const generateReport = useCallback(() => {
-    if (!derived.statsA) return;
-    const text = buildReport(
+  const generateReport = useCallback(async () => {
+    if (!derived.statsA || reportAction.status === 'loading') return;
+
+    const fallbackText = buildReport(
       derived.statsA,
       derived.statsB,
       derived.correlation,
       usedPeriod.label,
       usedTimeframe,
     );
-    setReport(text);
-    updateLatestHistoryReport(text);
+
+    const evaluation = setupAnalysis.evaluation;
+    const indicators = setupAnalysis.indicators;
+
+    setReportAction({
+      status: 'loading',
+      message: 'A IA está interpretando as métricas e o checklist deste cenário...',
+    });
+
+    try {
+      const response = await fetch('/api/relatorio-daytrade', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        cache: 'no-store',
+        body: JSON.stringify({
+          periodoLabel: usedPeriod.label,
+          timeframe: usedTimeframe,
+          correlacao: derived.correlation,
+          ativos: [
+            derived.statsA,
+            ...(derived.statsB ? [derived.statsB] : []),
+          ],
+          setup: evaluation
+            ? {
+                strategy: evaluation.strategy,
+                strategyVersion: evaluation.strategyVersion,
+                status: evaluation.status,
+                candleOpenTime: evaluation.candleOpenTime,
+                candleCloseTime: evaluation.candleCloseTime,
+                evaluatedPrice: evaluation.evaluatedPrice,
+                livePrice: evaluation.livePrice,
+                passedConditions: evaluation.passedConditions,
+                totalConditions: evaluation.totalConditions,
+                scorePct: evaluation.scorePct,
+                allConditionsMet: evaluation.allConditionsMet,
+                nextTrigger: evaluation.nextTrigger,
+                summary: evaluation.summary,
+                warnings: evaluation.warnings,
+                diagnostics: evaluation.diagnostics,
+                conditions: evaluation.conditions.map((condition) => ({
+                  id: condition.id,
+                  label: condition.label,
+                  passed: condition.passed,
+                  available: condition.available,
+                  currentValue: condition.currentValue,
+                  requiredValue: condition.requiredValue,
+                  explanation: condition.explanation,
+                })),
+                plan: evaluation.plan,
+              }
+            : null,
+          indicadores: indicators
+            ? {
+                ready: indicators.ready,
+                candleCount: indicators.candleCount,
+                requiredCandles: indicators.requiredCandles,
+                currentPrice: indicators.currentPrice,
+                previousClose: indicators.previousClose,
+                lastCandleReturnPct: indicators.lastCandleReturnPct,
+                currentCandleRangePct: indicators.currentCandleRangePct,
+                emaFast: indicators.emaFast,
+                emaMedium: indicators.emaMedium,
+                emaSlow: indicators.emaSlow,
+                atr: indicators.atr,
+                atrPct: indicators.atrPct,
+                breakoutLevel: indicators.breakoutLevel,
+                supportLevel: indicators.supportLevel,
+                distanceToBreakoutPct: indicators.distanceToBreakoutPct,
+                distanceFromSupportPct: indicators.distanceFromSupportPct,
+                distanceFromSlowEmaPct: indicators.distanceFromSlowEmaPct,
+                currentVolume: indicators.currentVolume,
+                averageVolume: indicators.averageVolume,
+                relativeVolume: indicators.relativeVolume,
+                annualizedVolatilityPct: indicators.annualizedVolatilityPct,
+                volatilityRegime: indicators.volatilityRegime,
+                volatilityPercentile: indicators.volatilityPercentile,
+                periodHigh: indicators.periodHigh,
+                periodLow: indicators.periodLow,
+                amplitudePct: indicators.amplitudePct,
+                maxDrawdownPct: indicators.maxDrawdownPct,
+                currentDrawdownPct: indicators.currentDrawdownPct,
+                timeInDrawdownPct: indicators.timeInDrawdownPct,
+              }
+            : null,
+        }),
+      });
+
+      const payload = await response.json().catch(() => null) as {
+        relatorio?: string;
+        error?: string;
+        requestId?: string;
+      } | null;
+
+      if (!response.ok || !payload?.relatorio?.trim()) {
+        throw new Error(
+          payload?.error ??
+            `O serviço de relatório respondeu ${response.status}.`,
+        );
+      }
+
+      const text = payload.relatorio.trim();
+      setReport(text);
+      updateLatestHistoryReport(text);
+      setReportAction({
+        status: 'success',
+        message:
+          'Análise explicada por IA com base somente nas métricas e regras calculadas pelo VigIA.',
+      });
+    } catch (reportError) {
+      setReport(fallbackText);
+      updateLatestHistoryReport(fallbackText);
+      setReportAction({
+        status: 'fallback',
+        message:
+          `A IA não respondeu; o VigIA exibiu o resumo local de contingência. ${
+            reportError instanceof Error ? reportError.message : ''
+          }`.trim(),
+      });
+    }
   }, [
     derived.statsA,
     derived.statsB,
     derived.correlation,
     usedPeriod.label,
     usedTimeframe,
+    setupAnalysis.evaluation,
+    setupAnalysis.indicators,
+    reportAction.status,
     updateLatestHistoryReport,
   ]);
 
@@ -4022,22 +4150,62 @@ export default function DayTradePage() {
             </Card>
 
             <Card>
-              <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: 8,
+                  marginBottom: 12,
+                }}
+              >
                 <button
                   onClick={generateReport}
+                  disabled={reportAction.status === 'loading'}
                   style={{
-                    background: S.a,
-                    color: '#1a1206',
+                    background:
+                      reportAction.status === 'loading' ? S.border : S.a,
+                    color:
+                      reportAction.status === 'loading' ? S.dim : '#1a1206',
                     border: 'none',
                     borderRadius: 8,
                     padding: '10px 20px',
                     fontSize: 13,
                     fontWeight: 700,
-                    cursor: 'pointer',
+                    cursor:
+                      reportAction.status === 'loading'
+                        ? 'not-allowed'
+                        : 'pointer',
+                    opacity: reportAction.status === 'loading' ? 0.75 : 1,
                   }}
                 >
-                  Gerar resumo intradiário
+                  {reportAction.status === 'loading'
+                    ? 'Analisando com IA...'
+                    : report
+                      ? 'Gerar nova análise com IA'
+                      : 'Gerar análise intradiária com IA'}
                 </button>
+
+                {reportAction.message && (
+                  <div
+                    style={{
+                      color:
+                        reportAction.status === 'success'
+                          ? S.green
+                          : reportAction.status === 'fallback'
+                            ? S.yellow
+                            : reportAction.status === 'error'
+                              ? S.red
+                              : S.dim,
+                      fontSize: 11,
+                      lineHeight: 1.45,
+                      textAlign: 'center',
+                      maxWidth: 760,
+                    }}
+                  >
+                    {reportAction.message}
+                  </div>
+                )}
               </div>
 
               {report ? (
@@ -4048,7 +4216,13 @@ export default function DayTradePage() {
                     fontSize: 14,
                     color: S.text,
                     background: S.panelSoft,
-                    border: `1px solid ${S.border}`,
+                    border: `1px solid ${
+                      reportAction.status === 'success'
+                        ? `${S.green}66`
+                        : reportAction.status === 'fallback'
+                          ? `${S.yellow}66`
+                          : S.border
+                    }`,
                     borderRadius: 8,
                     padding: 16,
                   }}
@@ -4056,8 +4230,8 @@ export default function DayTradePage() {
                   {report}
                 </div>
               ) : (
-                <div style={{ textAlign: 'center', color: S.dim, fontSize: 12 }}>
-                  O resumo é produzido localmente a partir das métricas exibidas e não consome créditos de IA.
+                <div style={{ textAlign: 'center', color: S.dim, fontSize: 12, lineHeight: 1.55 }}>
+                  A IA explicará o cenário usando somente as métricas, os indicadores e o checklist calculados pelo VigIA. Ela não altera o status do setup, não libera ordens e não recomenda compra ou venda.
                 </div>
               )}
             </Card>

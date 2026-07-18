@@ -1112,7 +1112,7 @@ export default function AnalisePage() {
     ): string =>
       value === null || value === undefined || !Number.isFinite(value)
         ? '—'
-        : `${value >= 0 ? '+' : ''}${fmt(value, digits)}%`;
+        : \`\${value >= 0 ? '+' : ''}\${fmt(value, digits)}%\`;
 
     const mdDate = (
       value: number | string | null | undefined,
@@ -1142,27 +1142,27 @@ export default function AnalisePage() {
     ) => {
       lines.push(
         '',
-        `## ${title}: ${stats.symbol}`,
+        \`## \${title}: \${stats.symbol}\`,
         '',
-        `- **Candles encerrados utilizados:** ${candles.length}`,
-        `- **Primeiro candle:** ${mdDate(firstCandle?.openTime)}`,
-        `- **Último candle encerrado:** ${mdDate(lastCandle?.closeTime)}`,
+        \`- **Candles encerrados utilizados:** \${candles.length}\`,
+        \`- **Primeiro candle:** \${mdDate(firstCandle?.openTime)}\`,
+        \`- **Último candle encerrado:** \${mdDate(lastCandle?.closeTime)}\`,
         '',
         '| Métrica | Valor |',
         '|---|---:|',
-        `| Último fechamento | ${mdNumber(stats.lastPrice, 8)} USDT |`,
-        `| Retorno no período | ${mdPct(stats.returnPct)} |`,
-        `| Retorno anualizado histórico | ${mdPct(stats.annualReturnPct)} |`,
-        `| Drawdown máximo | ${mdPct(stats.maxDrawdownPct)} |`,
-        `| Drawdown atual | ${mdPct(stats.currentDrawdownPct)} |`,
-        `| Tempo abaixo de um topo anterior | ${mdNumber(stats.timeInDrawdownPct, 0)}% |`,
-        `| Volatilidade média anualizada | ${mdNumber(stats.annualVolPct, 2)}% |`,
-        `| Volatilidade atual anualizada | ${mdNumber(stats.currentVolPct, 2)}% |`,
-        `| Regime atual | ${stats.regime} |`,
-        `| Sharpe histórico simplificado | ${mdNumber(stats.sharpe, 4)} |`,
-        `| Candles positivos | ${mdNumber(stats.pctPositive, 2)}% |`,
-        `| Melhor ${tf.unitLabel} | ${mdPct(stats.bestUnitPct)} |`,
-        `| Pior ${tf.unitLabel} | ${mdPct(stats.worstUnitPct)} |`,
+        \`| Último fechamento | \${mdNumber(stats.lastPrice, 8)} USDT |\`,
+        \`| Retorno no período | \${mdPct(stats.returnPct)} |\`,
+        \`| Retorno anualizado histórico | \${mdPct(stats.annualReturnPct)} |\`,
+        \`| Drawdown máximo | \${mdPct(stats.maxDrawdownPct)} |\`,
+        \`| Drawdown atual | \${mdPct(stats.currentDrawdownPct)} |\`,
+        \`| Tempo abaixo de um topo anterior | \${mdNumber(stats.timeInDrawdownPct, 0)}% |\`,
+        \`| Volatilidade média anualizada | \${mdNumber(stats.annualVolPct, 2)}% |\`,
+        \`| Volatilidade atual anualizada | \${mdNumber(stats.currentVolPct, 2)}% |\`,
+        \`| Regime atual | \${stats.regime} |\`,
+        \`| Sharpe histórico simplificado | \${mdNumber(stats.sharpe, 4)} |\`,
+        \`| Candles positivos | \${mdNumber(stats.pctPositive, 2)}% |\`,
+        \`| Melhor \${tf.unitLabel} | \${mdPct(stats.bestUnitPct)} |\`,
+        \`| Pior \${tf.unitLabel} | \${mdPct(stats.worstUnitPct)} |\`,
       );
 
       if (lastCandle) {
@@ -1172,7 +1172,7 @@ export default function AnalisePage() {
           '',
           '| Abertura | Máxima | Mínima | Fechamento | Volume base |',
           '|---:|---:|---:|---:|---:|',
-          `| ${mdNumber(lastCandle.open, 8)} | ${mdNumber(lastCandle.high, 8)} | ${mdNumber(lastCandle.low, 8)} | ${mdNumber(lastCandle.close, 8)} | ${mdNumber(lastCandle.volume, 8)} |`,
+          \`| \${mdNumber(lastCandle.open, 8)} | \${mdNumber(lastCandle.high, 8)} | \${mdNumber(lastCandle.low, 8)} | \${mdNumber(lastCandle.close, 8)} | \${mdNumber(lastCandle.volume, 8)} |\`,
         );
       }
     };
@@ -1184,12 +1184,12 @@ export default function AnalisePage() {
       '',
       '## Contexto',
       '',
-      `- **Gerado em:** ${generatedAt.toLocaleString('pt-BR')}`,
-      `- **Ativo principal:** ${usedSymbolA}`,
-      `- **Ativo comparativo:** ${statsB ? usedSymbolB : 'não utilizado'}`,
-      `- **Timeframe:** ${tf.label} (${usedTf})`,
-      `- **Período analisado:** ${usedPeriodLabel}`,
-      `- **Janela de volatilidade:** ${tf.windowLabel}`,
+      \`- **Gerado em:** \${generatedAt.toLocaleString('pt-BR')}\`,
+      \`- **Ativo principal:** \${usedSymbolA}\`,
+      \`- **Ativo comparativo:** \${statsB ? usedSymbolB : 'não utilizado'}\`,
+      \`- **Timeframe:** \${tf.label} (\${usedTf})\`,
+      \`- **Período analisado:** \${usedPeriodLabel}\`,
+      \`- **Janela de volatilidade:** \${tf.windowLabel}\`,
       '- **Fonte dos candles:** Binance',
       '- **Regra temporal:** somente candles encerrados',
       '',
@@ -1228,14 +1228,14 @@ export default function AnalisePage() {
         '',
         '| Item | Resultado |',
         '|---|---:|',
-        `| Retorno de ${statsA.symbol} | ${mdPct(statsA.returnPct)} |`,
-        `| Retorno de ${statsB.symbol} | ${mdPct(statsB.returnPct)} |`,
-        `| Volatilidade atual de ${statsA.symbol} | ${mdNumber(statsA.currentVolPct, 2)}% a.a. |`,
-        `| Volatilidade atual de ${statsB.symbol} | ${mdNumber(statsB.currentVolPct, 2)}% a.a. |`,
-        `| Drawdown máximo de ${statsA.symbol} | ${mdPct(statsA.maxDrawdownPct)} |`,
-        `| Drawdown máximo de ${statsB.symbol} | ${mdPct(statsB.maxDrawdownPct)} |`,
-        `| Correlação de Pearson | ${corr === null ? 'indisponível' : mdNumber(corr, 4)} |`,
-        `| Classificação da correlação | ${corr === null ? 'amostra insuficiente' : cleanCell(correlationLabel(corr))} |`,
+        \`| Retorno de \${statsA.symbol} | \${mdPct(statsA.returnPct)} |\`,
+        \`| Retorno de \${statsB.symbol} | \${mdPct(statsB.returnPct)} |\`,
+        \`| Volatilidade atual de \${statsA.symbol} | \${mdNumber(statsA.currentVolPct, 2)}% a.a. |\`,
+        \`| Volatilidade atual de \${statsB.symbol} | \${mdNumber(statsB.currentVolPct, 2)}% a.a. |\`,
+        \`| Drawdown máximo de \${statsA.symbol} | \${mdPct(statsA.maxDrawdownPct)} |\`,
+        \`| Drawdown máximo de \${statsB.symbol} | \${mdPct(statsB.maxDrawdownPct)} |\`,
+        \`| Correlação de Pearson | \${corr === null ? 'indisponível' : mdNumber(corr, 4)} |\`,
+        \`| Classificação da correlação | \${corr === null ? 'amostra insuficiente' : cleanCell(correlationLabel(corr))} |\`,
       );
     }
 
@@ -1286,13 +1286,13 @@ export default function AnalisePage() {
 
       setCopyStatus('success');
       setCopyMessage(
-        `Markdown completo copiado (${markdown.length.toLocaleString('pt-BR')} caracteres). Cole na IA de sua preferência.`,
+        \`Markdown completo copiado (\${markdown.length.toLocaleString('pt-BR')} caracteres). Cole na IA de sua preferência.\`,
       );
     } catch (copyError) {
       setCopyStatus('error');
       setCopyMessage(
         copyError instanceof Error
-          ? `Não foi possível copiar: ${copyError.message}`
+          ? \`Não foi possível copiar: \${copyError.message}\`
           : 'Não foi possível copiar o Markdown.',
       );
     }
