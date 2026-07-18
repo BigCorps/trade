@@ -429,10 +429,32 @@ export default function AlertasPage() {
             </div>
           </a>
         </div>
-        <nav style={{ display: 'flex', justifyContent: 'center', gap: 20, marginTop: 8, fontSize: 13 }}>
-          <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>Análise</a>
-          <span style={{ color: S.a, fontWeight: 600 }}>Alertas</span>
-          <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>Conta Binance</a>
+<nav
+  style={{
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 20,
+    marginTop: 8,
+    fontSize: 13,
+  }}
+>
+<a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
+  Análise
+</a>
+
+<a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>
+  Day Trade
+</a>
+
+<span style={{ color: S.a, fontWeight: 600 }}>
+  Alertas
+</span>
+
+<a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
+  Conta Binance
+</a>
           {session && (
             <button onClick={signOut}
               style={{ background: 'transparent', border: 'none', color: S.red, fontSize: 13, cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>
