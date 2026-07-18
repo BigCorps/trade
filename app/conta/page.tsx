@@ -1303,8 +1303,8 @@ export default function ContaPage() {
               )}
 
               <div style={{ fontSize: 11, color: S.dim, textAlign: 'center', marginTop: 10, lineHeight: 1.5 }}>
-                O histórico reflete os registros do Supabase. Enquanto a função <code>monitorar-ordens</code> não estiver ativa,
-                confirme diretamente na Binance se alvo, stop ou cancelamento foram executados.
+                O histórico reflete os 3 últimos registros. Também confirme
+                diretamente na Binance se alvo, stop ou cancelamento foram executados por garantia.
               </div>
             </Card>
           </>
