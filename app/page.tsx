@@ -1217,22 +1217,30 @@ export default function AnalisePage() {
           </div>
         </div>
 
-        <nav
-          style={{
-            display: 'flex',
-            justifyContent: 'center',
-            gap: 20,
-            marginTop: 8,
-            fontSize: 13,
-          }}
-        >
-          <span style={{ color: S.a, fontWeight: 600 }}>Análise</span>
-          <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
-            Alertas
-          </a>
-          <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
-            Conta Binance
-          </a>
+<nav
+  style={{
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 20,
+    marginTop: 8,
+    fontSize: 13,
+  }}
+>
+<span style={{ color: S.a, fontWeight: 600 }}>Análise</span>
+
+<a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>
+  Day Trade
+</a>
+
+<a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
+  Alertas
+</a>
+
+<a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
+  Conta Binance
+</a>
           {!session ? (
             <a
               href="/alertas"
