@@ -28,6 +28,7 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { getSupabase } from '../lib/supabaseClient';
+import { isSafeUuid } from '../lib/auth/safeRedirect';
 
 // ---------------------------------------------------------------------------
 // Timeframes e períodos
@@ -177,6 +178,37 @@ interface KeyInfo {
   is_testnet: boolean;
 }
 
+type OpportunityLifecycleStatus =
+  | 'pending'
+  | 'under_review'
+  | 'revalidating'
+  | 'invalidated'
+  | 'expired'
+  | 'rejected'
+  | 'opening'
+  | 'open'
+  | 'exit_pending'
+  | 'closing'
+  | 'closed'
+  | 'error';
+
+interface OpportunityCardRow {
+  id: string;
+  symbol: string;
+  timeframe: string;
+  opportunity_type: 'entry' | 'exit';
+  lifecycle_status: OpportunityLifecycleStatus;
+  detected_at: string;
+  expires_at: string | null;
+}
+
+interface OpportunitySummary {
+  pendingCount: number;
+  positionCount: number;
+  exitCount: number;
+  latestActive: OpportunityCardRow | null;
+}
+
 // ---------------------------------------------------------------------------
 // Estilo
 // ---------------------------------------------------------------------------
@@ -227,6 +259,24 @@ const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   cancelada: { label: 'cancelada', color: '#7d8a97' },
   erro_pre_entrada: { label: 'erro antes da entrada', color: '#d05555' },
   erro: { label: 'erro', color: '#d05555' },
+};
+
+const OPPORTUNITY_STATUS_LABEL: Record<
+  OpportunityLifecycleStatus,
+  { label: string; color: string }
+> = {
+  pending: { label: 'pendente', color: S.a },
+  under_review: { label: 'em revisão', color: S.a },
+  revalidating: { label: 'revalidando', color: S.a },
+  invalidated: { label: 'invalidada', color: S.dim },
+  expired: { label: 'expirada', color: S.dim },
+  rejected: { label: 'recusada', color: S.dim },
+  opening: { label: 'abrindo', color: S.a },
+  open: { label: 'em andamento', color: S.b },
+  exit_pending: { label: 'saída pendente', color: S.red },
+  closing: { label: 'encerrando', color: S.a },
+  closed: { label: 'encerrada', color: S.green },
+  error: { label: 'erro', color: S.red },
 };
 
 // ---------------------------------------------------------------------------
@@ -653,6 +703,9 @@ export default function AnalisePage() {
   const [keyInfo, setKeyInfo] = useState<KeyInfo | null | undefined>(undefined);
   const [lastOrders, setLastOrders] = useState<OrderRow[]>([]);
   const [lastAnalyses, setLastAnalyses] = useState<AnalysisRow[]>([]);
+  const [opportunitySummary, setOpportunitySummary] = useState<
+    OpportunitySummary | null | undefined
+  >(undefined);
   const [currentAnalysisId, setCurrentAnalysisId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -699,10 +752,75 @@ export default function AnalisePage() {
     );
   }, [supabase]);
 
+  const loadOpportunityStatus = useCallback(async () => {
+    const activeStatuses: OpportunityLifecycleStatus[] = [
+      'pending',
+      'under_review',
+      'revalidating',
+      'opening',
+      'open',
+      'exit_pending',
+      'closing',
+    ];
+
+    const [pending, positions, exits, latestActive] = await Promise.all([
+      supabase
+        .from('trade_opportunities')
+        .select('id', { count: 'exact', head: true })
+        .in('lifecycle_status', [
+          'pending',
+          'under_review',
+          'revalidating',
+        ]),
+      supabase
+        .from('trade_opportunities')
+        .select('id', { count: 'exact', head: true })
+        .in('lifecycle_status', ['opening', 'open']),
+      supabase
+        .from('trade_opportunities')
+        .select('id', { count: 'exact', head: true })
+        .in('lifecycle_status', ['exit_pending', 'closing']),
+      supabase
+        .from('trade_opportunities')
+        .select(
+          'id, symbol, timeframe, opportunity_type, lifecycle_status, detected_at, expires_at',
+        )
+        .in('lifecycle_status', activeStatuses)
+        .order('detected_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    const firstError = [
+      pending.error,
+      positions.error,
+      exits.error,
+      latestActive.error,
+    ].find(Boolean);
+
+    if (firstError) {
+      // A página principal continua funcional mesmo antes da migration da
+      // Central ser aplicada. O card informa a indisponibilidade sem bloquear
+      // análise, alertas, conta ou histórico.
+      console.warn('Central de Oportunidades indisponível:', firstError);
+      setOpportunitySummary(null);
+      return;
+    }
+
+    setOpportunitySummary({
+      pendingCount: pending.count ?? 0,
+      positionCount: positions.count ?? 0,
+      exitCount: exits.count ?? 0,
+      latestActive:
+        (latestActive.data as OpportunityCardRow | null | undefined) ?? null,
+    });
+  }, [supabase]);
+
   useEffect(() => {
     if (session) {
       setKeyInfo(undefined);
-      void loadStatus();
+      setOpportunitySummary(undefined);
+      void Promise.all([loadStatus(), loadOpportunityStatus()]);
       return;
     }
 
@@ -710,8 +828,41 @@ export default function AnalisePage() {
     setKeyInfo(undefined);
     setLastOrders([]);
     setLastAnalyses([]);
+    setOpportunitySummary(undefined);
     setCurrentAnalysisId(null);
-  }, [session, loadStatus]);
+  }, [session, loadStatus, loadOpportunityStatus]);
+
+  useEffect(() => {
+    if (!session) return;
+
+    const channel = supabase
+      .channel(`main-opportunities-${session.user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'trade_opportunities',
+          filter: `user_id=eq.${session.user.id}`,
+        },
+        () => {
+          void loadOpportunityStatus();
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [session, supabase, loadOpportunityStatus]);
+
+  const latestOpportunityHref = useMemo(() => {
+    const id = opportunitySummary?.latestActive?.id;
+
+    return id && isSafeUuid(id)
+      ? `/oportunidades?focus=${encodeURIComponent(id)}`
+      : '/oportunidades';
+  }, [opportunitySummary]);
 
   const onTimeframeChange = (value: string) => {
     const next = value as Timeframe;
@@ -1684,6 +1835,10 @@ export default function AnalisePage() {
   Day Trade
 </a>
 
+<a href="/oportunidades" style={{ color: S.dim, textDecoration: 'none' }}>
+  Oportunidades
+</a>
+
 <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
   Alertas
 </a>
@@ -1693,7 +1848,7 @@ export default function AnalisePage() {
 </a>
           {!session ? (
             <a
-              href="/alertas"
+              href="/alertas?next=%2F"
               style={{ color: S.green, textDecoration: 'none' }}
             >
               Entrar
@@ -1759,6 +1914,97 @@ export default function AnalisePage() {
                 <div style={{ fontSize: 20, fontWeight: 700, color: S.a }}>
                   {alertCount ?? '—'}
                 </div>
+              </Card>
+            </a>
+
+            <a
+              href={latestOpportunityHref}
+              style={{ textDecoration: 'none', color: S.text }}
+            >
+              <Card
+                style={{
+                  padding: '10px 16px',
+                  textAlign: 'center',
+                  minWidth: 230,
+                  cursor: 'pointer',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: S.dim,
+                    textTransform: 'uppercase',
+                    letterSpacing: 0.6,
+                  }}
+                >
+                  Oportunidades
+                </div>
+
+                {opportunitySummary === undefined ? (
+                  <div style={{ fontSize: 13, color: S.dim, marginTop: 6 }}>
+                    carregando...
+                  </div>
+                ) : opportunitySummary === null ? (
+                  <div style={{ fontSize: 12, color: S.dim, marginTop: 6 }}>
+                    Central ainda não ativada
+                  </div>
+                ) : (
+                  <>
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'center',
+                        gap: 14,
+                        marginTop: 5,
+                        fontVariantNumeric: 'tabular-nums',
+                      }}
+                    >
+                      <span title="Pendentes, em revisão ou revalidando">
+                        <strong style={{ color: S.a }}>
+                          {opportunitySummary.pendingCount}
+                        </strong>{' '}
+                        <span style={{ color: S.dim, fontSize: 11 }}>pend.</span>
+                      </span>
+                      <span title="Posições abrindo ou em andamento">
+                        <strong style={{ color: S.b }}>
+                          {opportunitySummary.positionCount}
+                        </strong>{' '}
+                        <span style={{ color: S.dim, fontSize: 11 }}>pos.</span>
+                      </span>
+                      <span title="Saídas pendentes ou em encerramento">
+                        <strong style={{ color: S.red }}>
+                          {opportunitySummary.exitCount}
+                        </strong>{' '}
+                        <span style={{ color: S.dim, fontSize: 11 }}>saídas</span>
+                      </span>
+                    </div>
+
+                    {opportunitySummary.latestActive ? (
+                      <div style={{ fontSize: 11, color: S.dim, marginTop: 5 }}>
+                        {opportunitySummary.latestActive.symbol} ·{' '}
+                        {opportunitySummary.latestActive.timeframe} ·{' '}
+                        <span
+                          style={{
+                            color:
+                              OPPORTUNITY_STATUS_LABEL[
+                                opportunitySummary.latestActive.lifecycle_status
+                              ].color,
+                          }}
+                        >
+                          {
+                            OPPORTUNITY_STATUS_LABEL[
+                              opportunitySummary.latestActive.lifecycle_status
+                            ].label
+                          }
+                        </span>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 11, color: S.dim, marginTop: 5 }}>
+                        nenhuma oportunidade ativa
+                      </div>
+                    )}
+                  </>
+                )}
               </Card>
             </a>
 
@@ -1869,7 +2115,18 @@ export default function AnalisePage() {
           Dados da Binance usando somente candles encerrados. Volatilidade
           realizada em {tf.windowLabel}, anualizada; regime classificado contra
           os quartis do próprio histórico. Ferramenta de análise — volatilidade
-          mede amplitude de risco, não direção futura de preço.
+          mede amplitude de risco, não direção futura de preço. Use os{' '}
+          <a href="/alertas" style={{ color: S.a, textDecoration: 'none' }}>
+            Alertas
+          </a>{' '}
+          para acompanhar mudanças e a{' '}
+          <a
+            href="/oportunidades"
+            style={{ color: S.b, textDecoration: 'none' }}
+          >
+            Central de Oportunidades
+          </a>{' '}
+          para revisar setups, decisões e resultados monitorados.
         </p>
 
         {/* Controles */}

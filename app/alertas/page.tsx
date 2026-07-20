@@ -8,11 +8,21 @@
  * - listar, pausar/reativar e excluir regras
  * - histórico dos últimos disparos (alert_events)
  * CRUD direto no Supabase protegido por RLS (user_id = auth.uid()).
+ *
+ * Integração de autenticação:
+ * - redirecionamentos protegidos por allowlist;
+ * - suporte a `next=/oportunidades?focus=<uuid>`;
+ * - magic link retorna diretamente à tela segura solicitada;
+ * - usuário já autenticado também é encaminhado ao destino seguro.
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { getSupabase } from '../../lib/supabaseClient';
+import {
+  buildMagicLinkRedirect,
+  readSafeNextFromUrl,
+} from '../../lib/auth/safeRedirect';
 
 // ---------------------------------------------------------------------------
 // Domínio (espelha os CHECKs do banco — mantenha em sincronia)
@@ -173,6 +183,8 @@ export default function AlertasPage() {
   const [magicSent, setMagicSent] = useState(false);
   const [authError, setAuthError] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
+  const [postLoginTarget, setPostLoginTarget] = useState('/alertas');
+  const [redirectTargetReady, setRedirectTargetReady] = useState(false);
 
   // Formulário de regra
   const [symbol, setSymbol] = useState<SymbolName>('BTCUSDT');
@@ -192,6 +204,14 @@ export default function AlertasPage() {
   const [actionId, setActionId] = useState<string | null>(null);
 
   const activeCount = useMemo(() => rules.filter((rule) => rule.ativo).length, [rules]);
+
+  // Destino seguro após autenticação ----------------------------------------
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    setPostLoginTarget(readSafeNextFromUrl(window.location.href, '/alertas'));
+    setRedirectTargetReady(true);
+  }, []);
 
   // Sessão -------------------------------------------------------------------
   useEffect(() => {
@@ -219,6 +239,23 @@ export default function AlertasPage() {
       sub.subscription.unsubscribe();
     };
   }, [supabase]);
+
+  // Quem já possui sessão não precisa permanecer na tela de login intermediária.
+  // O destino passou pela allowlist de safeRedirect.ts e nunca pode apontar
+  // para um domínio externo.
+  useEffect(() => {
+    if (
+      typeof window === 'undefined' ||
+      !redirectTargetReady ||
+      !authReady ||
+      !session ||
+      postLoginTarget === '/alertas'
+    ) {
+      return;
+    }
+
+    window.location.replace(postLoginTarget);
+  }, [authReady, postLoginTarget, redirectTargetReady, session]);
 
   // Carrega regras + eventos -------------------------------------------------
   const load = useCallback(async () => {
@@ -280,11 +317,19 @@ export default function AlertasPage() {
 
     setAuthBusy(true);
     try {
+      if (typeof window === 'undefined') {
+        throw new Error('O login por email precisa ser iniciado no navegador.');
+      }
+
+      const emailRedirectTo = buildMagicLinkRedirect({
+        origin: window.location.origin,
+        next: postLoginTarget,
+        fallback: '/alertas',
+      });
+
       const { error } = await supabase.auth.signInWithOtp({
         email: normalizedEmail,
-        options: {
-          emailRedirectTo: typeof window !== 'undefined' ? `${window.location.origin}/alertas` : undefined,
-        },
+        options: { emailRedirectTo },
       });
       if (error) throw error;
       setEmail(normalizedEmail);
@@ -429,32 +474,22 @@ export default function AlertasPage() {
             </div>
           </a>
         </div>
-<nav
-  style={{
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 20,
-    marginTop: 8,
-    fontSize: 13,
-  }}
->
-<a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
-  Análise
-</a>
-
-<a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>
-  Day Trade
-</a>
-
-<span style={{ color: S.a, fontWeight: 600 }}>
-  Alertas
-</span>
-
-<a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
-  Conta Binance
-</a>
+        <nav
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 20,
+            marginTop: 8,
+            fontSize: 13,
+          }}
+        >
+          <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>Análise</a>
+          <a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>Day Trade</a>
+          <a href="/oportunidades" style={{ color: S.dim, textDecoration: 'none' }}>Oportunidades</a>
+          <span style={{ color: S.a, fontWeight: 600 }}>Alertas</span>
+          <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>Conta Binance</a>
           {session && (
             <button onClick={signOut}
               style={{ background: 'transparent', border: 'none', color: S.red, fontSize: 13, cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>
@@ -470,10 +505,15 @@ export default function AlertasPage() {
           /* ----------------------------- Login ----------------------------- */
           <Card style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, textAlign: 'center' }}>
             <div style={{ fontSize: 15, fontWeight: 600 }}>Entre para gerenciar seus alertas</div>
-            <div style={{ fontSize: 13, color: S.dim, maxWidth: 420 }}>
+            <div style={{ fontSize: 13, color: S.dim, maxWidth: 440 }}>
               Sem senha: enviamos um link de acesso para o seu email. Os alertas rodam no servidor
               e chegam por email mesmo com o site fechado.
             </div>
+            {redirectTargetReady && postLoginTarget.startsWith('/oportunidades') && (
+              <div style={{ fontSize: 12, color: S.a, maxWidth: 440, lineHeight: 1.5 }}>
+                Depois do login, você será levado diretamente à oportunidade indicada no email.
+              </div>
+            )}
             {magicSent ? (
               <>
                 <div style={{ color: S.green, fontSize: 14 }}>

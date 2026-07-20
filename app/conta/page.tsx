@@ -10,6 +10,8 @@
  * - Toda ordem recebe request_id idempotente, reutilizado em falhas de rede.
  * - HTTP 409 diferencia limite operacional de compra executada sem proteção.
  * - Novos estados de execução/proteção aparecem no histórico.
+ * - Ordens vinculadas à Central exibem a oportunidade correspondente.
+ * - Compatibilidade preservada antes e depois da migration de oportunidades.
  */
 
 import {
@@ -28,6 +30,7 @@ import {
   type Session,
 } from '@supabase/supabase-js';
 import { getSupabase } from '../../lib/supabaseClient';
+import { isSafeUuid } from '../../lib/auth/safeRedirect';
 
 const S = {
   bg: '#101418', panel: '#181f26', border: '#2a343f',
@@ -79,6 +82,27 @@ const OPEN_STATUSES = new Set([
   'oco_ativa',
 ]);
 
+const ORDER_SELECT_BASE =
+  'id, symbol, status, is_testnet, quote_amount, qty, entry_price, exit_price, stop_price, target_price, pnl_usdt, erro, criado_em, request_id, protected_at, last_checked_at, binance_status, unprotected_reason';
+
+const ORDER_SELECT_WITH_OPPORTUNITY =
+  'id, symbol, status, is_testnet, quote_amount, qty, entry_price, exit_price, stop_price, target_price, pnl_usdt, erro, criado_em, request_id, protected_at, last_checked_at, binance_status, unprotected_reason, opportunity_id';
+
+const OPPORTUNITY_STATUS_LABEL: Record<string, { label: string; color: string }> = {
+  pending: { label: 'pendente', color: S.a },
+  under_review: { label: 'em revisão', color: S.a },
+  revalidating: { label: 'revalidando', color: S.a },
+  invalidated: { label: 'invalidada', color: S.dim },
+  expired: { label: 'expirada', color: S.dim },
+  rejected: { label: 'recusada', color: S.dim },
+  opening: { label: 'abrindo posição', color: S.a },
+  open: { label: 'posição aberta', color: S.blue },
+  exit_pending: { label: 'saída pendente', color: S.a },
+  closing: { label: 'encerrando', color: S.a },
+  closed: { label: 'encerrada', color: S.green },
+  error: { label: 'erro', color: S.red },
+};
+
 function Card({ children, style }: { children: ReactNode; style?: CSSProperties }) {
   return (
     <section
@@ -127,6 +151,20 @@ interface OrderRow {
   last_checked_at: string | null;
   binance_status: string | null;
   unprotected_reason: string | null;
+  opportunity_id: string | null;
+}
+
+interface OpportunitySummary {
+  id: string;
+  symbol: string;
+  timeframe: string;
+  lifecycle_status: string;
+  strategy: string;
+  strategy_version: string;
+  entry_decision: string;
+  execution_environment: string;
+  detected_at: string;
+  closed_at: string | null;
 }
 
 interface RiskSettings {
@@ -252,6 +290,31 @@ function numberValue(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function errorMessage(error: unknown, fallback = 'erro desconhecido'): string {
+  const value = recordValue(error);
+  return typeof value.message === 'string' && value.message.trim()
+    ? value.message
+    : fallback;
+}
+
+function isCentralSchemaMissing(error: unknown): boolean {
+  const value = recordValue(error);
+  const code = typeof value.code === 'string' ? value.code : '';
+  const message = [value.message, value.details, value.hint]
+    .filter((item): item is string => typeof item === 'string')
+    .join(' ')
+    .toLowerCase();
+
+  return (
+    code === '42703' ||
+    code === '42P01' ||
+    code === 'PGRST204' ||
+    code === 'PGRST205' ||
+    message.includes('opportunity_id') ||
+    message.includes('trade_opportunities')
+  );
+}
+
 function normalizeOrder(value: unknown): OrderRow {
   const row = recordValue(value);
   return {
@@ -273,6 +336,36 @@ function normalizeOrder(value: unknown): OrderRow {
     last_checked_at: typeof row.last_checked_at === 'string' ? row.last_checked_at : null,
     binance_status: typeof row.binance_status === 'string' ? row.binance_status : null,
     unprotected_reason: typeof row.unprotected_reason === 'string' ? row.unprotected_reason : null,
+    opportunity_id: typeof row.opportunity_id === 'string' ? row.opportunity_id : null,
+  };
+}
+
+function normalizeOpportunity(value: unknown): OpportunitySummary | null {
+  const row = recordValue(value);
+  const id = typeof row.id === 'string' ? row.id : '';
+
+  if (!isSafeUuid(id)) return null;
+
+  return {
+    id,
+    symbol: typeof row.symbol === 'string' ? row.symbol : '',
+    timeframe: typeof row.timeframe === 'string' ? row.timeframe : '',
+    lifecycle_status:
+      typeof row.lifecycle_status === 'string' ? row.lifecycle_status : 'pending',
+    strategy: typeof row.strategy === 'string' ? row.strategy : '',
+    strategy_version:
+      typeof row.strategy_version === 'string' ? row.strategy_version : '',
+    entry_decision:
+      typeof row.entry_decision === 'string' ? row.entry_decision : 'pending',
+    execution_environment:
+      typeof row.execution_environment === 'string'
+        ? row.execution_environment
+        : 'testnet',
+    detected_at:
+      typeof row.detected_at === 'string'
+        ? row.detected_at
+        : new Date(0).toISOString(),
+    closed_at: typeof row.closed_at === 'string' ? row.closed_at : null,
   };
 }
 
@@ -318,6 +411,8 @@ export default function ContaPage() {
   const [orders, setOrders] = useState<OrderRow[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersError, setOrdersError] = useState('');
+  const [centralSchemaAvailable, setCentralSchemaAvailable] = useState<boolean | null>(null);
+  const [opportunityById, setOpportunityById] = useState<Record<string, OpportunitySummary>>({});
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -332,6 +427,8 @@ export default function ContaPage() {
         setKeyInfo(undefined);
         setOrders([]);
         setBalances([]);
+        setOpportunityById({});
+        setCentralSchemaAvailable(null);
       }
     });
 
@@ -385,25 +482,97 @@ export default function ContaPage() {
     setOrdersLoading(true);
     setOrdersError('');
 
-    const { data, error } = await supabase
+    let centralReady = centralSchemaAvailable !== false;
+    const initialResponse = await supabase
       .from('orders')
-      .select('id, symbol, status, is_testnet, quote_amount, qty, entry_price, exit_price, stop_price, target_price, pnl_usdt, erro, criado_em, request_id, protected_at, last_checked_at, binance_status, unprotected_reason')
+      .select(centralReady ? ORDER_SELECT_WITH_OPPORTUNITY : ORDER_SELECT_BASE)
       .order('criado_em', { ascending: false })
       .limit(15);
 
-    if (error) {
-      setOrdersError(`Não foi possível carregar as ordens: ${error.message}`);
+    let orderData: unknown = initialResponse.data;
+    let orderError: unknown = initialResponse.error;
+
+    if (orderError && centralReady && isCentralSchemaMissing(orderError)) {
+      centralReady = false;
+      setCentralSchemaAvailable(false);
+
+      const fallbackResponse = await supabase
+        .from('orders')
+        .select(ORDER_SELECT_BASE)
+        .order('criado_em', { ascending: false })
+        .limit(15);
+
+      orderData = fallbackResponse.data;
+      orderError = fallbackResponse.error;
+    }
+
+    if (orderError) {
+      setOrdersError(
+        `Não foi possível carregar as ordens: ${errorMessage(orderError)}`,
+      );
       setOrdersLoading(false);
       return;
     }
 
-    const loadedOrders = Array.isArray(data) ? data.map(normalizeOrder) : [];
+    const loadedOrders = Array.isArray(orderData)
+      ? orderData.map(normalizeOrder)
+      : [];
+
     setOrders(loadedOrders);
+
     if (!loadedOrders.some((order) => order.status === 'entrada_sem_protecao')) {
       setAcknowledgedStoredRisk(false);
     }
+
+    const opportunityIds = [...new Set(
+      loadedOrders
+        .map((order) => order.opportunity_id)
+        .filter((id): id is string => isSafeUuid(id)),
+    )];
+
+    if (!centralReady) {
+      setOpportunityById({});
+      setOrdersLoading(false);
+      return;
+    }
+
+    setCentralSchemaAvailable(true);
+
+    if (opportunityIds.length === 0) {
+      setOpportunityById({});
+      setOrdersLoading(false);
+      return;
+    }
+
+    const { data: opportunityData, error: opportunityError } = await supabase
+      .from('trade_opportunities')
+      .select('id, symbol, timeframe, lifecycle_status, strategy, strategy_version, entry_decision, execution_environment, detected_at, closed_at')
+      .in('id', opportunityIds);
+
+    if (opportunityError) {
+      if (isCentralSchemaMissing(opportunityError)) {
+        setCentralSchemaAvailable(false);
+        setOpportunityById({});
+      } else {
+        setOrdersError(
+          `As ordens foram carregadas, mas o vínculo com a Central não pôde ser consultado: ${opportunityError.message}`,
+        );
+      }
+
+      setOrdersLoading(false);
+      return;
+    }
+
+    const nextOpportunityById: Record<string, OpportunitySummary> = {};
+
+    for (const rawOpportunity of opportunityData ?? []) {
+      const opportunity = normalizeOpportunity(rawOpportunity);
+      if (opportunity) nextOpportunityById[opportunity.id] = opportunity;
+    }
+
+    setOpportunityById(nextOpportunityById);
     setOrdersLoading(false);
-  }, [supabase]);
+  }, [centralSchemaAvailable, supabase]);
 
   const loadAccountData = useCallback(async () => {
     setAccountLoading(true);
@@ -430,6 +599,51 @@ export default function ContaPage() {
     if (!session) return;
     void loadAccountData();
   }, [session, loadAccountData]);
+
+  useEffect(() => {
+    if (!session) return;
+
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleRefresh = () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        void loadOrders();
+      }, 250);
+    };
+
+    const channel = supabase
+      .channel(`conta-orders-${session.user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'orders',
+          filter: `user_id=eq.${session.user.id}`,
+        },
+        scheduleRefresh,
+      );
+
+    if (centralSchemaAvailable !== false) {
+      channel.on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'trade_opportunities',
+          filter: `user_id=eq.${session.user.id}`,
+        },
+        scheduleRefresh,
+      );
+    }
+
+    channel.subscribe();
+
+    return () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      void supabase.removeChannel(channel);
+    };
+  }, [centralSchemaAvailable, loadOrders, session, supabase]);
 
   const invoke = useCallback(async (
     payload: Record<string, unknown>,
@@ -665,14 +879,31 @@ export default function ContaPage() {
   }, [keyInfo, ordAmount, ordStop, ordTarget, orderBlockedByUnprotected, riskSettings]);
 
   const findOrderByRequestId = useCallback(async (requestId: string): Promise<OrderRow | null> => {
-    const { data } = await supabase
+    const withOpportunity = centralSchemaAvailable !== false;
+    const initialResponse = await supabase
       .from('orders')
-      .select('id, symbol, status, is_testnet, quote_amount, qty, entry_price, exit_price, stop_price, target_price, pnl_usdt, erro, criado_em, request_id, protected_at, last_checked_at, binance_status, unprotected_reason')
+      .select(withOpportunity ? ORDER_SELECT_WITH_OPPORTUNITY : ORDER_SELECT_BASE)
       .eq('request_id', requestId)
       .maybeSingle();
 
-    return data ? normalizeOrder(data) : null;
-  }, [supabase]);
+    let orderData: unknown = initialResponse.data;
+    let orderError: unknown = initialResponse.error;
+
+    if (orderError && withOpportunity && isCentralSchemaMissing(orderError)) {
+      setCentralSchemaAvailable(false);
+      const fallbackResponse = await supabase
+        .from('orders')
+        .select(ORDER_SELECT_BASE)
+        .eq('request_id', requestId)
+        .maybeSingle();
+
+      orderData = fallbackResponse.data;
+      orderError = fallbackResponse.error;
+    }
+
+    if (orderError) return null;
+    return orderData ? normalizeOrder(orderData) : null;
+  }, [centralSchemaAvailable, supabase]);
 
   const placeOrder = async () => {
     if (!keyInfo || orderValidation) {
@@ -817,6 +1048,20 @@ export default function ContaPage() {
     [orders],
   );
 
+  const linkedOrdersCount = useMemo(
+    () => orders.filter((order) => isSafeUuid(order.opportunity_id)).length,
+    [orders],
+  );
+
+  const linkedOpenOrdersCount = useMemo(
+    () => orders.filter(
+      (order) =>
+        isSafeUuid(order.opportunity_id) &&
+        OPEN_STATUSES.has(order.status),
+    ).length,
+    [orders],
+  );
+
   return (
     <main style={{ minHeight: '100vh', background: S.bg, color: S.text, fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
       <header style={{ borderBottom: `1px solid ${S.border}`, background: S.panel, padding: '12px 20px' }}>
@@ -828,32 +1073,32 @@ export default function ContaPage() {
             <div style={{ fontSize: 11, color: S.dim }}>conexão · ordens · histórico</div>
           </div>
         </div>
-<nav
-  style={{
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 20,
-    marginTop: 8,
-    fontSize: 13,
-  }}
->
-<a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
-  Análise
-</a>
-
-<a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>
-  Day Trade
-</a>
-
-<a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
-  Alertas
-</a>
-
-<span style={{ color: S.a, fontWeight: 600 }}>
-  Conta Binance
-</span>
+        <nav
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 20,
+            marginTop: 8,
+            fontSize: 13,
+          }}
+        >
+          <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
+            Análise
+          </a>
+          <a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>
+            Day Trade
+          </a>
+          <a href="/oportunidades" style={{ color: S.dim, textDecoration: 'none' }}>
+            Oportunidades
+          </a>
+          <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
+            Alertas
+          </a>
+          <span style={{ color: S.a, fontWeight: 600 }}>
+            Conta Binance
+          </span>
           {session && (
             <button
               onClick={() => supabase.auth.signOut()}
@@ -868,7 +1113,13 @@ export default function ContaPage() {
       <div style={{ maxWidth: 720, margin: '0 auto', padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
         {!authReady ? null : !session ? (
           <Card style={{ textAlign: 'center', color: S.dim, fontSize: 14 }}>
-            Entre primeiro em <a href="/alertas" style={{ color: S.a }}>/alertas</a> para acessar esta página.
+            <div>Entre para acessar as chaves, os limites e o histórico da conta.</div>
+            <a
+              href="/alertas?next=%2Fconta"
+              style={{ color: S.a, display: 'inline-block', marginTop: 8 }}
+            >
+              Entrar com magic link
+            </a>
           </Card>
         ) : (
           <>
@@ -1250,6 +1501,42 @@ export default function ContaPage() {
               </Card>
             )}
 
+            {/* --------------------------- Central de Oportunidades --------------------------- */}
+            <Card style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: 15, fontWeight: 600 }}>Vínculo com a Central</div>
+
+              {centralSchemaAvailable === false ? (
+                <div style={{ color: S.dim, fontSize: 12, lineHeight: 1.55, marginTop: 8 }}>
+                  O histórico normal continua disponível. Os vínculos com oportunidades aparecerão
+                  depois que a migration da Central for aplicada.
+                </div>
+              ) : (
+                <>
+                  <div style={{ color: S.dim, fontSize: 12, lineHeight: 1.55, marginTop: 8 }}>
+                    {linkedOrdersCount === 0
+                      ? 'Nenhuma ordem vinculada a uma oportunidade entre as 15 ordens mais recentes.'
+                      : `${linkedOrdersCount} ordem(ns) vinculada(s), sendo ${linkedOpenOrdersCount} ainda aberta(s).`}
+                  </div>
+                  <a
+                    href="/oportunidades"
+                    style={{
+                      display: 'inline-block',
+                      marginTop: 10,
+                      color: S.a,
+                      textDecoration: 'none',
+                      border: `1px solid ${S.a}66`,
+                      borderRadius: 8,
+                      padding: '7px 14px',
+                      fontSize: 12,
+                      fontWeight: 700,
+                    }}
+                  >
+                    Abrir Central de Oportunidades
+                  </a>
+                </>
+              )}
+            </Card>
+
             {/* --------------------------- Histórico de ordens --------------------------- */}
             <Card>
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 10, marginBottom: 12 }}>
@@ -1276,6 +1563,19 @@ export default function ContaPage() {
                   {orders.map((order) => {
                     const status = STATUS_LABEL[order.status] ?? { label: order.status, color: S.dim };
                     const isUnprotected = order.status === 'entrada_sem_protecao';
+                    const opportunityId = isSafeUuid(order.opportunity_id)
+                      ? order.opportunity_id
+                      : null;
+                    const opportunity = opportunityId
+                      ? opportunityById[opportunityId] ?? null
+                      : null;
+                    const opportunityStatus = opportunity
+                      ? OPPORTUNITY_STATUS_LABEL[opportunity.lifecycle_status] ?? {
+                          label: opportunity.lifecycle_status,
+                          color: S.dim,
+                        }
+                      : null;
+
                     return (
                       <div
                         key={order.id}
@@ -1299,6 +1599,54 @@ export default function ContaPage() {
                             </span>
                           )}
                         </div>
+                        {opportunityId && (
+                          <div
+                            style={{
+                              marginTop: 7,
+                              padding: '7px 9px',
+                              borderRadius: 7,
+                              border: `1px solid ${S.blue}44`,
+                              background: `${S.blue}0b`,
+                              fontSize: 11,
+                              lineHeight: 1.5,
+                            }}
+                          >
+                            <div style={{ color: S.text, fontWeight: 600 }}>
+                              Oportunidade vinculada
+                              {opportunityStatus && (
+                                <>
+                                  {' '}·{' '}
+                                  <span style={{ color: opportunityStatus.color }}>
+                                    {opportunityStatus.label}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                            {opportunity && (
+                              <div style={{ color: S.dim, marginTop: 2 }}>
+                                {opportunity.symbol || order.symbol}
+                                {opportunity.timeframe && ` · ${opportunity.timeframe}`}
+                                {opportunity.strategy && ` · ${opportunity.strategy}`}
+                                {opportunity.strategy_version && ` v${opportunity.strategy_version}`}
+                                {' · '}
+                                {opportunity.execution_environment === 'real' ? 'real' : 'testnet'}
+                              </div>
+                            )}
+                            <a
+                              href={`/oportunidades?focus=${encodeURIComponent(opportunityId)}`}
+                              style={{
+                                color: S.blue,
+                                display: 'inline-block',
+                                marginTop: 4,
+                                textDecoration: 'none',
+                                fontWeight: 700,
+                              }}
+                            >
+                              Abrir histórico do cenário
+                            </a>
+                          </div>
+                        )}
+
                         <div style={{ fontSize: 11, color: S.dim, marginTop: 4, lineHeight: 1.5 }}>
                           {fmtData(order.criado_em)} · gasto {fmt(order.quote_amount)} USDT
                           {order.qty !== null && ` · qtd. ${fmt(order.qty, 8)}`}
@@ -1325,8 +1673,8 @@ export default function ContaPage() {
               )}
 
               <div style={{ fontSize: 11, color: S.dim, textAlign: 'center', marginTop: 10, lineHeight: 1.5 }}>
-                O histórico reflete os 3 últimos registros. Também confirme
-                diretamente na Binance se alvo, stop ou cancelamento foram executados por garantia.
+                O histórico reflete os registros do Supabase. Enquanto a função <code>monitorar-ordens</code> não estiver ativa,
+                confirme diretamente na Binance se alvo, stop ou cancelamento foram executados.
               </div>
             </Card>
           </>
