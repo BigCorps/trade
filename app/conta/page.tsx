@@ -189,6 +189,238 @@ interface RiskForm {
   max_target_pct: string;
 }
 
+interface AutoTradeSettings {
+  auto_trade_enabled: boolean;
+  auto_trade_environment: 'testnet' | 'real';
+  auto_trade_quote_amount: number;
+  auto_trade_symbols: string[];
+  auto_trade_timeframes: string[];
+  auto_trade_strategies: string[];
+  auto_trade_min_score_pct: number;
+  auto_trade_min_risk_reward: number;
+  auto_trade_require_no_warnings: boolean;
+  auto_trade_max_orders_per_day: number;
+  auto_trade_cooldown_minutes: number;
+  auto_trade_max_attempts: number;
+  auto_trade_paused_at: string | null;
+  auto_trade_pause_reason: string | null;
+  auto_trade_last_run_at: string | null;
+  auto_trade_last_success_at: string | null;
+  auto_trade_last_error: string | null;
+}
+
+interface AutoTradeForm {
+  auto_trade_enabled: boolean;
+  auto_trade_environment: 'testnet' | 'real';
+  auto_trade_quote_amount: string;
+  auto_trade_symbols: string;
+  auto_trade_timeframes: string;
+  auto_trade_strategies: string;
+  auto_trade_min_score_pct: string;
+  auto_trade_min_risk_reward: string;
+  auto_trade_require_no_warnings: boolean;
+  auto_trade_max_orders_per_day: string;
+  auto_trade_cooldown_minutes: string;
+  auto_trade_max_attempts: string;
+}
+
+const AUTO_TRADE_TIMEFRAMES = new Set(['5m', '15m', '30m', '1h']);
+
+const DEFAULT_AUTO_TRADE: AutoTradeSettings = {
+  auto_trade_enabled: false,
+  auto_trade_environment: 'testnet',
+  auto_trade_quote_amount: 25,
+  auto_trade_symbols: [],
+  auto_trade_timeframes: [],
+  auto_trade_strategies: ['trend_breakout'],
+  auto_trade_min_score_pct: 100,
+  auto_trade_min_risk_reward: 2,
+  auto_trade_require_no_warnings: false,
+  auto_trade_max_orders_per_day: 3,
+  auto_trade_cooldown_minutes: 60,
+  auto_trade_max_attempts: 3,
+  auto_trade_paused_at: null,
+  auto_trade_pause_reason: null,
+  auto_trade_last_run_at: null,
+  auto_trade_last_success_at: null,
+  auto_trade_last_error: null,
+};
+
+function normalizeTextArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+
+  return [...new Set(
+    value
+      .filter((item): item is string => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter(Boolean),
+  )];
+}
+
+function normalizeAutoTradeSettings(value: unknown): AutoTradeSettings {
+  const row = recordValue(value);
+  const environment = row.auto_trade_environment === 'real' ? 'real' : 'testnet';
+
+  return {
+    auto_trade_enabled: row.auto_trade_enabled === true,
+    auto_trade_environment: environment,
+    auto_trade_quote_amount:
+      numberValue(row.auto_trade_quote_amount) ?? DEFAULT_AUTO_TRADE.auto_trade_quote_amount,
+    auto_trade_symbols: normalizeTextArray(row.auto_trade_symbols).map((item) => item.toUpperCase()),
+    auto_trade_timeframes: normalizeTextArray(row.auto_trade_timeframes),
+    auto_trade_strategies: normalizeTextArray(row.auto_trade_strategies),
+    auto_trade_min_score_pct:
+      numberValue(row.auto_trade_min_score_pct) ?? DEFAULT_AUTO_TRADE.auto_trade_min_score_pct,
+    auto_trade_min_risk_reward:
+      numberValue(row.auto_trade_min_risk_reward) ?? DEFAULT_AUTO_TRADE.auto_trade_min_risk_reward,
+    auto_trade_require_no_warnings: row.auto_trade_require_no_warnings === true,
+    auto_trade_max_orders_per_day:
+      numberValue(row.auto_trade_max_orders_per_day) ?? DEFAULT_AUTO_TRADE.auto_trade_max_orders_per_day,
+    auto_trade_cooldown_minutes:
+      numberValue(row.auto_trade_cooldown_minutes) ?? DEFAULT_AUTO_TRADE.auto_trade_cooldown_minutes,
+    auto_trade_max_attempts:
+      numberValue(row.auto_trade_max_attempts) ?? DEFAULT_AUTO_TRADE.auto_trade_max_attempts,
+    auto_trade_paused_at:
+      typeof row.auto_trade_paused_at === 'string' ? row.auto_trade_paused_at : null,
+    auto_trade_pause_reason:
+      typeof row.auto_trade_pause_reason === 'string' ? row.auto_trade_pause_reason : null,
+    auto_trade_last_run_at:
+      typeof row.auto_trade_last_run_at === 'string' ? row.auto_trade_last_run_at : null,
+    auto_trade_last_success_at:
+      typeof row.auto_trade_last_success_at === 'string' ? row.auto_trade_last_success_at : null,
+    auto_trade_last_error:
+      typeof row.auto_trade_last_error === 'string' ? row.auto_trade_last_error : null,
+  };
+}
+
+function autoTradeToForm(settings: AutoTradeSettings): AutoTradeForm {
+  return {
+    auto_trade_enabled: settings.auto_trade_enabled,
+    auto_trade_environment: settings.auto_trade_environment,
+    auto_trade_quote_amount: String(settings.auto_trade_quote_amount),
+    auto_trade_symbols: settings.auto_trade_symbols.join(', '),
+    auto_trade_timeframes: settings.auto_trade_timeframes.join(', '),
+    auto_trade_strategies: settings.auto_trade_strategies.join(', '),
+    auto_trade_min_score_pct: String(settings.auto_trade_min_score_pct),
+    auto_trade_min_risk_reward: String(settings.auto_trade_min_risk_reward),
+    auto_trade_require_no_warnings: settings.auto_trade_require_no_warnings,
+    auto_trade_max_orders_per_day: String(settings.auto_trade_max_orders_per_day),
+    auto_trade_cooldown_minutes: String(settings.auto_trade_cooldown_minutes),
+    auto_trade_max_attempts: String(settings.auto_trade_max_attempts),
+  };
+}
+
+function parseCommaList(value: string, uppercase = false): string[] {
+  return [...new Set(
+    value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => uppercase ? item.toUpperCase() : item.toLowerCase()),
+  )];
+}
+
+function parseAutoTradeForm(form: AutoTradeForm): {
+  values: Omit<
+    AutoTradeSettings,
+    | 'auto_trade_paused_at'
+    | 'auto_trade_pause_reason'
+    | 'auto_trade_last_run_at'
+    | 'auto_trade_last_success_at'
+    | 'auto_trade_last_error'
+  > | null;
+  error: string | null;
+} {
+  const symbols = parseCommaList(form.auto_trade_symbols, true);
+  const timeframes = parseCommaList(form.auto_trade_timeframes);
+  const strategies = parseCommaList(form.auto_trade_strategies);
+
+  const values = {
+    auto_trade_enabled: form.auto_trade_enabled,
+    auto_trade_environment: form.auto_trade_environment,
+    auto_trade_quote_amount: Number(form.auto_trade_quote_amount),
+    auto_trade_symbols: symbols,
+    auto_trade_timeframes: timeframes,
+    auto_trade_strategies: strategies,
+    auto_trade_min_score_pct: Number(form.auto_trade_min_score_pct),
+    auto_trade_min_risk_reward: Number(form.auto_trade_min_risk_reward),
+    auto_trade_require_no_warnings: form.auto_trade_require_no_warnings,
+    auto_trade_max_orders_per_day: Number(form.auto_trade_max_orders_per_day),
+    auto_trade_cooldown_minutes: Number(form.auto_trade_cooldown_minutes),
+    auto_trade_max_attempts: Number(form.auto_trade_max_attempts),
+  };
+
+  if (!Number.isFinite(values.auto_trade_quote_amount) || values.auto_trade_quote_amount <= 0) {
+    return { values: null, error: 'O valor por operação precisa ser maior que zero.' };
+  }
+
+  const invalidSymbol = symbols.find(
+    (symbol) => !/^[A-Z0-9]{5,20}$/.test(symbol) || !symbol.endsWith('USDT'),
+  );
+  if (invalidSymbol) {
+    return { values: null, error: `Símbolo inválido: ${invalidSymbol}. Use pares Spot em USDT.` };
+  }
+
+  const invalidTimeframe = timeframes.find((timeframe) => !AUTO_TRADE_TIMEFRAMES.has(timeframe));
+  if (invalidTimeframe) {
+    return { values: null, error: `Timeframe inválido: ${invalidTimeframe}. Use 5m, 15m, 30m ou 1h.` };
+  }
+
+  if (strategies.length === 0) {
+    return { values: null, error: 'Informe pelo menos uma estratégia.' };
+  }
+
+  if (
+    !Number.isFinite(values.auto_trade_min_score_pct) ||
+    values.auto_trade_min_score_pct < 0 ||
+    values.auto_trade_min_score_pct > 100
+  ) {
+    return { values: null, error: 'A pontuação mínima deve ficar entre 0% e 100%.' };
+  }
+
+  if (
+    !Number.isFinite(values.auto_trade_min_risk_reward) ||
+    values.auto_trade_min_risk_reward <= 0 ||
+    values.auto_trade_min_risk_reward > 100
+  ) {
+    return { values: null, error: 'A relação risco-retorno mínima deve ficar entre 0 e 100.' };
+  }
+
+  if (
+    !Number.isInteger(values.auto_trade_max_orders_per_day) ||
+    values.auto_trade_max_orders_per_day < 1 ||
+    values.auto_trade_max_orders_per_day > 100
+  ) {
+    return { values: null, error: 'O limite diário deve ser um número inteiro entre 1 e 100.' };
+  }
+
+  if (
+    !Number.isInteger(values.auto_trade_cooldown_minutes) ||
+    values.auto_trade_cooldown_minutes < 0 ||
+    values.auto_trade_cooldown_minutes > 10080
+  ) {
+    return { values: null, error: 'O intervalo deve ficar entre 0 e 10.080 minutos.' };
+  }
+
+  if (
+    !Number.isInteger(values.auto_trade_max_attempts) ||
+    values.auto_trade_max_attempts < 1 ||
+    values.auto_trade_max_attempts > 10
+  ) {
+    return { values: null, error: 'As tentativas devem ser um número inteiro entre 1 e 10.' };
+  }
+
+  if (values.auto_trade_enabled && symbols.length === 0) {
+    return { values: null, error: 'Selecione pelo menos um símbolo antes de ativar.' };
+  }
+
+  if (values.auto_trade_enabled && timeframes.length === 0) {
+    return { values: null, error: 'Selecione pelo menos um timeframe antes de ativar.' };
+  }
+
+  return { values, error: null };
+}
+
 interface EdgeErrorPayload {
   error?: string;
   detail?: string;
@@ -395,6 +627,13 @@ export default function ContaPage() {
   const [riskBusy, setRiskBusy] = useState(false);
   const [riskMsg, setRiskMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
+  const [autoTradeSettings, setAutoTradeSettings] = useState<AutoTradeSettings>(DEFAULT_AUTO_TRADE);
+  const [autoTradeForm, setAutoTradeForm] = useState<AutoTradeForm>(
+    () => autoTradeToForm(DEFAULT_AUTO_TRADE),
+  );
+  const [autoTradeBusy, setAutoTradeBusy] = useState(false);
+  const [autoTradeMsg, setAutoTradeMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
   const [ordSymbol, setOrdSymbol] = useState('BTCUSDT');
   const [ordAmount, setOrdAmount] = useState('50');
   const [ordStop, setOrdStop] = useState('2');
@@ -429,6 +668,9 @@ export default function ContaPage() {
         setBalances([]);
         setOpportunityById({});
         setCentralSchemaAvailable(null);
+        setAutoTradeSettings(DEFAULT_AUTO_TRADE);
+        setAutoTradeForm(autoTradeToForm(DEFAULT_AUTO_TRADE));
+        setAutoTradeMsg(null);
       }
     });
 
@@ -476,6 +718,42 @@ export default function ContaPage() {
 
     setRiskSettings(loaded);
     setRiskForm(riskToForm(loaded));
+  }, [supabase]);
+
+  const loadAutoTradeSettings = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('user_settings')
+      .select([
+        'auto_trade_enabled',
+        'auto_trade_environment',
+        'auto_trade_quote_amount',
+        'auto_trade_symbols',
+        'auto_trade_timeframes',
+        'auto_trade_strategies',
+        'auto_trade_min_score_pct',
+        'auto_trade_min_risk_reward',
+        'auto_trade_require_no_warnings',
+        'auto_trade_max_orders_per_day',
+        'auto_trade_cooldown_minutes',
+        'auto_trade_max_attempts',
+        'auto_trade_paused_at',
+        'auto_trade_pause_reason',
+        'auto_trade_last_run_at',
+        'auto_trade_last_success_at',
+        'auto_trade_last_error',
+      ].join(','))
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Não foi possível consultar o Auto Trade: ${error.message}`);
+    }
+
+    const loaded = data
+      ? normalizeAutoTradeSettings(data)
+      : DEFAULT_AUTO_TRADE;
+
+    setAutoTradeSettings(loaded);
+    setAutoTradeForm(autoTradeToForm(loaded));
   }, [supabase]);
 
   const loadOrders = useCallback(async () => {
@@ -581,6 +859,7 @@ export default function ContaPage() {
     const results = await Promise.allSettled([
       loadKeyStatus(),
       loadRiskSettings(),
+      loadAutoTradeSettings(),
       loadOrders(),
     ]);
 
@@ -593,7 +872,7 @@ export default function ContaPage() {
     }
 
     setAccountLoading(false);
-  }, [loadKeyStatus, loadOrders, loadRiskSettings]);
+  }, [loadAutoTradeSettings, loadKeyStatus, loadOrders, loadRiskSettings]);
 
   useEffect(() => {
     if (!session) return;
@@ -744,10 +1023,27 @@ export default function ContaPage() {
     try {
       await invoke({ action: 'delete_keys' });
       if (session) {
+        const removedAt = new Date().toISOString();
+
         await supabase
           .from('user_settings')
-          .update({ trading_real_enabled: false })
+          .update({
+            trading_real_enabled: false,
+            auto_trade_enabled: false,
+            auto_trade_paused_at: removedAt,
+            auto_trade_pause_reason: 'A chave Binance foi removida.',
+          })
           .eq('user_id', session.user.id);
+
+        const disabledAutoTrade: AutoTradeSettings = {
+          ...autoTradeSettings,
+          auto_trade_enabled: false,
+          auto_trade_paused_at: removedAt,
+          auto_trade_pause_reason: 'A chave Binance foi removida.',
+        };
+
+        setAutoTradeSettings(disabledAutoTrade);
+        setAutoTradeForm(autoTradeToForm(disabledAutoTrade));
       }
       const disabledRisk = { ...riskSettings, trading_real_enabled: false };
       setRiskSettings(disabledRisk);
@@ -824,6 +1120,182 @@ export default function ContaPage() {
       ok: true,
     });
     setRiskBusy(false);
+  };
+
+  const handleAutoTradeToggle = (checked: boolean) => {
+    setAutoTradeMsg(null);
+
+    if (checked) {
+      const accepted = confirm(
+        'ATENÇÃO: o Auto Trade poderá aceitar oportunidades e enviar entradas com proteção OCO sem uma confirmação manual em cada operação.\n\n' +
+        'Os limites continuarão sendo revalidados no servidor. Ative somente depois de conferir ambiente, valor, símbolos, timeframes e limites de risco.',
+      );
+
+      if (!accepted) return;
+    }
+
+    setAutoTradeForm((current) => ({
+      ...current,
+      auto_trade_enabled: checked,
+    }));
+  };
+
+  const saveAutoTradeSettings = async () => {
+    const parsed = parseAutoTradeForm(autoTradeForm);
+
+    if (!parsed.values) {
+      setAutoTradeMsg({ text: parsed.error ?? 'Configuração inválida.', ok: false });
+      return;
+    }
+
+    if (!session) return;
+
+    if (parsed.values.auto_trade_quote_amount > riskSettings.max_order_usdt) {
+      setAutoTradeMsg({
+        text: `O valor por operação não pode ultrapassar ${fmt(riskSettings.max_order_usdt)} USDT.`,
+        ok: false,
+      });
+      return;
+    }
+
+    if (parsed.values.auto_trade_enabled && !keyInfo) {
+      setAutoTradeMsg({
+        text: 'Configure e teste uma chave Binance antes de ativar o Auto Trade.',
+        ok: false,
+      });
+      return;
+    }
+
+    if (
+      parsed.values.auto_trade_enabled &&
+      parsed.values.auto_trade_environment === 'testnet' &&
+      keyInfo?.is_testnet !== true
+    ) {
+      setAutoTradeMsg({
+        text: 'O ambiente Testnet exige uma chave Binance Spot Testnet.',
+        ok: false,
+      });
+      return;
+    }
+
+    if (
+      parsed.values.auto_trade_enabled &&
+      parsed.values.auto_trade_environment === 'real' &&
+      keyInfo?.is_testnet !== false
+    ) {
+      setAutoTradeMsg({
+        text: 'O ambiente real exige uma chave Binance de conta real.',
+        ok: false,
+      });
+      return;
+    }
+
+    if (
+      parsed.values.auto_trade_enabled &&
+      parsed.values.auto_trade_environment === 'real' &&
+      !riskSettings.trading_real_enabled
+    ) {
+      setAutoTradeMsg({
+        text: 'Ative primeiro as operações reais nos limites de risco.',
+        ok: false,
+      });
+      return;
+    }
+
+    if (
+      parsed.values.auto_trade_enabled &&
+      parsed.values.auto_trade_environment === 'real'
+    ) {
+      const accepted = confirm(
+        'CONFIRMAÇÃO DE CONTA REAL\n\n' +
+        'O Auto Trade enviará operações com dinheiro real sem confirmação individual. ' +
+        'A Binance, a rede ou a criação da OCO podem falhar. Você confirma que compreende o risco?',
+      );
+
+      if (!accepted) return;
+    }
+
+    setAutoTradeBusy(true);
+    setAutoTradeMsg(null);
+
+    const { error } = await supabase
+      .from('user_settings')
+      .upsert({
+        user_id: session.user.id,
+        ...parsed.values,
+      }, { onConflict: 'user_id' });
+
+    if (error) {
+      setAutoTradeMsg({
+        text: `Não foi possível salvar o Auto Trade: ${error.message}`,
+        ok: false,
+      });
+      setAutoTradeBusy(false);
+      return;
+    }
+
+    try {
+      await loadAutoTradeSettings();
+      setAutoTradeMsg({
+        text: parsed.values.auto_trade_enabled
+          ? `Auto Trade ativado em ${parsed.values.auto_trade_environment === 'testnet' ? 'Testnet' : 'conta real'}.`
+          : 'Configurações salvas. O Auto Trade permanece desativado.',
+        ok: true,
+      });
+    } catch (error) {
+      setAutoTradeMsg({
+        text: error instanceof Error ? error.message : 'Configuração salva, mas não foi possível recarregá-la.',
+        ok: false,
+      });
+    } finally {
+      setAutoTradeBusy(false);
+    }
+  };
+
+  const resumeAutoTrade = async () => {
+    if (!session || !autoTradeSettings.auto_trade_paused_at) return;
+
+    const accepted = confirm(
+      'Remova a pausa somente depois de conferir diretamente na Binance que não existe entrada sem proteção, ordem desconhecida ou posição que exija ação manual.\n\nVocê já realizou essa conferência?',
+    );
+
+    if (!accepted) return;
+
+    setAutoTradeBusy(true);
+    setAutoTradeMsg(null);
+
+    const { error } = await supabase
+      .from('user_settings')
+      .update({
+        auto_trade_paused_at: null,
+        auto_trade_pause_reason: null,
+        auto_trade_last_error: null,
+      })
+      .eq('user_id', session.user.id);
+
+    if (error) {
+      setAutoTradeMsg({
+        text: `Não foi possível remover a pausa: ${error.message}`,
+        ok: false,
+      });
+      setAutoTradeBusy(false);
+      return;
+    }
+
+    try {
+      await loadAutoTradeSettings();
+      setAutoTradeMsg({
+        text: 'Pausa removida. O Auto Trade seguirá o estado de ativação salvo.',
+        ok: true,
+      });
+    } catch (error) {
+      setAutoTradeMsg({
+        text: error instanceof Error ? error.message : 'Pausa removida, mas não foi possível recarregar os dados.',
+        ok: false,
+      });
+    } finally {
+      setAutoTradeBusy(false);
+    }
   };
 
   const clearRequest = useCallback(() => {
@@ -1368,6 +1840,363 @@ export default function ContaPage() {
 
               <div style={{ fontSize: 11, color: S.dim }}>
                 Ordens abertas registradas nesta tela: {openOrdersCount} de {riskSettings.max_open_orders}.
+              </div>
+            </Card>
+
+            {/* --------------------------- Auto Trade --------------------------- */}
+            <Card
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 14,
+                alignItems: 'center',
+                textAlign: 'center',
+                borderColor: autoTradeSettings.auto_trade_paused_at
+                  ? `${S.red}99`
+                  : autoTradeForm.auto_trade_enabled
+                    ? `${S.green}88`
+                    : S.border,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+                <div style={{ fontSize: 15, fontWeight: 600 }}>Auto Trade</div>
+                <span
+                  style={{
+                    padding: '3px 9px',
+                    borderRadius: 12,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: autoTradeSettings.auto_trade_paused_at
+                      ? S.red
+                      : autoTradeForm.auto_trade_enabled
+                        ? S.green
+                        : S.dim,
+                    background: autoTradeSettings.auto_trade_paused_at
+                      ? `${S.red}22`
+                      : autoTradeForm.auto_trade_enabled
+                        ? `${S.green}22`
+                        : `${S.dim}18`,
+                  }}
+                >
+                  {autoTradeSettings.auto_trade_paused_at
+                    ? 'PAUSADO POR SEGURANÇA'
+                    : autoTradeForm.auto_trade_enabled
+                      ? 'ATIVADO'
+                      : 'DESATIVADO'}
+                </span>
+              </div>
+
+              <div style={{ fontSize: 12, color: S.dim, maxWidth: 680, lineHeight: 1.55 }}>
+                Aceita automaticamente oportunidades elegíveis da Central e reutiliza o motor Binance
+                para criar a entrada e a proteção OCO. Pontuação, risco-retorno, limites, saldo,
+                preço atual e idempotência são revalidados no servidor.
+              </div>
+
+              {autoTradeSettings.auto_trade_paused_at && (
+                <div
+                  style={{
+                    width: '100%',
+                    maxWidth: 680,
+                    color: S.red,
+                    background: `${S.red}0d`,
+                    border: `1px solid ${S.red}55`,
+                    borderRadius: 8,
+                    padding: 12,
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  <strong>Pausa de segurança:</strong>{' '}
+                  {autoTradeSettings.auto_trade_pause_reason || 'Confira a conta diretamente na Binance.'}
+                  <div style={{ color: S.dim, marginTop: 4 }}>
+                    Desde {fmtData(autoTradeSettings.auto_trade_paused_at)}
+                  </div>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, justifyContent: 'center', alignItems: 'flex-end' }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
+                  Ambiente
+                  <select
+                    value={autoTradeForm.auto_trade_environment}
+                    onChange={(event) => setAutoTradeForm((current) => ({
+                      ...current,
+                      auto_trade_environment: event.target.value === 'real' ? 'real' : 'testnet',
+                    }))}
+                    disabled={autoTradeBusy}
+                    style={{ ...inputStyle, width: 150 }}
+                  >
+                    <option value="testnet">Testnet</option>
+                    <option value="real">Conta real</option>
+                  </select>
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
+                  Valor por operação (USDT)
+                  <input
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={autoTradeForm.auto_trade_quote_amount}
+                    onChange={(event) => setAutoTradeForm((current) => ({
+                      ...current,
+                      auto_trade_quote_amount: event.target.value,
+                    }))}
+                    disabled={autoTradeBusy}
+                    style={{ ...inputStyle, width: 180 }}
+                  />
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
+                  Pontuação mínima (%)
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={autoTradeForm.auto_trade_min_score_pct}
+                    onChange={(event) => setAutoTradeForm((current) => ({
+                      ...current,
+                      auto_trade_min_score_pct: event.target.value,
+                    }))}
+                    disabled={autoTradeBusy}
+                    style={{ ...inputStyle, width: 150 }}
+                  />
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
+                  Risco-retorno mínimo
+                  <input
+                    type="number"
+                    min="0.01"
+                    max="100"
+                    step="0.1"
+                    value={autoTradeForm.auto_trade_min_risk_reward}
+                    onChange={(event) => setAutoTradeForm((current) => ({
+                      ...current,
+                      auto_trade_min_risk_reward: event.target.value,
+                    }))}
+                    disabled={autoTradeBusy}
+                    style={{ ...inputStyle, width: 160 }}
+                  />
+                </label>
+              </div>
+
+              <div style={{ width: '100%', maxWidth: 680, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
+                  Símbolos autorizados
+                  <input
+                    value={autoTradeForm.auto_trade_symbols}
+                    onChange={(event) => setAutoTradeForm((current) => ({
+                      ...current,
+                      auto_trade_symbols: event.target.value,
+                    }))}
+                    disabled={autoTradeBusy}
+                    placeholder="BTCUSDT, ETHUSDT, SOLUSDT"
+                    spellCheck={false}
+                    style={{ ...inputStyle, textAlign: 'left' }}
+                  />
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
+                  Timeframes autorizados
+                  <input
+                    value={autoTradeForm.auto_trade_timeframes}
+                    onChange={(event) => setAutoTradeForm((current) => ({
+                      ...current,
+                      auto_trade_timeframes: event.target.value,
+                    }))}
+                    disabled={autoTradeBusy}
+                    placeholder="5m, 15m, 30m, 1h"
+                    spellCheck={false}
+                    style={{ ...inputStyle, textAlign: 'left' }}
+                  />
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
+                  Estratégias autorizadas
+                  <input
+                    value={autoTradeForm.auto_trade_strategies}
+                    onChange={(event) => setAutoTradeForm((current) => ({
+                      ...current,
+                      auto_trade_strategies: event.target.value,
+                    }))}
+                    disabled={autoTradeBusy}
+                    placeholder="trend_breakout"
+                    spellCheck={false}
+                    style={{ ...inputStyle, textAlign: 'left' }}
+                  />
+                </label>
+              </div>
+
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, justifyContent: 'center', alignItems: 'flex-end' }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
+                  Máximo por dia
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    step="1"
+                    value={autoTradeForm.auto_trade_max_orders_per_day}
+                    onChange={(event) => setAutoTradeForm((current) => ({
+                      ...current,
+                      auto_trade_max_orders_per_day: event.target.value,
+                    }))}
+                    disabled={autoTradeBusy}
+                    style={{ ...inputStyle, width: 130 }}
+                  />
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
+                  Intervalo (minutos)
+                  <input
+                    type="number"
+                    min="0"
+                    max="10080"
+                    step="1"
+                    value={autoTradeForm.auto_trade_cooldown_minutes}
+                    onChange={(event) => setAutoTradeForm((current) => ({
+                      ...current,
+                      auto_trade_cooldown_minutes: event.target.value,
+                    }))}
+                    disabled={autoTradeBusy}
+                    style={{ ...inputStyle, width: 150 }}
+                  />
+                </label>
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
+                  Tentativas por oportunidade
+                  <input
+                    type="number"
+                    min="1"
+                    max="10"
+                    step="1"
+                    value={autoTradeForm.auto_trade_max_attempts}
+                    onChange={(event) => setAutoTradeForm((current) => ({
+                      ...current,
+                      auto_trade_max_attempts: event.target.value,
+                    }))}
+                    disabled={autoTradeBusy}
+                    style={{ ...inputStyle, width: 180 }}
+                  />
+                </label>
+              </div>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: S.dim, fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={autoTradeForm.auto_trade_require_no_warnings}
+                  onChange={(event) => setAutoTradeForm((current) => ({
+                    ...current,
+                    auto_trade_require_no_warnings: event.target.checked,
+                  }))}
+                  disabled={autoTradeBusy}
+                />
+                Executar somente oportunidades sem avisos
+              </label>
+
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  color: autoTradeForm.auto_trade_enabled
+                    ? autoTradeForm.auto_trade_environment === 'real' ? S.red : S.green
+                    : S.dim,
+                  fontSize: 13,
+                  fontWeight: autoTradeForm.auto_trade_enabled ? 700 : 400,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={autoTradeForm.auto_trade_enabled}
+                  onChange={(event) => handleAutoTradeToggle(event.target.checked)}
+                  disabled={autoTradeBusy}
+                />
+                Ativar execução automática
+              </label>
+
+              {autoTradeForm.auto_trade_enabled && !keyInfo && (
+                <div style={{ color: S.red, fontSize: 12 }}>
+                  Configure uma chave Binance antes de ativar.
+                </div>
+              )}
+
+              {autoTradeForm.auto_trade_enabled && keyInfo && (
+                (autoTradeForm.auto_trade_environment === 'testnet' && !keyInfo.is_testnet) ||
+                (autoTradeForm.auto_trade_environment === 'real' && keyInfo.is_testnet)
+              ) && (
+                <div style={{ color: S.red, fontSize: 12 }}>
+                  O ambiente selecionado não corresponde à chave Binance configurada.
+                </div>
+              )}
+
+              {autoTradeForm.auto_trade_environment === 'real' && (
+                <div style={{ color: S.red, fontSize: 12, maxWidth: 620, lineHeight: 1.5 }}>
+                  ⚠️ Em conta real, cada oportunidade elegível poderá movimentar dinheiro sem confirmação individual.
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
+                <button
+                  onClick={saveAutoTradeSettings}
+                  disabled={autoTradeBusy}
+                  style={{
+                    background: autoTradeForm.auto_trade_enabled ? S.green : S.a,
+                    color: '#07140c',
+                    border: 'none',
+                    borderRadius: 8,
+                    padding: '9px 20px',
+                    fontSize: 13,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    opacity: autoTradeBusy ? 0.6 : 1,
+                  }}
+                >
+                  {autoTradeBusy ? 'Salvando...' : 'Salvar Auto Trade'}
+                </button>
+
+                {autoTradeSettings.auto_trade_paused_at && (
+                  <button
+                    onClick={resumeAutoTrade}
+                    disabled={autoTradeBusy}
+                    style={{
+                      background: 'transparent',
+                      color: S.red,
+                      border: `1px solid ${S.red}77`,
+                      borderRadius: 8,
+                      padding: '9px 20px',
+                      fontSize: 13,
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      opacity: autoTradeBusy ? 0.6 : 1,
+                    }}
+                  >
+                    Remover pausa após conferência
+                  </button>
+                )}
+              </div>
+
+              {autoTradeMsg && (
+                <span style={{ color: autoTradeMsg.ok ? S.green : S.red, fontSize: 13 }}>
+                  {autoTradeMsg.text}
+                </span>
+              )}
+
+              <div style={{ fontSize: 11, color: S.dim, lineHeight: 1.6 }}>
+                {autoTradeSettings.auto_trade_last_run_at && (
+                  <div>Último processamento: {fmtData(autoTradeSettings.auto_trade_last_run_at)}</div>
+                )}
+                {autoTradeSettings.auto_trade_last_success_at && (
+                  <div style={{ color: S.green }}>
+                    Última execução confirmada: {fmtData(autoTradeSettings.auto_trade_last_success_at)}
+                  </div>
+                )}
+                {autoTradeSettings.auto_trade_last_error && (
+                  <div style={{ color: S.red }}>
+                    Último erro: {autoTradeSettings.auto_trade_last_error}
+                  </div>
+                )}
               </div>
             </Card>
 
