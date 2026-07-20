@@ -5117,3 +5117,4 @@ export default function DayTradePage() {
       </div>
     </main>
   );
+}
