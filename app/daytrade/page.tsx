@@ -5117,5 +5117,3 @@ export default function DayTradePage() {
       </div>
     </main>
   );
-}'use client';
-
