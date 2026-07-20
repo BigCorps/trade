@@ -1,0 +1,14 @@
+# VigIA Trade — configuração das Edge Functions
+# supabase/config.toml
+
+project_id = "trade"
+
+# Chamada exclusivamente pelo pg_cron/pg_net.
+# A própria função valida x-cron-secret antes de processar qualquer dado.
+[functions.executar-auto-trade]
+verify_jwt = false
+
+# Continua aceitando chamadas autenticadas dos usuários.
+# O fluxo interno do Auto Trade também valida service_role + CRON_SECRET.
+[functions.binance-trade]
+verify_jwt = true
