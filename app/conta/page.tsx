@@ -59,6 +59,21 @@ const fmtData = (iso: string) =>
     minute: '2-digit',
   });
 
+// Garante que a máscara da chave nunca estoure o card, qualquer que seja o
+// formato devolvido pelo backend. Mostra no máximo os primeiros 4 e os
+// últimos 4 caracteres visíveis, sempre com largura previsível.
+function shortMask(value: string | null): string {
+  if (!value) return '••••';
+
+  // Se o backend já mandou pontos de máscara, reduz a uma forma curta fixa.
+  const visible = value.replace(/[•*]/g, '').trim();
+
+  if (visible.length === 0) return '••••';
+  if (visible.length <= 8) return `${visible}`;
+
+  return `${visible.slice(0, 4)}…${visible.slice(-4)}`;
+}
+
 const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   pendente: { label: 'pendente', color: S.dim },
   entrada_enviada: { label: 'entrada enviada', color: S.a },
@@ -179,7 +194,7 @@ function MultiChipSelect({
         </button>
       </div>
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-start' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center' }}>
         {options.map((option) => {
           const active = selectedSet.has(option.value);
           return (
@@ -207,7 +222,7 @@ function MultiChipSelect({
       </div>
 
       {selected.length === 0 && emptyHint && (
-        <span style={{ fontSize: 11, color: S.dim, textAlign: 'left' }}>{emptyHint}</span>
+        <span style={{ fontSize: 11, color: S.dim, textAlign: 'center' }}>{emptyHint}</span>
       )}
     </div>
   );
@@ -1739,11 +1754,30 @@ export default function ContaPage() {
                 <div style={{ fontSize: 13, color: S.dim }}>Carregando configuração...</div>
               ) : keyInfo ? (
                 <>
-                  <div style={{ fontSize: 13 }}>
-                    Configurada: <code style={{ color: S.a }}>{keyInfo.api_key_masked ?? '••••••'}</code>{' '}
+                  <div
+                    style={{
+                      fontSize: 13,
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 8,
+                      maxWidth: '100%',
+                    }}
+                  >
+                    <span style={{ color: S.dim }}>Configurada:</span>
+                    <code
+                      style={{
+                        color: S.a,
+                        maxWidth: '100%',
+                        overflowWrap: 'anywhere',
+                        wordBreak: 'break-all',
+                      }}
+                    >
+                      {shortMask(keyInfo.api_key_masked)}
+                    </code>
                     <span
                       style={{
-                        marginLeft: 6,
                         padding: '2px 8px',
                         borderRadius: 10,
                         fontSize: 11,
