@@ -12,3 +12,14 @@ verify_jwt = false
 # O fluxo interno do Auto Trade também valida service_role + CRON_SECRET.
 [functions.binance-trade]
 verify_jwt = true
+
+# Backtests rápidos e criação de análises aprofundadas.
+# A função exige e valida o JWT do usuário antes de iniciar qualquer execução.
+[functions.backtest-daytrade]
+verify_jwt = true
+
+# Worker assíncrono acionado internamente pelo pg_cron/pg_net.
+# O JWT do gateway fica desabilitado porque a própria função valida
+# x-cron-secret e utiliza service_role apenas no ambiente do Supabase.
+[functions.processar-backtest-daytrade]
+verify_jwt = false
