@@ -3305,7 +3305,6 @@ export default function DayTradePage() {
             Análise
           </a>
           <span style={{ color: S.b, fontWeight: 700 }}>Day Trade</span>
-          </a>
           <a href="/oportunidades" style={{ color: S.dim, textDecoration: 'none' }}>
             Oportunidades
           </a>
