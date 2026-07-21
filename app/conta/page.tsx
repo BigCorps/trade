@@ -119,6 +119,100 @@ function Card({ children, style }: { children: ReactNode; style?: CSSProperties 
   );
 }
 
+interface ChipOption {
+  value: string;
+  label: string;
+}
+
+function MultiChipSelect({
+  label,
+  options,
+  selected,
+  disabled,
+  onChange,
+  emptyHint,
+}: {
+  label: string;
+  options: readonly ChipOption[];
+  selected: string[];
+  disabled?: boolean;
+  onChange: (next: string[]) => void;
+  emptyHint?: string;
+}) {
+  const selectedSet = new Set(selected);
+  const allSelected = options.length > 0 && options.every((option) => selectedSet.has(option.value));
+
+  const toggle = (value: string) => {
+    if (disabled) return;
+    const next = new Set(selectedSet);
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    onChange(options.filter((option) => next.has(option.value)).map((option) => option.value));
+  };
+
+  const toggleAll = () => {
+    if (disabled) return;
+    onChange(allSelected ? [] : options.map((option) => option.value));
+  };
+
+  return (
+    <div style={{ width: '100%', maxWidth: 680, display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <span style={{ fontSize: 12, color: S.dim }}>{label}</span>
+        <button
+          type="button"
+          onClick={toggleAll}
+          disabled={disabled}
+          style={{
+            background: 'transparent',
+            color: allSelected ? S.dim : S.a,
+            border: `1px solid ${allSelected ? S.border : `${S.a}66`}`,
+            borderRadius: 999,
+            padding: '2px 10px',
+            fontSize: 11,
+            fontWeight: 700,
+            cursor: disabled ? 'default' : 'pointer',
+            opacity: disabled ? 0.6 : 1,
+          }}
+        >
+          {allSelected ? 'Limpar' : 'Selecionar todos'}
+        </button>
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-start' }}>
+        {options.map((option) => {
+          const active = selectedSet.has(option.value);
+          return (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => toggle(option.value)}
+              disabled={disabled}
+              style={{
+                background: active ? `${S.a}22` : 'transparent',
+                color: active ? S.a : S.dim,
+                border: `1px solid ${active ? `${S.a}88` : S.border}`,
+                borderRadius: 8,
+                padding: '7px 12px',
+                fontSize: 13,
+                fontWeight: active ? 700 : 400,
+                cursor: disabled ? 'default' : 'pointer',
+                opacity: disabled ? 0.6 : 1,
+              }}
+            >
+              {active ? '✓ ' : ''}{option.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {selected.length === 0 && emptyHint && (
+        <span style={{ fontSize: 11, color: S.dim, textAlign: 'left' }}>{emptyHint}</span>
+      )}
+    </div>
+  );
+}
+
 interface KeyInfo {
   configured: boolean;
   api_key_masked: string | null;
@@ -213,9 +307,9 @@ interface AutoTradeForm {
   auto_trade_enabled: boolean;
   auto_trade_environment: 'testnet' | 'real';
   auto_trade_quote_amount: string;
-  auto_trade_symbols: string;
-  auto_trade_timeframes: string;
-  auto_trade_strategies: string;
+  auto_trade_symbols: string[];
+  auto_trade_timeframes: string[];
+  auto_trade_strategies: string[];
   auto_trade_min_score_pct: string;
   auto_trade_min_risk_reward: string;
   auto_trade_require_no_warnings: boolean;
@@ -225,6 +319,35 @@ interface AutoTradeForm {
 }
 
 const AUTO_TRADE_TIMEFRAMES = new Set(['5m', '15m', '30m', '1h']);
+
+const AUTO_TRADE_SYMBOL_OPTIONS = [
+  'BTCUSDT',
+  'ETHUSDT',
+  'SOLUSDT',
+  'BNBUSDT',
+  'XRPUSDT',
+  'ADAUSDT',
+  'DOGEUSDT',
+  'AVAXUSDT',
+  'LINKUSDT',
+] as const;
+
+const AUTO_TRADE_TIMEFRAME_OPTIONS = ['5m', '15m', '30m', '1h'] as const;
+
+const AUTO_TRADE_STRATEGY_OPTIONS = [
+  { value: 'trend_breakout', label: 'Tendência com Rompimento' },
+] as const;
+
+const AUTO_TRADE_SYMBOL_SET = new Set<string>(AUTO_TRADE_SYMBOL_OPTIONS);
+const AUTO_TRADE_STRATEGY_SET = new Set<string>(
+  AUTO_TRADE_STRATEGY_OPTIONS.map((strategy) => strategy.value),
+);
+
+// Mantém apenas os itens reconhecidos e preserva a ordem das opções.
+function keepKnown(values: string[], allowed: readonly string[]): string[] {
+  const chosen = new Set(values);
+  return allowed.filter((option) => chosen.has(option));
+}
 
 const DEFAULT_AUTO_TRADE: AutoTradeSettings = {
   auto_trade_enabled: false,
@@ -266,9 +389,18 @@ function normalizeAutoTradeSettings(value: unknown): AutoTradeSettings {
     auto_trade_environment: environment,
     auto_trade_quote_amount:
       numberValue(row.auto_trade_quote_amount) ?? DEFAULT_AUTO_TRADE.auto_trade_quote_amount,
-    auto_trade_symbols: normalizeTextArray(row.auto_trade_symbols).map((item) => item.toUpperCase()),
-    auto_trade_timeframes: normalizeTextArray(row.auto_trade_timeframes),
-    auto_trade_strategies: normalizeTextArray(row.auto_trade_strategies),
+    auto_trade_symbols: keepKnown(
+      normalizeTextArray(row.auto_trade_symbols).map((item) => item.toUpperCase()),
+      AUTO_TRADE_SYMBOL_OPTIONS,
+    ),
+    auto_trade_timeframes: keepKnown(
+      normalizeTextArray(row.auto_trade_timeframes),
+      AUTO_TRADE_TIMEFRAME_OPTIONS,
+    ),
+    auto_trade_strategies: keepKnown(
+      normalizeTextArray(row.auto_trade_strategies),
+      AUTO_TRADE_STRATEGY_OPTIONS.map((strategy) => strategy.value),
+    ),
     auto_trade_min_score_pct:
       numberValue(row.auto_trade_min_score_pct) ?? DEFAULT_AUTO_TRADE.auto_trade_min_score_pct,
     auto_trade_min_risk_reward:
@@ -298,9 +430,9 @@ function autoTradeToForm(settings: AutoTradeSettings): AutoTradeForm {
     auto_trade_enabled: settings.auto_trade_enabled,
     auto_trade_environment: settings.auto_trade_environment,
     auto_trade_quote_amount: String(settings.auto_trade_quote_amount),
-    auto_trade_symbols: settings.auto_trade_symbols.join(', '),
-    auto_trade_timeframes: settings.auto_trade_timeframes.join(', '),
-    auto_trade_strategies: settings.auto_trade_strategies.join(', '),
+    auto_trade_symbols: [...settings.auto_trade_symbols],
+    auto_trade_timeframes: [...settings.auto_trade_timeframes],
+    auto_trade_strategies: [...settings.auto_trade_strategies],
     auto_trade_min_score_pct: String(settings.auto_trade_min_score_pct),
     auto_trade_min_risk_reward: String(settings.auto_trade_min_risk_reward),
     auto_trade_require_no_warnings: settings.auto_trade_require_no_warnings,
@@ -308,16 +440,6 @@ function autoTradeToForm(settings: AutoTradeSettings): AutoTradeForm {
     auto_trade_cooldown_minutes: String(settings.auto_trade_cooldown_minutes),
     auto_trade_max_attempts: String(settings.auto_trade_max_attempts),
   };
-}
-
-function parseCommaList(value: string, uppercase = false): string[] {
-  return [...new Set(
-    value
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .map((item) => uppercase ? item.toUpperCase() : item.toLowerCase()),
-  )];
 }
 
 function parseAutoTradeForm(form: AutoTradeForm): {
@@ -331,9 +453,12 @@ function parseAutoTradeForm(form: AutoTradeForm): {
   > | null;
   error: string | null;
 } {
-  const symbols = parseCommaList(form.auto_trade_symbols, true);
-  const timeframes = parseCommaList(form.auto_trade_timeframes);
-  const strategies = parseCommaList(form.auto_trade_strategies);
+  const symbols = keepKnown(form.auto_trade_symbols, AUTO_TRADE_SYMBOL_OPTIONS);
+  const timeframes = keepKnown(form.auto_trade_timeframes, AUTO_TRADE_TIMEFRAME_OPTIONS);
+  const strategies = keepKnown(
+    form.auto_trade_strategies,
+    AUTO_TRADE_STRATEGY_OPTIONS.map((strategy) => strategy.value),
+  );
 
   const values = {
     auto_trade_enabled: form.auto_trade_enabled,
@@ -1982,51 +2107,42 @@ export default function ContaPage() {
                 </label>
               </div>
 
-              <div style={{ width: '100%', maxWidth: 680, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
-                  Símbolos autorizados
-                  <input
-                    value={autoTradeForm.auto_trade_symbols}
-                    onChange={(event) => setAutoTradeForm((current) => ({
-                      ...current,
-                      auto_trade_symbols: event.target.value,
-                    }))}
-                    disabled={autoTradeBusy}
-                    placeholder="BTCUSDT, ETHUSDT, SOLUSDT"
-                    spellCheck={false}
-                    style={{ ...inputStyle, textAlign: 'left' }}
-                  />
-                </label>
+              <div style={{ width: '100%', maxWidth: 680, display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <MultiChipSelect
+                  label="Símbolos autorizados"
+                  options={AUTO_TRADE_SYMBOL_OPTIONS.map((symbol) => ({ value: symbol, label: symbol }))}
+                  selected={autoTradeForm.auto_trade_symbols}
+                  disabled={autoTradeBusy}
+                  onChange={(next) => setAutoTradeForm((current) => ({
+                    ...current,
+                    auto_trade_symbols: next,
+                  }))}
+                  emptyHint="Selecione ao menos um símbolo para ativar."
+                />
 
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
-                  Timeframes autorizados
-                  <input
-                    value={autoTradeForm.auto_trade_timeframes}
-                    onChange={(event) => setAutoTradeForm((current) => ({
-                      ...current,
-                      auto_trade_timeframes: event.target.value,
-                    }))}
-                    disabled={autoTradeBusy}
-                    placeholder="5m, 15m, 30m, 1h"
-                    spellCheck={false}
-                    style={{ ...inputStyle, textAlign: 'left' }}
-                  />
-                </label>
+                <MultiChipSelect
+                  label="Timeframes autorizados"
+                  options={AUTO_TRADE_TIMEFRAME_OPTIONS.map((timeframe) => ({ value: timeframe, label: timeframe }))}
+                  selected={autoTradeForm.auto_trade_timeframes}
+                  disabled={autoTradeBusy}
+                  onChange={(next) => setAutoTradeForm((current) => ({
+                    ...current,
+                    auto_trade_timeframes: next,
+                  }))}
+                  emptyHint="Selecione ao menos um timeframe para ativar."
+                />
 
-                <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
-                  Estratégias autorizadas
-                  <input
-                    value={autoTradeForm.auto_trade_strategies}
-                    onChange={(event) => setAutoTradeForm((current) => ({
-                      ...current,
-                      auto_trade_strategies: event.target.value,
-                    }))}
-                    disabled={autoTradeBusy}
-                    placeholder="trend_breakout"
-                    spellCheck={false}
-                    style={{ ...inputStyle, textAlign: 'left' }}
-                  />
-                </label>
+                <MultiChipSelect
+                  label="Estratégias autorizadas"
+                  options={AUTO_TRADE_STRATEGY_OPTIONS.map((strategy) => ({ value: strategy.value, label: strategy.label }))}
+                  selected={autoTradeForm.auto_trade_strategies}
+                  disabled={autoTradeBusy}
+                  onChange={(next) => setAutoTradeForm((current) => ({
+                    ...current,
+                    auto_trade_strategies: next,
+                  }))}
+                  emptyHint="Selecione ao menos uma estratégia."
+                />
               </div>
 
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, justifyContent: 'center', alignItems: 'flex-end' }}>
