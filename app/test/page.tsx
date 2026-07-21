@@ -5,12 +5,14 @@
  * -----------------------------------------------------------------------------
  * Bancada interna de backtest multiestratégia.
  *
- * Modos:
- * - estratégia individual;
- * - comparação das quatro estratégias no mesmo histórico.
- *
- * A página chama a Edge Function backtest-daytrade autenticada pela sessão
- * atual do Supabase e oferece saída em Markdown e JSON.
+ * Recursos:
+ * - estratégia individual ou comparação das quatro estratégias;
+ * - histórico por quantidade de candles;
+ * - histórico por intervalo de datas, com presets;
+ * - execução imediata para amostras menores;
+ * - acompanhamento de análises assíncronas extensas;
+ * - recuperação da análise em andamento após recarregar a página;
+ * - saída em Markdown e JSON.
  */
 
 import {
@@ -44,6 +46,24 @@ type BacktestMode =
   | 'single'
   | 'compare_all';
 
+type HistoryMode =
+  | 'candle_count'
+  | 'date_range';
+
+type PeriodPreset =
+  | '30d'
+  | '90d'
+  | '6m'
+  | '1y'
+  | '2y'
+  | 'custom';
+
+type BacktestRunStatus =
+  | 'pending'
+  | 'processing'
+  | 'completed'
+  | 'failed';
+
 interface StrategyOption {
   id: StrategyId;
   label: string;
@@ -52,6 +72,25 @@ interface StrategyOption {
   executionMode:
     | 'testnet_allowed'
     | 'shadow';
+}
+
+interface ActiveRun {
+  id: string;
+  mode: BacktestMode;
+  strategy: StrategyId;
+  symbol: string;
+  timeframe: string;
+  historyMode: HistoryMode;
+  startedAt: string;
+}
+
+interface RunProgress {
+  status: BacktestRunStatus;
+  progressPct: number;
+  processedCandles: number;
+  totalCandles: number;
+  message: string;
+  updatedAt: string;
 }
 
 interface SingleBacktestPayload {
@@ -144,6 +183,30 @@ const STRATEGIES: readonly StrategyOption[] = [
     executionMode: 'shadow',
   },
 ] as const;
+
+const DIRECT_EXECUTION_CANDLE_LIMIT = 3_000;
+const MINIMUM_CANDLE_COUNT = 350;
+const MAXIMUM_CANDLE_COUNT = 3_000;
+const MAXIMUM_DATE_RANGE_DAYS = 731;
+const MAXIMUM_ESTIMATED_CANDLES = 220_000;
+const RUN_STORAGE_KEY = 'vigia:backtest-daytrade:active-run';
+const POLL_INTERVAL_MS = 2_500;
+
+const TIMEFRAME_MILLISECONDS: Record<string, number> = {
+  '5m': 5 * 60 * 1_000,
+  '15m': 15 * 60 * 1_000,
+  '30m': 30 * 60 * 1_000,
+  '1h': 60 * 60 * 1_000,
+};
+
+const PRESET_LABELS: Record<PeriodPreset, string> = {
+  '30d': '30 dias',
+  '90d': '90 dias',
+  '6m': '6 meses',
+  '1y': '1 ano',
+  '2y': '2 anos',
+  custom: 'Personalizado',
+};
 
 // -----------------------------------------------------------------------------
 // Estilos
@@ -260,8 +323,45 @@ function ModeBadge({
   );
 }
 
+function StatusBadge({
+  status,
+}: {
+  status: BacktestRunStatus;
+}) {
+  const colors: Record<BacktestRunStatus, string> = {
+    pending: COLORS.yellow,
+    processing: COLORS.blue,
+    completed: COLORS.green,
+    failed: COLORS.red,
+  };
+
+  const labels: Record<BacktestRunStatus, string> = {
+    pending: 'NA FILA',
+    processing: 'PROCESSANDO',
+    completed: 'CONCLUÍDO',
+    failed: 'FALHOU',
+  };
+
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        borderRadius: 999,
+        padding: '3px 9px',
+        fontSize: 10,
+        fontWeight: 800,
+        color: colors[status],
+        border: `1px solid ${colors[status]}`,
+      }}
+    >
+      {labels[status]}
+    </span>
+  );
+}
+
 // -----------------------------------------------------------------------------
-// Helpers
+// Helpers gerais
 // -----------------------------------------------------------------------------
 
 function asRecord(
@@ -292,12 +392,26 @@ function asArray(
 function asNumber(
   value: unknown,
 ): number | null {
-  return (
+  if (
     typeof value === 'number' &&
     Number.isFinite(value)
-  )
-    ? value
-    : null;
+  ) {
+    return value;
+  }
+
+  if (
+    typeof value === 'string' &&
+    value.trim() !== ''
+  ) {
+    const parsed =
+      Number(value);
+
+    return Number.isFinite(parsed)
+      ? parsed
+      : null;
+  }
+
+  return null;
 }
 
 function asString(
@@ -306,6 +420,17 @@ function asString(
   return typeof value === 'string'
     ? value
     : '';
+}
+
+function clamp(
+  value: number,
+  minimum: number,
+  maximum: number,
+): number {
+  return Math.min(
+    maximum,
+    Math.max(minimum, value),
+  );
 }
 
 function formatNumber(
@@ -386,6 +511,315 @@ function getStrategy(
   );
 }
 
+function toInputDate(
+  date: Date,
+): string {
+  const year =
+    date.getUTCFullYear();
+
+  const month =
+    String(
+      date.getUTCMonth() + 1,
+    ).padStart(2, '0');
+
+  const day =
+    String(
+      date.getUTCDate(),
+    ).padStart(2, '0');
+
+  return `${year}-${month}-${day}`;
+}
+
+function parseInputDateUtc(
+  value: string,
+): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return null;
+  }
+
+  const date =
+    new Date(
+      `${value}T00:00:00.000Z`,
+    );
+
+  return Number.isFinite(
+    date.getTime(),
+  )
+    ? date
+    : null;
+}
+
+function addUtcDays(
+  date: Date,
+  days: number,
+): Date {
+  return new Date(
+    date.getTime() +
+      days * 24 * 60 * 60 * 1_000,
+  );
+}
+
+function resolvePresetDates(
+  preset: PeriodPreset,
+): {
+  startDate: string;
+  endDate: string;
+} {
+  const now =
+    new Date();
+
+  const todayUtc =
+    new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate(),
+      ),
+    );
+
+  let start =
+    new Date(todayUtc);
+
+  switch (preset) {
+    case '30d':
+      start = addUtcDays(
+        todayUtc,
+        -29,
+      );
+      break;
+
+    case '90d':
+      start = addUtcDays(
+        todayUtc,
+        -89,
+      );
+      break;
+
+    case '6m':
+      start.setUTCMonth(
+        start.getUTCMonth() - 6,
+      );
+      break;
+
+    case '1y':
+      start.setUTCFullYear(
+        start.getUTCFullYear() - 1,
+      );
+      break;
+
+    case '2y':
+      start.setUTCFullYear(
+        start.getUTCFullYear() - 2,
+      );
+      break;
+
+    case 'custom':
+      start = addUtcDays(
+        todayUtc,
+        -29,
+      );
+      break;
+  }
+
+  return {
+    startDate:
+      toInputDate(start),
+    endDate:
+      toInputDate(todayUtc),
+  };
+}
+
+function resolveDateRange(
+  startDateValue: string,
+  endDateValue: string,
+  timeframe: string,
+): {
+  startTime: string;
+  endTime: string;
+  days: number;
+  estimatedCandles: number;
+} {
+  const start =
+    parseInputDateUtc(
+      startDateValue,
+    );
+
+  const endInclusive =
+    parseInputDateUtc(
+      endDateValue,
+    );
+
+  if (!start || !endInclusive) {
+    throw new Error(
+      'Informe datas inicial e final válidas.',
+    );
+  }
+
+  if (
+    endInclusive.getTime() <
+    start.getTime()
+  ) {
+    throw new Error(
+      'A data final deve ser igual ou posterior à data inicial.',
+    );
+  }
+
+  const endExclusive =
+    addUtcDays(
+      endInclusive,
+      1,
+    );
+
+  const rangeMs =
+    endExclusive.getTime() -
+    start.getTime();
+
+  const days =
+    Math.ceil(
+      rangeMs /
+        (24 * 60 * 60 * 1_000),
+    );
+
+  if (
+    days >
+    MAXIMUM_DATE_RANGE_DAYS
+  ) {
+    throw new Error(
+      `O intervalo máximo nesta bancada é de ${MAXIMUM_DATE_RANGE_DAYS} dias.`,
+    );
+  }
+
+  const intervalMs =
+    TIMEFRAME_MILLISECONDS[
+      timeframe
+    ];
+
+  if (!intervalMs) {
+    throw new Error(
+      'Timeframe inválido.',
+    );
+  }
+
+  const estimatedCandles =
+    Math.ceil(
+      rangeMs /
+        intervalMs,
+    );
+
+  if (
+    estimatedCandles <
+    MINIMUM_CANDLE_COUNT
+  ) {
+    throw new Error(
+      `O período possui aproximadamente ${estimatedCandles} candles. Selecione pelo menos ${MINIMUM_CANDLE_COUNT}.`,
+    );
+  }
+
+  if (
+    estimatedCandles >
+    MAXIMUM_ESTIMATED_CANDLES
+  ) {
+    throw new Error(
+      `O período excede o limite de segurança de ${MAXIMUM_ESTIMATED_CANDLES.toLocaleString('pt-BR')} candles estimados.`,
+    );
+  }
+
+  return {
+    startTime:
+      start.toISOString(),
+    endTime:
+      endExclusive.toISOString(),
+    days,
+    estimatedCandles,
+  };
+}
+
+function getRunId(
+  response: Record<string, unknown>,
+): string {
+  const run =
+    asRecord(response.run);
+
+  return (
+    asString(response.run_id) ||
+    asString(response.id) ||
+    asString(run?.id)
+  );
+}
+
+function getRunRecordPayload(
+  record: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const candidates = [
+    record.response_payload,
+    record.output,
+    record.result_payload,
+    record.result,
+  ];
+
+  for (const candidate of candidates) {
+    const parsed =
+      asRecord(candidate);
+
+    if (parsed) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function normalizeCompletedRunResponse(
+  record: Record<string, unknown>,
+  activeRun: ActiveRun,
+): Record<string, unknown> | null {
+  const payload =
+    getRunRecordPayload(record);
+
+  if (!payload) {
+    return null;
+  }
+
+  if (
+    payload.result ||
+    payload.comparison
+  ) {
+    return payload;
+  }
+
+  const common = {
+    ok: true,
+    mode:
+      activeRun.mode,
+    symbol:
+      asString(record.symbol) ||
+      activeRun.symbol,
+    timeframe:
+      asString(record.timeframe) ||
+      activeRun.timeframe,
+    generated_at:
+      asString(record.completed_at) ||
+      asString(record.updated_at) ||
+      new Date().toISOString(),
+    execution_ms:
+      asNumber(record.execution_ms) ??
+      null,
+  };
+
+  return activeRun.mode ===
+    'compare_all'
+    ? {
+        ...common,
+        comparison:
+          payload,
+      }
+    : {
+        ...common,
+        result:
+          payload,
+      };
+}
+
 // -----------------------------------------------------------------------------
 // Markdown individual
 // -----------------------------------------------------------------------------
@@ -461,7 +895,7 @@ function buildSingleMarkdown(
     `| Retorno líquido | ${formatNumber(metrics.netReturnPct)}% |`,
     `| PnL líquido | ${formatNumber(metrics.netPnlUsdt)} USDT |`,
     `| Sinais | ${formatInteger(metrics.signals)} |`,
-    `| Operações executadas | ${formatInteger(metrics.enteredTrades)} |`,
+    `| Operações executadas | ${formatInteger(metrics.enteredTrades ?? metrics.totalTrades)} |`,
     `| Sinais ignorados | ${formatInteger(metrics.skippedSignals)} |`,
     `| Vitórias / Derrotas / Empates | ${formatInteger(metrics.wins)} / ${formatInteger(metrics.losses)} / ${formatInteger(metrics.breakeven)} |`,
     `| Taxa de acerto | ${formatNumber(metrics.winRatePct)}% |`,
@@ -543,8 +977,7 @@ function buildComparisonMarkdown(
 
   const provisional =
     asArray(
-      comparison
-        .provisionalRanking,
+      comparison.provisionalRanking,
     )
       .map(asRecord)
       .filter(
@@ -585,10 +1018,8 @@ function buildComparisonMarkdown(
 
   const period =
     formatDateRange(
-      comparison
-        .firstCandleOpenTime,
-      comparison
-        .lastCandleCloseTime,
+      comparison.firstCandleOpenTime,
+      comparison.lastCandleCloseTime,
     );
 
   const lines = [
@@ -606,14 +1037,14 @@ function buildComparisonMarkdown(
   ];
 
   for (const row of rows) {
-    const mode =
+    const executionMode =
       row.executionMode ===
         'shadow'
         ? 'Shadow'
         : 'Testnet';
 
     lines.push(
-      `| ${String(row.shortLabel ?? row.label ?? row.strategy ?? '—')} | ${mode} | ${formatInteger(row.totalTrades)} | ${formatNumber(row.winRatePct)}% | ${formatNumber(row.netReturnPct)}% | ${formatNumber(row.netPnlUsdt)} | ${formatProfitFactor(row.profitFactor)} | ${formatNumber(row.averageR)} | ${formatNumber(row.maximumDrawdownPct)}% | ${String(row.sampleQuality ?? '—')} |`,
+      `| ${String(row.shortLabel ?? row.label ?? row.strategy ?? '—')} | ${executionMode} | ${formatInteger(row.totalTrades)} | ${formatNumber(row.winRatePct)}% | ${formatNumber(row.netReturnPct)}% | ${formatNumber(row.netPnlUsdt)} | ${formatProfitFactor(row.profitFactor)} | ${formatNumber(row.averageR)} | ${formatNumber(row.maximumDrawdownPct)}% | ${String(row.sampleQuality ?? '—')} |`,
     );
   }
 
@@ -685,6 +1116,13 @@ export default function TestPage() {
       [],
     );
 
+  const initialDates =
+    useMemo(
+      () =>
+        resolvePresetDates('90d'),
+      [],
+    );
+
   const [
     session,
     setSession,
@@ -722,9 +1160,37 @@ export default function TestPage() {
   ] = useState('1h');
 
   const [
+    historyMode,
+    setHistoryMode,
+  ] = useState<HistoryMode>(
+    'candle_count',
+  );
+
+  const [
     candleCount,
     setCandleCount,
   ] = useState('3000');
+
+  const [
+    periodPreset,
+    setPeriodPreset,
+  ] = useState<PeriodPreset>(
+    '90d',
+  );
+
+  const [
+    startDate,
+    setStartDate,
+  ] = useState(
+    initialDates.startDate,
+  );
+
+  const [
+    endDate,
+    setEndDate,
+  ] = useState(
+    initialDates.endDate,
+  );
 
   const [
     riskPercent,
@@ -763,8 +1229,56 @@ export default function TestPage() {
     'md' | 'json' | null
   >(null);
 
+  const [
+    activeRun,
+    setActiveRun,
+  ] = useState<ActiveRun | null>(
+    null,
+  );
+
+  const [
+    runProgress,
+    setRunProgress,
+  ] = useState<RunProgress | null>(
+    null,
+  );
+
   const selectedStrategy =
     getStrategy(strategy);
+
+  const dateRangePreview =
+    useMemo(
+      () => {
+        try {
+          return resolveDateRange(
+            startDate,
+            endDate,
+            timeframe,
+          );
+        } catch {
+          return null;
+        }
+      },
+      [
+        startDate,
+        endDate,
+        timeframe,
+      ],
+    );
+
+  const estimatedCandleCount =
+    historyMode ===
+      'candle_count'
+      ? Number(candleCount)
+      : dateRangePreview
+        ?.estimatedCandles ??
+        0;
+
+  const expectedExecutionMode =
+    estimatedCandleCount >
+    DIRECT_EXECUTION_CANDLE_LIMIT
+      ? 'async'
+      : 'direct';
 
   useEffect(
     () => {
@@ -804,6 +1318,358 @@ export default function TestPage() {
     [supabase],
   );
 
+  useEffect(
+    () => {
+      try {
+        const stored =
+          window.localStorage
+            .getItem(
+              RUN_STORAGE_KEY,
+            );
+
+        if (!stored) {
+          return;
+        }
+
+        const parsed =
+          asRecord(
+            JSON.parse(stored),
+          );
+
+        if (!parsed) {
+          return;
+        }
+
+        const id =
+          asString(parsed.id);
+
+        const storedMode =
+          asString(parsed.mode) as BacktestMode;
+
+        const storedStrategy =
+          asString(parsed.strategy) as StrategyId;
+
+        const storedHistoryMode =
+          asString(parsed.historyMode) as HistoryMode;
+
+        if (!id) {
+          return;
+        }
+
+        setActiveRun({
+          id,
+          mode:
+            storedMode ===
+              'compare_all'
+              ? 'compare_all'
+              : 'single',
+          strategy:
+            STRATEGIES.some(
+              (item) =>
+                item.id ===
+                storedStrategy,
+            )
+              ? storedStrategy
+              : 'trend_breakout',
+          symbol:
+            asString(parsed.symbol) ||
+            'BTCUSDT',
+          timeframe:
+            asString(parsed.timeframe) ||
+            '1h',
+          historyMode:
+            storedHistoryMode ===
+              'date_range'
+              ? 'date_range'
+              : 'candle_count',
+          startedAt:
+            asString(parsed.startedAt) ||
+            new Date().toISOString(),
+        });
+      } catch {
+        window.localStorage
+          .removeItem(
+            RUN_STORAGE_KEY,
+          );
+      }
+    },
+    [],
+  );
+
+  useEffect(
+    () => {
+      if (periodPreset === 'custom') {
+        return;
+      }
+
+      const dates =
+        resolvePresetDates(
+          periodPreset,
+        );
+
+      setStartDate(
+        dates.startDate,
+      );
+
+      setEndDate(
+        dates.endDate,
+      );
+    },
+    [periodPreset],
+  );
+
+  const applyResponse =
+    useCallback(
+      (
+        response: Record<string, unknown>,
+        responseMode: BacktestMode,
+      ) => {
+        setJson(
+          JSON.stringify(
+            response,
+            null,
+            2,
+          ),
+        );
+
+        setMarkdown(
+          responseMode ===
+            'compare_all'
+            ? buildComparisonMarkdown(
+                response,
+              )
+            : buildSingleMarkdown(
+                response,
+              ),
+        );
+      },
+      [],
+    );
+
+  const clearActiveRun =
+    useCallback(
+      () => {
+        setActiveRun(null);
+        setRunProgress(null);
+
+        window.localStorage
+          .removeItem(
+            RUN_STORAGE_KEY,
+          );
+      },
+      [],
+    );
+
+  useEffect(
+    () => {
+      if (
+        !session ||
+        !activeRun
+      ) {
+        return;
+      }
+
+      let cancelled =
+        false;
+
+      let timeoutId:
+        ReturnType<
+          typeof window.setTimeout
+        > | null =
+        null;
+
+      const poll =
+        async () => {
+          const {
+            data,
+            error: queryError,
+          } =
+            await supabase
+              .from('backtest_runs')
+              .select('*')
+              .eq(
+                'id',
+                activeRun.id,
+              )
+              .maybeSingle();
+
+          if (cancelled) {
+            return;
+          }
+
+          if (queryError) {
+            setError(
+              queryError.message,
+            );
+
+            timeoutId =
+              window.setTimeout(
+                () => {
+                  void poll();
+                },
+                POLL_INTERVAL_MS,
+              );
+
+            return;
+          }
+
+          const record =
+            asRecord(data);
+
+          if (!record) {
+            setError(
+              'A análise em andamento não foi encontrada.',
+            );
+
+            clearActiveRun();
+            return;
+          }
+
+          const rawStatus =
+            asString(record.status);
+
+          const status:
+            BacktestRunStatus =
+              rawStatus === 'processing' ||
+              rawStatus === 'completed' ||
+              rawStatus === 'failed'
+                ? rawStatus
+                : 'pending';
+
+          const totalCandles =
+            asNumber(
+              record.total_candles,
+            ) ??
+            asNumber(
+              record.estimated_candles,
+            ) ??
+            0;
+
+          const processedCandles =
+            asNumber(
+              record.processed_candles,
+            ) ??
+            0;
+
+          const explicitProgress =
+            asNumber(
+              record.progress_pct,
+            );
+
+          const progressPct =
+            clamp(
+              explicitProgress ??
+                (
+                  totalCandles > 0
+                    ? processedCandles /
+                      totalCandles *
+                      100
+                    : status ===
+                        'completed'
+                      ? 100
+                      : 0
+                ),
+              0,
+              100,
+            );
+
+          setRunProgress({
+            status,
+            progressPct,
+            processedCandles,
+            totalCandles,
+            message:
+              asString(
+                record.progress_message,
+              ) ||
+              asString(
+                record.message,
+              ) ||
+              (
+                status === 'pending'
+                  ? 'Aguardando o worker iniciar.'
+                  : status === 'processing'
+                    ? 'Processando o histórico em blocos.'
+                    : status === 'completed'
+                      ? 'Análise concluída.'
+                      : 'A análise encontrou uma falha.'
+              ),
+            updatedAt:
+              asString(
+                record.updated_at,
+              ) ||
+              new Date().toISOString(),
+          });
+
+          if (status === 'failed') {
+            setError(
+              asString(
+                record.error_message,
+              ) ||
+              'A análise aprofundada falhou.',
+            );
+
+            clearActiveRun();
+            return;
+          }
+
+          if (status === 'completed') {
+            const response =
+              normalizeCompletedRunResponse(
+                record,
+                activeRun,
+              );
+
+            if (!response) {
+              setError(
+                'A análise foi concluída, mas o resultado salvo está vazio.',
+              );
+
+              clearActiveRun();
+              return;
+            }
+
+            applyResponse(
+              response,
+              activeRun.mode,
+            );
+
+            clearActiveRun();
+            setBusy(false);
+            return;
+          }
+
+          timeoutId =
+            window.setTimeout(
+              () => {
+                void poll();
+              },
+              POLL_INTERVAL_MS,
+            );
+        };
+
+      void poll();
+
+      return () => {
+        cancelled =
+          true;
+
+        if (timeoutId !== null) {
+          window.clearTimeout(
+            timeoutId,
+          );
+        }
+      };
+    },
+    [
+      session,
+      activeRun,
+      supabase,
+      applyResponse,
+      clearActiveRun,
+    ],
+  );
+
   const run =
     useCallback(
       async () => {
@@ -814,8 +1680,11 @@ export default function TestPage() {
         setCopied(null);
 
         try {
-          const parsedCandleCount =
-            Number(candleCount);
+          if (activeRun) {
+            throw new Error(
+              'Já existe uma análise aprofundada em andamento.',
+            );
+          }
 
           const parsedRiskPercent =
             Number(riskPercent);
@@ -824,18 +1693,6 @@ export default function TestPage() {
             Number(
               minimumTradesForRanking,
             );
-
-          if (
-            !Number.isInteger(
-              parsedCandleCount,
-            ) ||
-            parsedCandleCount < 350 ||
-            parsedCandleCount > 3000
-          ) {
-            throw new Error(
-              'Candles deve ser um inteiro entre 350 e 3000.',
-            );
-          }
 
           if (
             !Number.isFinite(
@@ -860,49 +1717,85 @@ export default function TestPage() {
             );
           }
 
+          let historyRequest:
+            Record<string, unknown>;
+
+          if (
+            historyMode ===
+            'candle_count'
+          ) {
+            const parsedCandleCount =
+              Number(candleCount);
+
+            if (
+              !Number.isInteger(
+                parsedCandleCount,
+              ) ||
+              parsedCandleCount <
+                MINIMUM_CANDLE_COUNT ||
+              parsedCandleCount >
+                MAXIMUM_CANDLE_COUNT
+            ) {
+              throw new Error(
+                `Candles deve ser um inteiro entre ${MINIMUM_CANDLE_COUNT} e ${MAXIMUM_CANDLE_COUNT}.`,
+              );
+            }
+
+            historyRequest = {
+              history_mode:
+                'candle_count',
+              candle_count:
+                parsedCandleCount,
+            };
+          } else {
+            const dateRange =
+              resolveDateRange(
+                startDate,
+                endDate,
+                timeframe,
+              );
+
+            historyRequest = {
+              history_mode:
+                'date_range',
+              start_time:
+                dateRange.startTime,
+              end_time:
+                dateRange.endTime,
+              estimated_candle_count:
+                dateRange.estimatedCandles,
+            };
+          }
+
+          const commonBody = {
+            action: 'run',
+            symbol,
+            timeframe,
+            ...historyRequest,
+            backtest_options: {
+              riskPercent:
+                parsedRiskPercent,
+            },
+          };
+
           const body =
             mode === 'compare_all'
               ? {
+                  ...commonBody,
                   mode:
                     'compare_all',
-
-                  symbol,
-
-                  timeframe,
-
-                  candle_count:
-                    parsedCandleCount,
-
-                  backtest_options: {
-                    riskPercent:
-                      parsedRiskPercent,
-                  },
-
                   comparison_options: {
                     minimumTradesForRanking:
                       parsedMinimumTrades,
-
                     continueOnStrategyError:
                       true,
                   },
                 }
               : {
+                  ...commonBody,
                   mode:
                     'single',
-
                   strategy,
-
-                  symbol,
-
-                  timeframe,
-
-                  candle_count:
-                    parsedCandleCount,
-
-                  backtest_options: {
-                    riskPercent:
-                      parsedRiskPercent,
-                  },
                 };
 
           const {
@@ -940,22 +1833,65 @@ export default function TestPage() {
             );
           }
 
-          setJson(
-            JSON.stringify(
-              response,
-              null,
-              2,
-            ),
-          );
+          const runId =
+            getRunId(response);
 
-          setMarkdown(
-            mode === 'compare_all'
-              ? buildComparisonMarkdown(
-                  response,
-                )
-              : buildSingleMarkdown(
-                  response,
+          const queued =
+            response.queued === true ||
+            response.asynchronous === true ||
+            asString(response.status) === 'pending' ||
+            asString(response.status) === 'processing' ||
+            runId !== '';
+
+          if (queued) {
+            if (!runId) {
+              throw new Error(
+                'A análise foi enfileirada, mas a função não retornou o ID.',
+              );
+            }
+
+            const nextRun:
+              ActiveRun = {
+                id: runId,
+                mode,
+                strategy,
+                symbol,
+                timeframe,
+                historyMode,
+                startedAt:
+                  new Date().toISOString(),
+              };
+
+            setActiveRun(
+              nextRun,
+            );
+
+            setRunProgress({
+              status: 'pending',
+              progressPct: 0,
+              processedCandles: 0,
+              totalCandles:
+                estimatedCandleCount,
+              message:
+                'Análise criada e aguardando processamento.',
+              updatedAt:
+                new Date().toISOString(),
+            });
+
+            window.localStorage
+              .setItem(
+                RUN_STORAGE_KEY,
+                JSON.stringify(
+                  nextRun,
                 ),
+              );
+
+            return;
+          }
+
+          applyResponse(
+            response,
+            mode,
           );
         } catch (runError) {
           setError(
@@ -963,19 +1899,29 @@ export default function TestPage() {
               ? runError.message
               : 'Erro ao executar o backtest.',
           );
-        } finally {
+
           setBusy(false);
+        } finally {
+          if (!activeRun) {
+            setBusy(false);
+          }
         }
       },
       [
-        supabase,
-        mode,
-        strategy,
-        symbol,
-        timeframe,
-        candleCount,
+        activeRun,
         riskPercent,
         minimumTradesForRanking,
+        historyMode,
+        candleCount,
+        startDate,
+        endDate,
+        timeframe,
+        symbol,
+        mode,
+        strategy,
+        supabase,
+        applyResponse,
+        estimatedCandleCount,
       ],
     );
 
@@ -1049,13 +1995,13 @@ export default function TestPage() {
             marginTop: 2,
           }}
         >
-          uso interno · quatro estratégias · execução individual ou comparativa
+          uso interno · quatro estratégias · histórico rápido ou análise aprofundada
         </div>
       </header>
 
       <div
         style={{
-          maxWidth: 1100,
+          maxWidth: 1120,
           margin: '0 auto',
           padding: '24px 20px',
           display: 'flex',
@@ -1097,34 +2043,23 @@ export default function TestPage() {
                         display:
                           'grid',
                         gridTemplateColumns:
-                          'repeat(auto-fit, minmax(155px, 1fr))',
+                          'repeat(auto-fit, minmax(150px, 1fr))',
                         gap: 12,
                         alignItems:
                           'end',
                       }}
                     >
-                      <label
-                        style={
-                          labelStyle
-                        }
-                      >
+                      <label style={labelStyle}>
                         Modo
                         <select
-                          value={
-                            mode
-                          }
-                          onChange={(
-                            event,
-                          ) =>
+                          value={mode}
+                          disabled={Boolean(activeRun)}
+                          onChange={(event) =>
                             setMode(
-                              event
-                                .target
-                                .value as BacktestMode,
+                              event.target.value as BacktestMode,
                             )
                           }
-                          style={
-                            inputStyle
-                          }
+                          style={inputStyle}
                         >
                           <option value="single">
                             Estratégia individual
@@ -1140,461 +2075,598 @@ export default function TestPage() {
                         style={{
                           ...labelStyle,
                           opacity:
-                            mode ===
-                            'compare_all'
+                            mode === 'compare_all'
                               ? 0.5
                               : 1,
                         }}
                       >
                         Estratégia
                         <select
-                          value={
-                            strategy
-                          }
+                          value={strategy}
                           disabled={
-                            mode ===
-                            'compare_all'
+                            mode === 'compare_all' ||
+                            Boolean(activeRun)
                           }
-                          onChange={(
-                            event,
-                          ) =>
+                          onChange={(event) =>
                             setStrategy(
-                              event
-                                .target
-                                .value as StrategyId,
+                              event.target.value as StrategyId,
                             )
                           }
-                          style={{
-                            ...inputStyle,
-                            cursor:
-                              mode ===
-                              'compare_all'
-                                ? 'not-allowed'
-                                : 'pointer',
-                          }}
+                          style={inputStyle}
                         >
-                          {STRATEGIES.map(
-                            (
-                              item,
-                            ) => (
-                              <option
-                                key={
-                                  item.id
-                                }
-                                value={
-                                  item.id
-                                }
-                              >
-                                {item.shortLabel}
-                                {item.executionMode ===
-                                'shadow'
-                                  ? ' · shadow'
-                                  : ''}
-                              </option>
-                            ),
-                          )}
+                          {STRATEGIES.map((item) => (
+                            <option
+                              key={item.id}
+                              value={item.id}
+                            >
+                              {item.shortLabel}
+                              {item.executionMode === 'shadow'
+                                ? ' · shadow'
+                                : ''}
+                            </option>
+                          ))}
                         </select>
                       </label>
 
-                      <label
-                        style={
-                          labelStyle
-                        }
-                      >
+                      <label style={labelStyle}>
                         Par
                         <select
-                          value={
-                            symbol
+                          value={symbol}
+                          disabled={Boolean(activeRun)}
+                          onChange={(event) =>
+                            setSymbol(event.target.value)
                           }
-                          onChange={(
-                            event,
-                          ) =>
-                            setSymbol(
-                              event
-                                .target
-                                .value,
-                            )
-                          }
-                          style={
-                            inputStyle
-                          }
+                          style={inputStyle}
                         >
-                          {SYMBOLS.map(
-                            (
-                              item,
-                            ) => (
-                              <option
-                                key={
-                                  item
-                                }
-                                value={
-                                  item
-                                }
-                              >
-                                {item}
-                              </option>
-                            ),
-                          )}
+                          {SYMBOLS.map((item) => (
+                            <option
+                              key={item}
+                              value={item}
+                            >
+                              {item}
+                            </option>
+                          ))}
                         </select>
                       </label>
 
-                      <label
-                        style={
-                          labelStyle
-                        }
-                      >
+                      <label style={labelStyle}>
                         Timeframe
                         <select
-                          value={
-                            timeframe
+                          value={timeframe}
+                          disabled={Boolean(activeRun)}
+                          onChange={(event) =>
+                            setTimeframe(event.target.value)
                           }
-                          onChange={(
-                            event,
-                          ) =>
-                            setTimeframe(
-                              event
-                                .target
-                                .value,
-                            )
-                          }
-                          style={
-                            inputStyle
-                          }
+                          style={inputStyle}
                         >
-                          {TIMEFRAMES.map(
-                            (
-                              item,
-                            ) => (
-                              <option
-                                key={
-                                  item
-                                }
-                                value={
-                                  item
-                                }
-                              >
-                                {item}
-                              </option>
-                            ),
-                          )}
+                          {TIMEFRAMES.map((item) => (
+                            <option
+                              key={item}
+                              value={item}
+                            >
+                              {item}
+                            </option>
+                          ))}
                         </select>
                       </label>
 
-                      <label
-                        style={
-                          labelStyle
-                        }
-                      >
-                        Candles
+                      <label style={labelStyle}>
+                        Risco por operação
                         <input
                           type="number"
-                          min="350"
-                          max="3000"
-                          value={
-                            candleCount
+                          min="0.1"
+                          max="2"
+                          step="0.1"
+                          value={riskPercent}
+                          disabled={Boolean(activeRun)}
+                          onChange={(event) =>
+                            setRiskPercent(event.target.value)
                           }
-                          onChange={(
-                            event,
-                          ) =>
-                            setCandleCount(
-                              event
-                                .target
-                                .value,
-                            )
-                          }
-                          style={
-                            inputStyle
-                          }
+                          style={inputStyle}
                         />
                       </label>
 
                       <label
-                        style={
-                          labelStyle
-                        }
+                        style={{
+                          ...labelStyle,
+                          opacity:
+                            mode === 'single'
+                              ? 0.5
+                              : 1,
+                        }}
                       >
-                        Risco por trade
+                        Trades mínimos no ranking
+                        <input
+                          type="number"
+                          min="1"
+                          step="1"
+                          value={minimumTradesForRanking}
+                          disabled={
+                            mode === 'single' ||
+                            Boolean(activeRun)
+                          }
+                          onChange={(event) =>
+                            setMinimumTradesForRanking(
+                              event.target.value,
+                            )
+                          }
+                          style={inputStyle}
+                        />
+                      </label>
+                    </div>
+                  </Card>
+
+                  <Card>
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: 10,
+                        marginBottom: 14,
+                      }}
+                    >
+                      <div>
+                        <strong style={{ fontSize: 14 }}>
+                          Histórico da análise
+                        </strong>
+
                         <div
                           style={{
-                            display:
-                              'flex',
-                            alignItems:
-                              'center',
-                            gap: 5,
+                            color: COLORS.muted,
+                            fontSize: 11,
+                            marginTop: 3,
                           }}
                         >
-                          <input
-                            type="number"
-                            min="0.01"
-                            max="2"
-                            step="0.25"
-                            value={
-                              riskPercent
-                            }
-                            onChange={(
-                              event,
-                            ) =>
-                              setRiskPercent(
-                                event
-                                  .target
-                                  .value,
-                              )
-                            }
-                            style={{
-                              ...inputStyle,
-                              width:
-                                '100%',
-                            }}
-                          />
-
-                          <span>
-                            %
-                          </span>
+                          Use candles para testes rápidos ou datas para análises aprofundadas.
                         </div>
-                      </label>
+                      </div>
 
-                      {mode ===
-                        'compare_all' && (
-                        <label
-                          style={
-                            labelStyle
+                      <div
+                        style={{
+                          display: 'flex',
+                          gap: 8,
+                          flexWrap: 'wrap',
+                        }}
+                      >
+                        <button
+                          type="button"
+                          disabled={Boolean(activeRun)}
+                          onClick={() =>
+                            setHistoryMode('candle_count')
                           }
+                          style={{
+                            ...secondaryButtonStyle,
+                            background:
+                              historyMode === 'candle_count'
+                                ? COLORS.accent
+                                : 'transparent',
+                            color:
+                              historyMode === 'candle_count'
+                                ? COLORS.accentText
+                                : COLORS.accent,
+                          }}
                         >
-                          Amostra mínima
-                          <input
-                            type="number"
-                            min="1"
-                            step="1"
-                            value={
-                              minimumTradesForRanking
-                            }
-                            onChange={(
-                              event,
-                            ) =>
-                              setMinimumTradesForRanking(
-                                event
-                                  .target
-                                  .value,
-                              )
-                            }
-                            style={
-                              inputStyle
-                            }
-                          />
-                        </label>
-                      )}
+                          Quantidade de candles
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={Boolean(activeRun)}
+                          onClick={() =>
+                            setHistoryMode('date_range')
+                          }
+                          style={{
+                            ...secondaryButtonStyle,
+                            background:
+                              historyMode === 'date_range'
+                                ? COLORS.accent
+                                : 'transparent',
+                            color:
+                              historyMode === 'date_range'
+                                ? COLORS.accentText
+                                : COLORS.accent,
+                          }}
+                        >
+                          Período por datas
+                        </button>
+                      </div>
+                    </div>
+
+                    {historyMode === 'candle_count'
+                      ? (
+                          <div
+                            style={{
+                              display: 'grid',
+                              gridTemplateColumns:
+                                'repeat(auto-fit, minmax(180px, 1fr))',
+                              gap: 12,
+                              alignItems: 'end',
+                            }}
+                          >
+                            <label style={labelStyle}>
+                              Candles
+                              <input
+                                type="number"
+                                min={MINIMUM_CANDLE_COUNT}
+                                max={MAXIMUM_CANDLE_COUNT}
+                                step="50"
+                                value={candleCount}
+                                disabled={Boolean(activeRun)}
+                                onChange={(event) =>
+                                  setCandleCount(event.target.value)
+                                }
+                                style={inputStyle}
+                              />
+                            </label>
+
+                            <div
+                              style={{
+                                border: `1px solid ${COLORS.border}`,
+                                borderRadius: 7,
+                                padding: '9px 11px',
+                                fontSize: 12,
+                                color: COLORS.muted,
+                                textAlign: 'center',
+                              }}
+                            >
+                              Limite rápido atual: <strong style={{ color: COLORS.text }}>3.000 candles</strong>
+                            </div>
+                          </div>
+                        )
+                      : (
+                          <div
+                            style={{
+                              display: 'grid',
+                              gridTemplateColumns:
+                                'repeat(auto-fit, minmax(150px, 1fr))',
+                              gap: 12,
+                              alignItems: 'end',
+                            }}
+                          >
+                            <label style={labelStyle}>
+                              Período
+                              <select
+                                value={periodPreset}
+                                disabled={Boolean(activeRun)}
+                                onChange={(event) =>
+                                  setPeriodPreset(
+                                    event.target.value as PeriodPreset,
+                                  )
+                                }
+                                style={inputStyle}
+                              >
+                                {(Object.keys(PRESET_LABELS) as PeriodPreset[]).map((item) => (
+                                  <option
+                                    key={item}
+                                    value={item}
+                                  >
+                                    {PRESET_LABELS[item]}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+
+                            <label style={labelStyle}>
+                              Data inicial
+                              <input
+                                type="date"
+                                value={startDate}
+                                disabled={Boolean(activeRun)}
+                                onChange={(event) => {
+                                  setStartDate(event.target.value);
+                                  setPeriodPreset('custom');
+                                }}
+                                style={inputStyle}
+                              />
+                            </label>
+
+                            <label style={labelStyle}>
+                              Data final
+                              <input
+                                type="date"
+                                value={endDate}
+                                disabled={Boolean(activeRun)}
+                                onChange={(event) => {
+                                  setEndDate(event.target.value);
+                                  setPeriodPreset('custom');
+                                }}
+                                style={inputStyle}
+                              />
+                            </label>
+
+                            <div
+                              style={{
+                                border: `1px solid ${COLORS.border}`,
+                                borderRadius: 7,
+                                padding: '8px 10px',
+                                textAlign: 'center',
+                                fontSize: 11,
+                                color: COLORS.muted,
+                                lineHeight: 1.45,
+                              }}
+                            >
+                              {dateRangePreview
+                                ? (
+                                    <>
+                                      <strong style={{ color: COLORS.text }}>
+                                        {dateRangePreview.estimatedCandles.toLocaleString('pt-BR')}
+                                      </strong>{' '}
+                                      candles estimados em{' '}
+                                      <strong style={{ color: COLORS.text }}>
+                                        {dateRangePreview.days}
+                                      </strong>{' '}
+                                      dias
+                                    </>
+                                  )
+                                : 'Período inválido ou curto demais'}
+                            </div>
+                          </div>
+                        )}
+
+                    <div
+                      style={{
+                        marginTop: 13,
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        flexWrap: 'wrap',
+                        gap: 10,
+                        borderTop: `1px solid ${COLORS.border}`,
+                        paddingTop: 13,
+                      }}
+                    >
+                      <div
+                        style={{
+                          color: COLORS.muted,
+                          fontSize: 11,
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        Execução prevista:{' '}
+                        <strong
+                          style={{
+                            color:
+                              expectedExecutionMode === 'async'
+                                ? COLORS.blue
+                                : COLORS.green,
+                          }}
+                        >
+                          {expectedExecutionMode === 'async'
+                            ? 'assíncrona em blocos'
+                            : 'imediata'}
+                        </strong>
+                        {' · '}
+                        {estimatedCandleCount > 0
+                          ? `${Math.trunc(estimatedCandleCount).toLocaleString('pt-BR')} candles`
+                          : 'aguardando período válido'}
+                      </div>
 
                       <button
                         type="button"
-                        onClick={
-                          run
-                        }
                         disabled={
-                          busy
+                          busy ||
+                          Boolean(activeRun)
                         }
+                        onClick={() => {
+                          void run();
+                        }}
                         style={{
                           background:
-                            COLORS.accent,
+                            busy || activeRun
+                              ? COLORS.border
+                              : COLORS.accent,
                           color:
-                            COLORS.accentText,
-                          border:
-                            'none',
-                          borderRadius:
-                            8,
-                          padding:
-                            '10px 18px',
-                          fontSize:
-                            14,
-                          fontWeight:
-                            700,
+                            busy || activeRun
+                              ? COLORS.muted
+                              : COLORS.accentText,
+                          border: 0,
+                          borderRadius: 7,
+                          padding: '10px 18px',
+                          fontWeight: 800,
+                          fontSize: 13,
                           cursor:
-                            busy
-                              ? 'wait'
+                            busy || activeRun
+                              ? 'not-allowed'
                               : 'pointer',
-                          opacity:
-                            busy
-                              ? 0.6
-                              : 1,
-                          minHeight:
-                            39,
                         }}
                       >
-                        {busy
-                          ? mode ===
-                            'compare_all'
-                            ? 'Comparando...'
-                            : 'Executando...'
-                          : mode ===
-                            'compare_all'
-                            ? 'Comparar estratégias'
-                            : 'Rodar backtest'}
+                        {activeRun
+                          ? 'Análise em andamento'
+                          : busy
+                            ? 'Iniciando...'
+                            : expectedExecutionMode === 'async'
+                              ? 'Iniciar análise aprofundada'
+                              : 'Executar backtest'}
                       </button>
                     </div>
                   </Card>
 
-                  <Card
-                    style={{
-                      background:
-                        COLORS.panelSoft,
-                    }}
-                  >
-                    {mode ===
-                    'compare_all' ? (
-                      <div
-                        style={{
-                          display:
-                            'flex',
-                          flexDirection:
-                            'column',
-                          gap: 8,
-                        }}
-                      >
-                        <strong
-                          style={{
-                            fontSize:
-                              13,
-                          }}
-                        >
-                          Comparação das quatro estratégias
-                        </strong>
-
-                        <span
-                          style={{
-                            color:
-                              COLORS.muted,
-                            fontSize:
-                              12,
-                            lineHeight:
-                              1.5,
-                          }}
-                        >
-                          Todas recebem o mesmo par, timeframe, período, capital, risco, taxas e slippage. Cada uma mantém uma simulação independente com uma posição por vez.
-                        </span>
-
-                        <div
-                          style={{
-                            display:
-                              'flex',
-                            flexWrap:
-                              'wrap',
-                            gap: 8,
-                          }}
-                        >
-                          {STRATEGIES.map(
-                            (
-                              item,
-                            ) => (
-                              <div
-                                key={
-                                  item.id
-                                }
-                                style={{
-                                  display:
-                                    'flex',
-                                  alignItems:
-                                    'center',
-                                  gap: 6,
-                                  border:
-                                    `1px solid ${COLORS.border}`,
-                                  borderRadius:
-                                    7,
-                                  padding:
-                                    '5px 8px',
-                                  fontSize:
-                                    11,
-                                }}
-                              >
-                                <span>
-                                  {item.shortLabel}
-                                </span>
-
-                                <ModeBadge
-                                  mode={
-                                    item.executionMode
-                                  }
-                                />
-                              </div>
-                            ),
-                          )}
-                        </div>
-                      </div>
-                    ) : (
-                      <div
-                        style={{
-                          display:
-                            'flex',
-                          flexDirection:
-                            'column',
-                          gap: 7,
-                        }}
-                      >
-                        <div
-                          style={{
-                            display:
-                              'flex',
-                            alignItems:
-                              'center',
-                            flexWrap:
-                              'wrap',
-                            gap: 8,
-                          }}
-                        >
-                          <strong
+                  <Card>
+                    {mode === 'compare_all'
+                      ? (
+                          <div
                             style={{
-                              fontSize:
-                                13,
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 8,
                             }}
                           >
-                            {selectedStrategy.label}
+                            <strong style={{ fontSize: 13 }}>
+                              Comparação das quatro estratégias
+                            </strong>
+
+                            <span
+                              style={{
+                                color: COLORS.muted,
+                                fontSize: 12,
+                                lineHeight: 1.5,
+                              }}
+                            >
+                              Todas recebem o mesmo par, timeframe, período, capital, risco, taxas e slippage. Cada estratégia mantém uma simulação independente.
+                            </span>
+
+                            <div
+                              style={{
+                                display: 'flex',
+                                flexWrap: 'wrap',
+                                gap: 8,
+                              }}
+                            >
+                              {STRATEGIES.map((item) => (
+                                <div
+                                  key={item.id}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 6,
+                                    border: `1px solid ${COLORS.border}`,
+                                    borderRadius: 7,
+                                    padding: '5px 8px',
+                                    fontSize: 11,
+                                  }}
+                                >
+                                  <span>{item.shortLabel}</span>
+                                  <ModeBadge mode={item.executionMode} />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )
+                      : (
+                          <div
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 7,
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                flexWrap: 'wrap',
+                                gap: 8,
+                              }}
+                            >
+                              <strong style={{ fontSize: 13 }}>
+                                {selectedStrategy.label}
+                              </strong>
+
+                              <ModeBadge mode={selectedStrategy.executionMode} />
+                            </div>
+
+                            <span
+                              style={{
+                                color: COLORS.muted,
+                                fontSize: 12,
+                                lineHeight: 1.5,
+                              }}
+                            >
+                              {selectedStrategy.description}
+                            </span>
+                          </div>
+                        )}
+                  </Card>
+
+                  {activeRun && runProgress && (
+                    <Card>
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                          gap: 10,
+                          marginBottom: 12,
+                        }}
+                      >
+                        <div>
+                          <strong style={{ fontSize: 14 }}>
+                            Análise aprofundada
                           </strong>
 
-                          <ModeBadge
-                            mode={
-                              selectedStrategy.executionMode
-                            }
-                          />
+                          <div
+                            style={{
+                              color: COLORS.muted,
+                              fontSize: 11,
+                              marginTop: 3,
+                            }}
+                          >
+                            {activeRun.symbol} · {activeRun.timeframe} · ID {activeRun.id.slice(0, 8)}…
+                          </div>
                         </div>
 
-                        <span
+                        <StatusBadge status={runProgress.status} />
+                      </div>
+
+                      <div
+                        style={{
+                          width: '100%',
+                          height: 10,
+                          background: COLORS.background,
+                          borderRadius: 999,
+                          overflow: 'hidden',
+                          border: `1px solid ${COLORS.border}`,
+                        }}
+                      >
+                        <div
                           style={{
-                            color:
-                              COLORS.muted,
-                            fontSize:
-                              12,
-                            lineHeight:
-                              1.5,
+                            width: `${runProgress.progressPct}%`,
+                            height: '100%',
+                            background:
+                              runProgress.status === 'failed'
+                                ? COLORS.red
+                                : runProgress.status === 'completed'
+                                  ? COLORS.green
+                                  : COLORS.blue,
+                            transition: 'width 300ms ease',
                           }}
-                        >
-                          {selectedStrategy.description}
+                        />
+                      </div>
+
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          flexWrap: 'wrap',
+                          gap: 8,
+                          marginTop: 9,
+                          color: COLORS.muted,
+                          fontSize: 11,
+                        }}
+                      >
+                        <span>
+                          {runProgress.message}
+                        </span>
+
+                        <span>
+                          {formatInteger(runProgress.processedCandles)} de{' '}
+                          {formatInteger(runProgress.totalCandles)} candles ·{' '}
+                          {formatNumber(runProgress.progressPct, 1)}%
                         </span>
                       </div>
-                    )}
-                  </Card>
+                    </Card>
+                  )}
 
                   <div
                     style={{
-                      fontSize:
-                        11,
-                      color:
-                        COLORS.muted,
-                      textAlign:
-                        'center',
-                      lineHeight:
-                        1.5,
+                      fontSize: 11,
+                      color: COLORS.muted,
+                      textAlign: 'center',
+                      lineHeight: 1.5,
                     }}
                   >
-                    3000 candles em 1h representam aproximadamente 125 dias. Os timeframes menores cobrem períodos mais curtos por chamada.
+                    Até 3.000 candles a resposta é imediata. Períodos maiores são processados em segundo plano e continuam disponíveis após recarregar a página.
                   </div>
 
                   {error && (
                     <Card
                       style={{
-                        color:
-                          COLORS.red,
-                        fontSize:
-                          13,
-                        textAlign:
-                          'center',
+                        color: COLORS.red,
+                        fontSize: 13,
+                        textAlign: 'center',
                       }}
                     >
                       {error}
@@ -1605,50 +2677,35 @@ export default function TestPage() {
                     <Card>
                       <div
                         style={{
-                          display:
-                            'flex',
-                          justifyContent:
-                            'space-between',
-                          alignItems:
-                            'center',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
                           gap: 12,
-                          marginBottom:
-                            8,
+                          marginBottom: 8,
                         }}
                       >
-                        <strong
-                          style={{
-                            fontSize:
-                              14,
-                          }}
-                        >
+                        <strong style={{ fontSize: 14 }}>
                           Resumo em Markdown
                         </strong>
 
                         <button
                           type="button"
                           onClick={() =>
-                            copy(
-                              markdown,
-                              'md',
-                            )
+                            copy(markdown, 'md')
                           }
                           style={{
                             ...secondaryButtonStyle,
                             color:
-                              copied ===
-                              'md'
+                              copied === 'md'
                                 ? COLORS.green
                                 : COLORS.accent,
                             borderColor:
-                              copied ===
-                              'md'
+                              copied === 'md'
                                 ? COLORS.green
                                 : COLORS.accent,
                           }}
                         >
-                          {copied ===
-                          'md'
+                          {copied === 'md'
                             ? 'Copiado ✓'
                             : 'Copiar'}
                         </button>
@@ -1656,18 +2713,10 @@ export default function TestPage() {
 
                       <textarea
                         readOnly
-                        value={
-                          markdown
-                        }
-                        style={
-                          textareaStyle
-                        }
-                        onFocus={(
-                          event,
-                        ) =>
-                          event
-                            .currentTarget
-                            .select()
+                        value={markdown}
+                        style={textareaStyle}
+                        onFocus={(event) =>
+                          event.currentTarget.select()
                         }
                       />
                     </Card>
@@ -1677,50 +2726,35 @@ export default function TestPage() {
                     <Card>
                       <div
                         style={{
-                          display:
-                            'flex',
-                          justifyContent:
-                            'space-between',
-                          alignItems:
-                            'center',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
                           gap: 12,
-                          marginBottom:
-                            8,
+                          marginBottom: 8,
                         }}
                       >
-                        <strong
-                          style={{
-                            fontSize:
-                              14,
-                          }}
-                        >
+                        <strong style={{ fontSize: 14 }}>
                           JSON completo
                         </strong>
 
                         <button
                           type="button"
                           onClick={() =>
-                            copy(
-                              json,
-                              'json',
-                            )
+                            copy(json, 'json')
                           }
                           style={{
                             ...secondaryButtonStyle,
                             color:
-                              copied ===
-                              'json'
+                              copied === 'json'
                                 ? COLORS.green
                                 : COLORS.accent,
                             borderColor:
-                              copied ===
-                              'json'
+                              copied === 'json'
                                 ? COLORS.green
                                 : COLORS.accent,
                           }}
                         >
-                          {copied ===
-                          'json'
+                          {copied === 'json'
                             ? 'Copiado ✓'
                             : 'Copiar'}
                         </button>
@@ -1728,20 +2762,13 @@ export default function TestPage() {
 
                       <textarea
                         readOnly
-                        value={
-                          json
-                        }
+                        value={json}
                         style={{
                           ...textareaStyle,
-                          minHeight:
-                            380,
+                          minHeight: 380,
                         }}
-                        onFocus={(
-                          event,
-                        ) =>
-                          event
-                            .currentTarget
-                            .select()
+                        onFocus={(event) =>
+                          event.currentTarget.select()
                         }
                       />
                     </Card>
