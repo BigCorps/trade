@@ -1,22 +1,26 @@
 /**
  * lib/opportunities/types.ts — VigIA Trade
  * ---------------------------------------------------------------------------
- * Contratos compartilhados da Central de Oportunidades.
+ * Contratos compartilhados da Central de Oportunidades e do gerenciamento
+ * auditável de posição.
  *
- * Este arquivo espelha a migração:
+ * Este arquivo espelha principalmente as migrações:
  *   supabase/migrations/20260718210000_opportunities_realtime.sql
+ *   supabase/migrations/20260722010000_position_sizing_risk_management.sql
  *
  * Responsabilidades:
  * - Centralizar os estados aceitos pelo banco.
  * - Tipar oportunidades, decisões, resultados, eventos e ordens vinculadas.
- * - Tipar os argumentos e retornos das RPCs da Central.
+ * - Tipar decisões, snapshots e prévias de dimensionamento de posição.
+ * - Tipar os argumentos e retornos das RPCs usadas pela Central.
  * - Tipar as alterações recebidas pelo Supabase Realtime.
  *
  * Regras importantes:
  * - Este arquivo não consulta o Supabase e não executa ordens.
  * - Valores monetários e percentuais chegam como number pelo PostgREST.
  * - Datas são strings ISO 8601 enquanto permanecem na camada de dados.
- * - Os snapshots JSON preservam o contexto imutável da oportunidade.
+ * - Os snapshots JSON preservam o contexto imutável da oportunidade e do risco.
+ * - Martingale clássico é representado somente por martingale_testnet.
  */
 
 // ---------------------------------------------------------------------------
@@ -109,11 +113,13 @@ export type OpportunityExitDecision = ArrayValue<
 >;
 
 export const EXECUTION_ENVIRONMENTS = ['none', 'testnet', 'real'] as const;
+
 export type ExecutionEnvironment = ArrayValue<
   typeof EXECUTION_ENVIRONMENTS
 >;
 
 export const OPPORTUNITY_DECISION_TYPES = ['entry', 'exit'] as const;
+
 export type OpportunityDecisionType = ArrayValue<
   typeof OPPORTUNITY_DECISION_TYPES
 >;
@@ -182,6 +188,93 @@ export const ORDER_STATUSES = [
 export type OrderStatus = ArrayValue<typeof ORDER_STATUSES>;
 
 // ---------------------------------------------------------------------------
+// Valores do gerenciamento de posição
+// ---------------------------------------------------------------------------
+
+export const POSITION_SIZING_MODES = [
+  'fixed',
+  'anti_martingale',
+  'martingale_testnet',
+] as const;
+
+export type PositionSizingMode = ArrayValue<
+  typeof POSITION_SIZING_MODES
+>;
+
+export const POSITION_SIZING_SCOPES = [
+  'account',
+  'strategy',
+  'symbol',
+  'symbol_timeframe',
+] as const;
+
+export type PositionSizingScope = ArrayValue<
+  typeof POSITION_SIZING_SCOPES
+>;
+
+export const POSITION_SIZING_SOURCES = [
+  'manual_opportunity',
+  'manual_daytrade_testnet',
+  'manual_order',
+  'auto_trade',
+  'system_recovery',
+] as const;
+
+export type PositionSizingSource = ArrayValue<
+  typeof POSITION_SIZING_SOURCES
+>;
+
+export const POSITION_SIZING_STATUSES = [
+  'reserved',
+  'applied',
+  'cancelled',
+  'failed',
+] as const;
+
+export type PositionSizingStatus = ArrayValue<
+  typeof POSITION_SIZING_STATUSES
+>;
+
+export const POSITION_SIZING_ENVIRONMENTS = [
+  'testnet',
+  'real',
+] as const;
+
+export type PositionSizingEnvironment = ArrayValue<
+  typeof POSITION_SIZING_ENVIRONMENTS
+>;
+
+export const POSITION_SIZING_RESULT_CLASSES = [
+  'win',
+  'loss',
+  'neutral',
+] as const;
+
+export type PositionSizingResultClass = ArrayValue<
+  typeof POSITION_SIZING_RESULT_CLASSES
+>;
+
+export const POSITION_SIZING_LIMITING_RULES = [
+  'martingale_testnet_only',
+  'consecutive_loss_pause',
+  'max_order_usdt',
+  'balance_usage_limit',
+  'available_balance_required',
+] as const;
+
+export type KnownPositionSizingLimitingRule = ArrayValue<
+  typeof POSITION_SIZING_LIMITING_RULES
+>;
+
+/**
+ * O banco preserva as regras como JSON para permitir novas restrições sem
+ * exigir que a interface seja publicada simultaneamente.
+ */
+export type PositionSizingLimitingRule =
+  | KnownPositionSizingLimitingRule
+  | (string & {});
+
+// ---------------------------------------------------------------------------
 // Snapshots preservados em JSONB
 // ---------------------------------------------------------------------------
 
@@ -238,6 +331,182 @@ export interface OpportunityMetadata extends JsonObject {
   emailSentAt?: ISODateString;
   emailMessageId?: string;
   lastRevalidationAt?: ISODateString;
+}
+
+export interface PositionSizingPolicySnapshot extends JsonObject {
+  sizing_mode?: PositionSizingMode;
+  sizing_scope?: PositionSizingScope;
+  policy_version?: string;
+
+  base_risk_percent?: number;
+  min_risk_percent?: number;
+  max_risk_percent?: number;
+
+  win_multiplier?: number;
+  loss_multiplier?: number;
+  loss_reduction_start?: number;
+
+  martingale_loss_multiplier?: number;
+  max_multiplier?: number;
+  martingale_max_multiplier?: number;
+
+  max_sequence_steps?: number;
+  pause_after_consecutive_losses?: number;
+
+  balance_usage_limit_pct?: number;
+  estimated_fee_rate_pct?: number;
+  estimated_slippage_pct?: number;
+}
+
+export interface PositionSizingSequenceSnapshot extends JsonObject {
+  last_result?: PositionSizingResultClass;
+  consecutive_wins?: number;
+  consecutive_losses?: number;
+  streak_length?: number;
+
+  prior_result_source?: string | null;
+  prior_outcome_id?: UUID | null;
+  prior_journal_id?: UUID | null;
+  prior_order_id?: UUID | null;
+  prior_net_pnl_usdt?: number | null;
+  prior_result_r?: number | null;
+  prior_resolved_at?: ISODateString | null;
+
+  inspected_count?: number;
+  execution_environment?: PositionSizingEnvironment;
+  scope?: PositionSizingScope;
+
+  symbol?: string | null;
+  timeframe?: string | null;
+  strategy?: string | null;
+}
+
+export interface PositionSizingCalculationInput extends JsonObject {
+  user_id?: UUID;
+  opportunity_id?: UUID | null;
+  daytrade_setup_id?: UUID | null;
+  auto_trade_attempt_id?: UUID | null;
+
+  source?: PositionSizingSource;
+  execution_environment?: PositionSizingEnvironment;
+
+  symbol?: string | null;
+  timeframe?: string | null;
+  strategy?: string | null;
+  strategy_version?: string | null;
+
+  available_balance_usdt?: number | null;
+  base_quote_amount?: number | null;
+  max_order_usdt?: number;
+
+  entry_reference?: number | null;
+  stop_reference?: number | null;
+  stop_distance_pct?: number | null;
+
+  sequence?: PositionSizingSequenceSnapshot | JsonObject;
+  account_sequence?: PositionSizingSequenceSnapshot | JsonObject;
+}
+
+export interface PositionSizingResultSnapshot extends JsonObject {
+  request_id?: UUID;
+  order_id?: UUID | null;
+
+  requested_quote_amount?: number | null;
+  effective_quote_amount?: number | null;
+
+  planned_risk_usdt?: number | null;
+  actual_risk_usdt?: number | null;
+
+  entry_price?: number | null;
+  stop_price?: number | null;
+  target_price?: number | null;
+
+  applied_risk_percent?: number | null;
+  sizing_effect_pnl_usdt?: number | null;
+  fixed_risk_equivalent_pnl_usdt?: number | null;
+
+  applied_at?: ISODateString | null;
+  updated_at?: ISODateString;
+}
+
+export interface PositionSizingSnapshot extends JsonObject {
+  decision_id?: UUID;
+  request_id?: UUID;
+
+  source?: PositionSizingSource;
+  status?: PositionSizingStatus;
+  execution_environment?: PositionSizingEnvironment;
+
+  sizing_mode?: PositionSizingMode;
+  sizing_scope?: PositionSizingScope;
+  policy_version?: string;
+
+  base_quote_amount?: number | null;
+  available_balance_usdt?: number | null;
+  balance_usage_limit_pct?: number;
+
+  base_risk_percent?: number;
+  target_risk_percent?: number | null;
+  applied_risk_percent?: number | null;
+  risk_multiplier?: number;
+  sequence_step?: number;
+
+  consecutive_wins?: number;
+  consecutive_losses?: number;
+  account_consecutive_wins?: number;
+  account_consecutive_losses?: number;
+
+  stop_distance_pct?: number;
+  estimated_fee_rate_pct?: number;
+  estimated_slippage_pct?: number;
+  estimated_total_cost_pct?: number;
+  estimated_loss_rate_pct?: number;
+
+  planned_risk_usdt?: number | null;
+  actual_risk_usdt?: number | null;
+  requested_quote_amount?: number | null;
+  effective_quote_amount?: number | null;
+  max_order_usdt?: number;
+
+  limiting_rules?: PositionSizingLimitingRule[] | JsonArray;
+
+  calculation_input?: PositionSizingCalculationInput | JsonObject;
+  policy_snapshot?: PositionSizingPolicySnapshot | JsonObject;
+  result_snapshot?: PositionSizingResultSnapshot | JsonObject;
+
+  applied_at?: ISODateString | null;
+  created_at?: ISODateString;
+  updated_at?: ISODateString;
+}
+
+// ---------------------------------------------------------------------------
+// Configurações de dimensionamento do usuário
+// ---------------------------------------------------------------------------
+
+export interface PositionSizingSettings {
+  auto_trade_sizing_mode: PositionSizingMode;
+  auto_trade_sizing_scope: PositionSizingScope;
+
+  auto_trade_base_risk_percent: number;
+  auto_trade_min_risk_percent: number;
+  auto_trade_max_risk_percent: number;
+
+  auto_trade_win_multiplier: number;
+  auto_trade_loss_multiplier: number;
+  auto_trade_loss_reduction_start: number;
+
+  auto_trade_martingale_loss_multiplier: number;
+  auto_trade_max_multiplier: number;
+  auto_trade_martingale_max_multiplier: number;
+
+  auto_trade_max_sequence_steps: number;
+  auto_trade_pause_after_consecutive_losses: number;
+
+  auto_trade_balance_usage_limit_pct: number;
+  auto_trade_estimated_fee_rate_pct: number;
+  auto_trade_estimated_slippage_pct: number;
+
+  auto_trade_sizing_policy_version: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -299,6 +568,9 @@ export interface TradeOpportunity {
   warnings: string[] | JsonArray;
   metadata: OpportunityMetadata | JsonObject;
 
+  position_sizing_decision_id: UUID | null;
+  sizing_snapshot: PositionSizingSnapshot | JsonObject;
+
   created_at: ISODateString;
   updated_at: ISODateString;
 }
@@ -347,6 +619,11 @@ export interface OpportunityOutcome {
   stop_hit_at: ISODateString | null;
   resolved_at: ISODateString | null;
 
+  position_sizing_decision_id: UUID | null;
+  fixed_risk_equivalent_pnl_usdt: number | null;
+  sizing_effect_pnl_usdt: number | null;
+  sizing_snapshot: PositionSizingSnapshot | JsonObject;
+
   metadata: JsonObject;
   created_at: ISODateString;
   updated_at: ISODateString;
@@ -361,6 +638,75 @@ export interface OpportunityEvent {
   actor_type: OpportunityEventActor;
   event_data: JsonObject;
   created_at: ISODateString;
+}
+
+// ---------------------------------------------------------------------------
+// Decisão auditável de dimensionamento
+// ---------------------------------------------------------------------------
+
+export interface PositionSizingDecision {
+  id: UUID;
+  user_id: UUID;
+
+  opportunity_id: UUID | null;
+  daytrade_setup_id: UUID | null;
+  daytrade_journal_id: UUID | null;
+  auto_trade_attempt_id: UUID | null;
+  order_id: UUID | null;
+
+  prior_outcome_id: UUID | null;
+  prior_journal_id: UUID | null;
+  prior_order_id: UUID | null;
+
+  resolved_outcome_id: UUID | null;
+  resolved_journal_id: UUID | null;
+
+  request_id: UUID;
+
+  source: PositionSizingSource;
+  status: PositionSizingStatus;
+  execution_environment: PositionSizingEnvironment;
+  sizing_mode: PositionSizingMode;
+  sizing_scope: PositionSizingScope;
+  policy_version: string;
+
+  base_quote_amount: number | null;
+  available_balance_usdt: number | null;
+  balance_usage_limit_pct: number;
+
+  base_risk_percent: number;
+  target_risk_percent: number | null;
+  applied_risk_percent: number | null;
+  risk_multiplier: number;
+  sequence_step: number;
+
+  consecutive_wins: number;
+  consecutive_losses: number;
+  account_consecutive_wins: number;
+  account_consecutive_losses: number;
+
+  stop_distance_pct: number;
+  estimated_fee_rate_pct: number;
+  estimated_slippage_pct: number;
+  estimated_total_cost_pct: number;
+  estimated_loss_rate_pct: number;
+
+  planned_risk_usdt: number | null;
+  actual_risk_usdt: number | null;
+
+  requested_quote_amount: number | null;
+  effective_quote_amount: number | null;
+  max_order_usdt: number;
+
+  limiting_rules: PositionSizingLimitingRule[] | JsonArray;
+
+  calculation_input: PositionSizingCalculationInput | JsonObject;
+  policy_snapshot: PositionSizingPolicySnapshot | JsonObject;
+  result_snapshot: PositionSizingResultSnapshot | JsonObject;
+
+  applied_at: ISODateString | null;
+  created_at: ISODateString;
+  updated_at: ISODateString;
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +748,58 @@ export interface OpportunityOrder {
 
   binance_status: string | null;
   unprotected_reason: string | null;
+
+  position_sizing_decision_id: UUID | null;
+  sizing_mode: PositionSizingMode;
+  base_risk_percent: number | null;
+  target_risk_percent: number | null;
+  applied_risk_percent: number | null;
+  risk_multiplier: number;
+  planned_risk_usdt: number | null;
+  actual_risk_usdt: number | null;
+  sizing_snapshot: PositionSizingSnapshot | JsonObject;
+}
+
+// ---------------------------------------------------------------------------
+// Campos reutilizáveis por outras tabelas
+// ---------------------------------------------------------------------------
+
+export interface AutoTradeAttemptPositionSizingFields {
+  position_sizing_decision_id: UUID | null;
+
+  sizing_mode: PositionSizingMode;
+  sizing_scope: PositionSizingScope;
+  sizing_policy_version: string;
+
+  base_risk_percent: number | null;
+  target_risk_percent: number | null;
+  applied_risk_percent: number | null;
+  risk_multiplier: number;
+  sequence_step: number;
+
+  consecutive_wins: number;
+  consecutive_losses: number;
+  account_consecutive_wins: number;
+  account_consecutive_losses: number;
+
+  planned_risk_usdt: number | null;
+  effective_quote_amount: number | null;
+
+  sizing_snapshot: PositionSizingSnapshot | JsonObject;
+}
+
+export interface DayTradeJournalPositionSizingFields {
+  position_sizing_decision_id: UUID | null;
+
+  sizing_mode: PositionSizingMode;
+  base_risk_percent: number | null;
+  applied_risk_percent: number | null;
+  risk_multiplier: number;
+
+  fixed_risk_equivalent_pnl_usdt: number | null;
+  sizing_effect_pnl_usdt: number | null;
+
+  sizing_snapshot: PositionSizingSnapshot | JsonObject;
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +811,7 @@ export interface OpportunityRelations {
   outcomes: OpportunityOutcome[];
   events: OpportunityEvent[];
   orders: OpportunityOrder[];
+  positionSizingDecisions?: PositionSizingDecision[];
 }
 
 export interface OpportunityDetails extends OpportunityRelations {
@@ -424,6 +823,7 @@ export interface OpportunityListItem extends TradeOpportunity {
   outcomes?: OpportunityOutcome[];
   events?: OpportunityEvent[];
   orders?: OpportunityOrder[];
+  positionSizingDecisions?: PositionSizingDecision[];
 }
 
 export interface OpportunityPerformanceSummary {
@@ -451,11 +851,99 @@ export interface OpportunityPerformanceSummary {
   executedExpectancyR: number | null;
   executedProfitFactor: number | null;
 
+  /**
+   * Campos opcionais enquanto consumidores antigos ainda não calculam o efeito
+   * do dimensionamento. O arquivo metrics.ts atualizado passa a preenchê-los.
+   */
+  executedFixedRiskEquivalentPnlUsdt?: number;
+  executedSizingEffectPnlUsdt?: number;
+
   avoidedLosses: number;
   missedWins: number;
   maximumDrawdownR: number | null;
   maximumConsecutiveWins: number;
   maximumConsecutiveLosses: number;
+}
+
+// ---------------------------------------------------------------------------
+// Prévia e snapshots retornados pelas RPCs
+// ---------------------------------------------------------------------------
+
+export interface PositionSizingPreview {
+  user_id: UUID;
+  opportunity_id: UUID;
+  source: PositionSizingSource;
+
+  execution_environment: PositionSizingEnvironment;
+  sizing_mode: PositionSizingMode;
+  sizing_scope: PositionSizingScope;
+  policy_version: string;
+
+  symbol: string;
+  timeframe: string;
+  strategy: string;
+  strategy_version: string;
+
+  base_quote_amount: number | null;
+  available_balance_usdt: number | null;
+  balance_usage_limit_pct: number;
+  balance_quote_limit_usdt: number | null;
+  max_order_usdt: number;
+
+  base_risk_percent: number;
+  min_risk_percent: number;
+  max_risk_percent: number;
+  target_risk_percent: number | null;
+  applied_risk_percent: number | null;
+
+  risk_multiplier: number;
+  sequence_step: number;
+
+  consecutive_wins: number;
+  consecutive_losses: number;
+  account_consecutive_wins: number;
+  account_consecutive_losses: number;
+
+  prior_result_source: string | null;
+  prior_outcome_id: UUID | null;
+  prior_journal_id: UUID | null;
+  prior_order_id: UUID | null;
+  last_result: PositionSizingResultClass;
+
+  stop_distance_pct: number;
+  estimated_fee_rate_pct: number;
+  estimated_slippage_pct: number;
+  estimated_total_cost_pct: number;
+  estimated_loss_rate_pct: number;
+
+  planned_risk_usdt: number | null;
+  requested_quote_amount: number | null;
+  effective_quote_amount: number | null;
+
+  limiting_rules: PositionSizingLimitingRule[] | JsonArray;
+
+  should_pause: boolean;
+  executable: boolean;
+  blocked_reason: string | null;
+
+  sequence: PositionSizingSequenceSnapshot | JsonObject;
+  account_sequence: PositionSizingSequenceSnapshot | JsonObject;
+  policy: PositionSizingPolicySnapshot | JsonObject;
+
+  calculated_at: ISODateString;
+}
+
+export interface ReservePositionSizingResult {
+  ok: boolean;
+  reused?: boolean;
+  decision: PositionSizingDecision;
+  preview?: PositionSizingPreview | JsonObject;
+}
+
+export interface ApplyPositionSizingResult {
+  ok: boolean;
+  decision: PositionSizingDecision;
+  sizing_snapshot: PositionSizingSnapshot | JsonObject;
 }
 
 // ---------------------------------------------------------------------------
@@ -488,12 +976,38 @@ export interface CreateOpportunityFromDayTradeSetupArgs {
   p_expires_at?: ISODateString | null;
 }
 
+export interface PreviewPositionSizingArgs {
+  p_opportunity_id: UUID;
+  p_available_balance_usdt?: number | null;
+  p_user_id?: UUID | null;
+  p_execution_environment?: PositionSizingEnvironment | null;
+  p_source?: PositionSizingSource;
+}
+
+export interface ReservePositionSizingDecisionArgs {
+  p_opportunity_id: UUID;
+  p_available_balance_usdt: number;
+  p_auto_trade_attempt_id?: UUID | null;
+  p_source?: PositionSizingSource;
+  p_user_id?: UUID | null;
+  p_execution_environment?: PositionSizingEnvironment | null;
+}
+
+export interface ApplyPositionSizingDecisionArgs {
+  p_decision_id: UUID;
+  p_order_id: UUID;
+  p_effective_quote_amount: number;
+  p_actual_risk_usdt?: number | null;
+  p_result_snapshot?: PositionSizingResultSnapshot | JsonObject;
+}
+
 export interface OpportunityRpcArgsMap {
   mark_opportunity_seen: MarkOpportunitySeenArgs;
   begin_opportunity_review: BeginOpportunityReviewArgs;
   accept_opportunity: AcceptOpportunityArgs;
   reject_opportunity: RejectOpportunityArgs;
   create_opportunity_from_daytrade_setup: CreateOpportunityFromDayTradeSetupArgs;
+  preview_position_sizing: PreviewPositionSizingArgs;
 }
 
 export interface OpportunityRpcResultMap {
@@ -502,6 +1016,7 @@ export interface OpportunityRpcResultMap {
   accept_opportunity: OpportunityLifecycleStatus;
   reject_opportunity: OpportunityLifecycleStatus;
   create_opportunity_from_daytrade_setup: UUID;
+  preview_position_sizing: PositionSizingPreview;
 }
 
 export type OpportunityRpcName = keyof OpportunityRpcArgsMap;
@@ -516,6 +1031,7 @@ export interface OpportunityRealtimeTableMap {
   opportunity_outcomes: OpportunityOutcome;
   opportunity_events: OpportunityEvent;
   orders: OpportunityOrder;
+  position_sizing_decisions: PositionSizingDecision;
 }
 
 export type OpportunityRealtimeTable = keyof OpportunityRealtimeTableMap;
@@ -548,6 +1064,11 @@ export interface OpportunityFilters {
   timeframes?: string[];
   strategies?: string[];
   strategyVersions?: string[];
+
+  sizingModes?: PositionSizingMode[];
+  sizingScopes?: PositionSizingScope[];
+  sizingStatuses?: PositionSizingStatus[];
+
   detectedFrom?: ISODateString;
   detectedTo?: ISODateString;
 }
