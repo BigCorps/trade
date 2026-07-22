@@ -97,11 +97,77 @@ const OPEN_STATUSES = new Set([
   'oco_ativa',
 ]);
 
+type PositionSizingMode =
+  | 'fixed'
+  | 'anti_martingale'
+  | 'martingale_testnet';
+
+type PositionSizingScope =
+  | 'account'
+  | 'strategy'
+  | 'symbol'
+  | 'symbol_timeframe';
+
+const POSITION_SIZING_MODE_LABEL: Record<PositionSizingMode, string> = {
+  fixed: 'Valor fixo',
+  anti_martingale: 'Anti-martingale',
+  martingale_testnet: 'Martingale experimental',
+};
+
+const POSITION_SIZING_SCOPE_LABEL: Record<PositionSizingScope, string> = {
+  account: 'Conta inteira',
+  strategy: 'Estratégia',
+  symbol: 'Ativo',
+  symbol_timeframe: 'Ativo + timeframe',
+};
+
+const POSITION_SIZING_ORDER_FIELDS = [
+  'position_sizing_decision_id',
+  'sizing_mode',
+  'base_risk_percent',
+  'target_risk_percent',
+  'applied_risk_percent',
+  'risk_multiplier',
+  'planned_risk_usdt',
+  'actual_risk_usdt',
+  'sizing_snapshot',
+].join(', ');
+
 const ORDER_SELECT_BASE =
-  'id, symbol, status, is_testnet, quote_amount, qty, entry_price, exit_price, stop_price, target_price, pnl_usdt, erro, criado_em, request_id, protected_at, last_checked_at, binance_status, unprotected_reason';
+  `id, symbol, status, is_testnet, quote_amount, qty, entry_price, exit_price, stop_price, target_price, pnl_usdt, erro, criado_em, request_id, protected_at, last_checked_at, binance_status, unprotected_reason, ${POSITION_SIZING_ORDER_FIELDS}`;
 
 const ORDER_SELECT_WITH_OPPORTUNITY =
-  'id, symbol, status, is_testnet, quote_amount, qty, entry_price, exit_price, stop_price, target_price, pnl_usdt, erro, criado_em, request_id, protected_at, last_checked_at, binance_status, unprotected_reason, opportunity_id';
+  `id, symbol, status, is_testnet, quote_amount, qty, entry_price, exit_price, stop_price, target_price, pnl_usdt, erro, criado_em, request_id, protected_at, last_checked_at, binance_status, unprotected_reason, opportunity_id, ${POSITION_SIZING_ORDER_FIELDS}`;
+
+const POSITION_SIZING_DECISION_SELECT = [
+  'id',
+  'order_id',
+  'source',
+  'status',
+  'execution_environment',
+  'sizing_mode',
+  'sizing_scope',
+  'policy_version',
+  'available_balance_usdt',
+  'balance_usage_limit_pct',
+  'base_risk_percent',
+  'target_risk_percent',
+  'applied_risk_percent',
+  'risk_multiplier',
+  'sequence_step',
+  'consecutive_wins',
+  'consecutive_losses',
+  'account_consecutive_wins',
+  'account_consecutive_losses',
+  'planned_risk_usdt',
+  'actual_risk_usdt',
+  'requested_quote_amount',
+  'effective_quote_amount',
+  'limiting_rules',
+  'calculation_input',
+  'applied_at',
+  'created_at',
+].join(',');
 
 const OPPORTUNITY_STATUS_LABEL: Record<string, { label: string; color: string }> = {
   pending: { label: 'pendente', color: S.a },
@@ -261,6 +327,51 @@ interface OrderRow {
   binance_status: string | null;
   unprotected_reason: string | null;
   opportunity_id: string | null;
+
+  position_sizing_decision_id: string | null;
+  sizing_mode: PositionSizingMode | null;
+  base_risk_percent: number | null;
+  target_risk_percent: number | null;
+  applied_risk_percent: number | null;
+  risk_multiplier: number | null;
+  planned_risk_usdt: number | null;
+  actual_risk_usdt: number | null;
+  sizing_snapshot: Record<string, unknown> | null;
+}
+
+interface PositionSizingDecisionRow {
+  id: string;
+  order_id: string | null;
+  source: string;
+  status: string;
+  execution_environment: 'testnet' | 'real';
+  sizing_mode: PositionSizingMode;
+  sizing_scope: PositionSizingScope;
+  policy_version: string;
+
+  available_balance_usdt: number | null;
+  balance_usage_limit_pct: number;
+  base_risk_percent: number;
+  target_risk_percent: number | null;
+  applied_risk_percent: number | null;
+  risk_multiplier: number;
+  sequence_step: number;
+
+  consecutive_wins: number;
+  consecutive_losses: number;
+  account_consecutive_wins: number;
+  account_consecutive_losses: number;
+
+  planned_risk_usdt: number | null;
+  actual_risk_usdt: number | null;
+  requested_quote_amount: number | null;
+  effective_quote_amount: number | null;
+
+  limiting_rules: string[];
+  calculation_input: Record<string, unknown>;
+
+  applied_at: string | null;
+  created_at: string;
 }
 
 interface OpportunitySummary {
@@ -302,6 +413,25 @@ interface AutoTradeSettings {
   auto_trade_enabled: boolean;
   auto_trade_environment: 'testnet' | 'real';
   auto_trade_quote_amount: number;
+
+  auto_trade_sizing_mode: PositionSizingMode;
+  auto_trade_sizing_scope: PositionSizingScope;
+  auto_trade_base_risk_percent: number;
+  auto_trade_min_risk_percent: number;
+  auto_trade_max_risk_percent: number;
+  auto_trade_win_multiplier: number;
+  auto_trade_loss_multiplier: number;
+  auto_trade_loss_reduction_start: number;
+  auto_trade_martingale_loss_multiplier: number;
+  auto_trade_max_multiplier: number;
+  auto_trade_martingale_max_multiplier: number;
+  auto_trade_max_sequence_steps: number;
+  auto_trade_pause_after_consecutive_losses: number;
+  auto_trade_balance_usage_limit_pct: number;
+  auto_trade_estimated_fee_rate_pct: number;
+  auto_trade_estimated_slippage_pct: number;
+  auto_trade_sizing_policy_version: string;
+
   auto_trade_symbols: string[];
   auto_trade_timeframes: string[];
   auto_trade_strategies: string[];
@@ -322,6 +452,25 @@ interface AutoTradeForm {
   auto_trade_enabled: boolean;
   auto_trade_environment: 'testnet' | 'real';
   auto_trade_quote_amount: string;
+
+  auto_trade_sizing_mode: PositionSizingMode;
+  auto_trade_sizing_scope: PositionSizingScope;
+  auto_trade_base_risk_percent: string;
+  auto_trade_min_risk_percent: string;
+  auto_trade_max_risk_percent: string;
+  auto_trade_win_multiplier: string;
+  auto_trade_loss_multiplier: string;
+  auto_trade_loss_reduction_start: string;
+  auto_trade_martingale_loss_multiplier: string;
+  auto_trade_max_multiplier: string;
+  auto_trade_martingale_max_multiplier: string;
+  auto_trade_max_sequence_steps: string;
+  auto_trade_pause_after_consecutive_losses: string;
+  auto_trade_balance_usage_limit_pct: string;
+  auto_trade_estimated_fee_rate_pct: string;
+  auto_trade_estimated_slippage_pct: string;
+  auto_trade_sizing_policy_version: string;
+
   auto_trade_symbols: string[];
   auto_trade_timeframes: string[];
   auto_trade_strategies: string[];
@@ -368,6 +517,25 @@ const DEFAULT_AUTO_TRADE: AutoTradeSettings = {
   auto_trade_enabled: false,
   auto_trade_environment: 'testnet',
   auto_trade_quote_amount: 25,
+
+  auto_trade_sizing_mode: 'fixed',
+  auto_trade_sizing_scope: 'strategy',
+  auto_trade_base_risk_percent: 0.5,
+  auto_trade_min_risk_percent: 0.25,
+  auto_trade_max_risk_percent: 1,
+  auto_trade_win_multiplier: 1.25,
+  auto_trade_loss_multiplier: 0.5,
+  auto_trade_loss_reduction_start: 2,
+  auto_trade_martingale_loss_multiplier: 2,
+  auto_trade_max_multiplier: 1.5,
+  auto_trade_martingale_max_multiplier: 4,
+  auto_trade_max_sequence_steps: 2,
+  auto_trade_pause_after_consecutive_losses: 3,
+  auto_trade_balance_usage_limit_pct: 95,
+  auto_trade_estimated_fee_rate_pct: 0.1,
+  auto_trade_estimated_slippage_pct: 0.05,
+  auto_trade_sizing_policy_version: '1.0.0',
+
   auto_trade_symbols: [],
   auto_trade_timeframes: [],
   auto_trade_strategies: ['trend_breakout'],
@@ -395,48 +563,164 @@ function normalizeTextArray(value: unknown): string[] {
   )];
 }
 
+function normalizeSizingMode(value: unknown): PositionSizingMode {
+  return value === 'anti_martingale' ||
+      value === 'martingale_testnet'
+    ? value
+    : 'fixed';
+}
+
+function normalizeSizingScope(value: unknown): PositionSizingScope {
+  return value === 'account' ||
+      value === 'symbol' ||
+      value === 'symbol_timeframe'
+    ? value
+    : 'strategy';
+}
+
 function normalizeAutoTradeSettings(value: unknown): AutoTradeSettings {
   const row = recordValue(value);
   const environment = row.auto_trade_environment === 'real' ? 'real' : 'testnet';
+
+  const policyVersion =
+    typeof row.auto_trade_sizing_policy_version === 'string' &&
+      row.auto_trade_sizing_policy_version.trim()
+      ? row.auto_trade_sizing_policy_version.trim()
+      : DEFAULT_AUTO_TRADE.auto_trade_sizing_policy_version;
 
   return {
     auto_trade_enabled: row.auto_trade_enabled === true,
     auto_trade_environment: environment,
     auto_trade_quote_amount:
-      numberValue(row.auto_trade_quote_amount) ?? DEFAULT_AUTO_TRADE.auto_trade_quote_amount,
+      numberValue(row.auto_trade_quote_amount) ??
+      DEFAULT_AUTO_TRADE.auto_trade_quote_amount,
+
+    auto_trade_sizing_mode:
+      normalizeSizingMode(row.auto_trade_sizing_mode),
+
+    auto_trade_sizing_scope:
+      normalizeSizingScope(row.auto_trade_sizing_scope),
+
+    auto_trade_base_risk_percent:
+      numberValue(row.auto_trade_base_risk_percent) ??
+      DEFAULT_AUTO_TRADE.auto_trade_base_risk_percent,
+
+    auto_trade_min_risk_percent:
+      numberValue(row.auto_trade_min_risk_percent) ??
+      DEFAULT_AUTO_TRADE.auto_trade_min_risk_percent,
+
+    auto_trade_max_risk_percent:
+      numberValue(row.auto_trade_max_risk_percent) ??
+      DEFAULT_AUTO_TRADE.auto_trade_max_risk_percent,
+
+    auto_trade_win_multiplier:
+      numberValue(row.auto_trade_win_multiplier) ??
+      DEFAULT_AUTO_TRADE.auto_trade_win_multiplier,
+
+    auto_trade_loss_multiplier:
+      numberValue(row.auto_trade_loss_multiplier) ??
+      DEFAULT_AUTO_TRADE.auto_trade_loss_multiplier,
+
+    auto_trade_loss_reduction_start:
+      numberValue(row.auto_trade_loss_reduction_start) ??
+      DEFAULT_AUTO_TRADE.auto_trade_loss_reduction_start,
+
+    auto_trade_martingale_loss_multiplier:
+      numberValue(row.auto_trade_martingale_loss_multiplier) ??
+      DEFAULT_AUTO_TRADE.auto_trade_martingale_loss_multiplier,
+
+    auto_trade_max_multiplier:
+      numberValue(row.auto_trade_max_multiplier) ??
+      DEFAULT_AUTO_TRADE.auto_trade_max_multiplier,
+
+    auto_trade_martingale_max_multiplier:
+      numberValue(row.auto_trade_martingale_max_multiplier) ??
+      DEFAULT_AUTO_TRADE.auto_trade_martingale_max_multiplier,
+
+    auto_trade_max_sequence_steps:
+      numberValue(row.auto_trade_max_sequence_steps) ??
+      DEFAULT_AUTO_TRADE.auto_trade_max_sequence_steps,
+
+    auto_trade_pause_after_consecutive_losses:
+      numberValue(row.auto_trade_pause_after_consecutive_losses) ??
+      DEFAULT_AUTO_TRADE.auto_trade_pause_after_consecutive_losses,
+
+    auto_trade_balance_usage_limit_pct:
+      numberValue(row.auto_trade_balance_usage_limit_pct) ??
+      DEFAULT_AUTO_TRADE.auto_trade_balance_usage_limit_pct,
+
+    auto_trade_estimated_fee_rate_pct:
+      numberValue(row.auto_trade_estimated_fee_rate_pct) ??
+      DEFAULT_AUTO_TRADE.auto_trade_estimated_fee_rate_pct,
+
+    auto_trade_estimated_slippage_pct:
+      numberValue(row.auto_trade_estimated_slippage_pct) ??
+      DEFAULT_AUTO_TRADE.auto_trade_estimated_slippage_pct,
+
+    auto_trade_sizing_policy_version: policyVersion,
+
     auto_trade_symbols: keepKnown(
       normalizeTextArray(row.auto_trade_symbols).map((item) => item.toUpperCase()),
       AUTO_TRADE_SYMBOL_OPTIONS,
     ),
+
     auto_trade_timeframes: keepKnown(
       normalizeTextArray(row.auto_trade_timeframes),
       AUTO_TRADE_TIMEFRAME_OPTIONS,
     ),
+
     auto_trade_strategies: keepKnown(
       normalizeTextArray(row.auto_trade_strategies),
       AUTO_TRADE_STRATEGY_OPTIONS.map((strategy) => strategy.value),
     ),
+
     auto_trade_min_score_pct:
-      numberValue(row.auto_trade_min_score_pct) ?? DEFAULT_AUTO_TRADE.auto_trade_min_score_pct,
+      numberValue(row.auto_trade_min_score_pct) ??
+      DEFAULT_AUTO_TRADE.auto_trade_min_score_pct,
+
     auto_trade_min_risk_reward:
-      numberValue(row.auto_trade_min_risk_reward) ?? DEFAULT_AUTO_TRADE.auto_trade_min_risk_reward,
-    auto_trade_require_no_warnings: row.auto_trade_require_no_warnings === true,
+      numberValue(row.auto_trade_min_risk_reward) ??
+      DEFAULT_AUTO_TRADE.auto_trade_min_risk_reward,
+
+    auto_trade_require_no_warnings:
+      row.auto_trade_require_no_warnings === true,
+
     auto_trade_max_orders_per_day:
-      numberValue(row.auto_trade_max_orders_per_day) ?? DEFAULT_AUTO_TRADE.auto_trade_max_orders_per_day,
+      numberValue(row.auto_trade_max_orders_per_day) ??
+      DEFAULT_AUTO_TRADE.auto_trade_max_orders_per_day,
+
     auto_trade_cooldown_minutes:
-      numberValue(row.auto_trade_cooldown_minutes) ?? DEFAULT_AUTO_TRADE.auto_trade_cooldown_minutes,
+      numberValue(row.auto_trade_cooldown_minutes) ??
+      DEFAULT_AUTO_TRADE.auto_trade_cooldown_minutes,
+
     auto_trade_max_attempts:
-      numberValue(row.auto_trade_max_attempts) ?? DEFAULT_AUTO_TRADE.auto_trade_max_attempts,
+      numberValue(row.auto_trade_max_attempts) ??
+      DEFAULT_AUTO_TRADE.auto_trade_max_attempts,
+
     auto_trade_paused_at:
-      typeof row.auto_trade_paused_at === 'string' ? row.auto_trade_paused_at : null,
+      typeof row.auto_trade_paused_at === 'string'
+        ? row.auto_trade_paused_at
+        : null,
+
     auto_trade_pause_reason:
-      typeof row.auto_trade_pause_reason === 'string' ? row.auto_trade_pause_reason : null,
+      typeof row.auto_trade_pause_reason === 'string'
+        ? row.auto_trade_pause_reason
+        : null,
+
     auto_trade_last_run_at:
-      typeof row.auto_trade_last_run_at === 'string' ? row.auto_trade_last_run_at : null,
+      typeof row.auto_trade_last_run_at === 'string'
+        ? row.auto_trade_last_run_at
+        : null,
+
     auto_trade_last_success_at:
-      typeof row.auto_trade_last_success_at === 'string' ? row.auto_trade_last_success_at : null,
+      typeof row.auto_trade_last_success_at === 'string'
+        ? row.auto_trade_last_success_at
+        : null,
+
     auto_trade_last_error:
-      typeof row.auto_trade_last_error === 'string' ? row.auto_trade_last_error : null,
+      typeof row.auto_trade_last_error === 'string'
+        ? row.auto_trade_last_error
+        : null,
   };
 }
 
@@ -445,15 +729,54 @@ function autoTradeToForm(settings: AutoTradeSettings): AutoTradeForm {
     auto_trade_enabled: settings.auto_trade_enabled,
     auto_trade_environment: settings.auto_trade_environment,
     auto_trade_quote_amount: String(settings.auto_trade_quote_amount),
+
+    auto_trade_sizing_mode: settings.auto_trade_sizing_mode,
+    auto_trade_sizing_scope: settings.auto_trade_sizing_scope,
+    auto_trade_base_risk_percent:
+      String(settings.auto_trade_base_risk_percent),
+    auto_trade_min_risk_percent:
+      String(settings.auto_trade_min_risk_percent),
+    auto_trade_max_risk_percent:
+      String(settings.auto_trade_max_risk_percent),
+    auto_trade_win_multiplier:
+      String(settings.auto_trade_win_multiplier),
+    auto_trade_loss_multiplier:
+      String(settings.auto_trade_loss_multiplier),
+    auto_trade_loss_reduction_start:
+      String(settings.auto_trade_loss_reduction_start),
+    auto_trade_martingale_loss_multiplier:
+      String(settings.auto_trade_martingale_loss_multiplier),
+    auto_trade_max_multiplier:
+      String(settings.auto_trade_max_multiplier),
+    auto_trade_martingale_max_multiplier:
+      String(settings.auto_trade_martingale_max_multiplier),
+    auto_trade_max_sequence_steps:
+      String(settings.auto_trade_max_sequence_steps),
+    auto_trade_pause_after_consecutive_losses:
+      String(settings.auto_trade_pause_after_consecutive_losses),
+    auto_trade_balance_usage_limit_pct:
+      String(settings.auto_trade_balance_usage_limit_pct),
+    auto_trade_estimated_fee_rate_pct:
+      String(settings.auto_trade_estimated_fee_rate_pct),
+    auto_trade_estimated_slippage_pct:
+      String(settings.auto_trade_estimated_slippage_pct),
+    auto_trade_sizing_policy_version:
+      settings.auto_trade_sizing_policy_version,
+
     auto_trade_symbols: [...settings.auto_trade_symbols],
     auto_trade_timeframes: [...settings.auto_trade_timeframes],
     auto_trade_strategies: [...settings.auto_trade_strategies],
     auto_trade_min_score_pct: String(settings.auto_trade_min_score_pct),
-    auto_trade_min_risk_reward: String(settings.auto_trade_min_risk_reward),
-    auto_trade_require_no_warnings: settings.auto_trade_require_no_warnings,
-    auto_trade_max_orders_per_day: String(settings.auto_trade_max_orders_per_day),
-    auto_trade_cooldown_minutes: String(settings.auto_trade_cooldown_minutes),
-    auto_trade_max_attempts: String(settings.auto_trade_max_attempts),
+    auto_trade_min_risk_reward:
+      String(settings.auto_trade_min_risk_reward),
+    auto_trade_require_no_warnings:
+      settings.auto_trade_require_no_warnings,
+    auto_trade_max_orders_per_day:
+      String(settings.auto_trade_max_orders_per_day),
+    auto_trade_cooldown_minutes:
+      String(settings.auto_trade_cooldown_minutes),
+    auto_trade_max_attempts:
+      String(settings.auto_trade_max_attempts),
   };
 }
 
@@ -479,19 +802,247 @@ function parseAutoTradeForm(form: AutoTradeForm): {
     auto_trade_enabled: form.auto_trade_enabled,
     auto_trade_environment: form.auto_trade_environment,
     auto_trade_quote_amount: Number(form.auto_trade_quote_amount),
+
+    auto_trade_sizing_mode: form.auto_trade_sizing_mode,
+    auto_trade_sizing_scope: form.auto_trade_sizing_scope,
+    auto_trade_base_risk_percent:
+      Number(form.auto_trade_base_risk_percent),
+    auto_trade_min_risk_percent:
+      Number(form.auto_trade_min_risk_percent),
+    auto_trade_max_risk_percent:
+      Number(form.auto_trade_max_risk_percent),
+    auto_trade_win_multiplier:
+      Number(form.auto_trade_win_multiplier),
+    auto_trade_loss_multiplier:
+      Number(form.auto_trade_loss_multiplier),
+    auto_trade_loss_reduction_start:
+      Number(form.auto_trade_loss_reduction_start),
+    auto_trade_martingale_loss_multiplier:
+      Number(form.auto_trade_martingale_loss_multiplier),
+    auto_trade_max_multiplier:
+      Number(form.auto_trade_max_multiplier),
+    auto_trade_martingale_max_multiplier:
+      Number(form.auto_trade_martingale_max_multiplier),
+    auto_trade_max_sequence_steps:
+      Number(form.auto_trade_max_sequence_steps),
+    auto_trade_pause_after_consecutive_losses:
+      Number(form.auto_trade_pause_after_consecutive_losses),
+    auto_trade_balance_usage_limit_pct:
+      Number(form.auto_trade_balance_usage_limit_pct),
+    auto_trade_estimated_fee_rate_pct:
+      Number(form.auto_trade_estimated_fee_rate_pct),
+    auto_trade_estimated_slippage_pct:
+      Number(form.auto_trade_estimated_slippage_pct),
+    auto_trade_sizing_policy_version:
+      form.auto_trade_sizing_policy_version.trim(),
+
     auto_trade_symbols: symbols,
     auto_trade_timeframes: timeframes,
     auto_trade_strategies: strategies,
     auto_trade_min_score_pct: Number(form.auto_trade_min_score_pct),
     auto_trade_min_risk_reward: Number(form.auto_trade_min_risk_reward),
     auto_trade_require_no_warnings: form.auto_trade_require_no_warnings,
-    auto_trade_max_orders_per_day: Number(form.auto_trade_max_orders_per_day),
-    auto_trade_cooldown_minutes: Number(form.auto_trade_cooldown_minutes),
-    auto_trade_max_attempts: Number(form.auto_trade_max_attempts),
+    auto_trade_max_orders_per_day:
+      Number(form.auto_trade_max_orders_per_day),
+    auto_trade_cooldown_minutes:
+      Number(form.auto_trade_cooldown_minutes),
+    auto_trade_max_attempts:
+      Number(form.auto_trade_max_attempts),
   };
 
   if (!Number.isFinite(values.auto_trade_quote_amount) || values.auto_trade_quote_amount <= 0) {
     return { values: null, error: 'O valor por operação precisa ser maior que zero.' };
+  }
+
+  // Os intervalos correspondem aos limites aplicados pela Edge.
+
+  if (
+    values.auto_trade_sizing_mode === 'martingale_testnet' &&
+    values.auto_trade_environment !== 'testnet'
+  ) {
+    return {
+      values: null,
+      error: 'O martingale experimental só pode ser usado na Testnet.',
+    };
+  }
+
+  if (
+    !Number.isFinite(values.auto_trade_base_risk_percent) ||
+    values.auto_trade_base_risk_percent < 0.01 ||
+    values.auto_trade_base_risk_percent > 10
+  ) {
+    return {
+      values: null,
+      error: 'O risco-base deve ficar entre 0,01% e 10%.',
+    };
+  }
+
+  if (
+    !Number.isFinite(values.auto_trade_min_risk_percent) ||
+    values.auto_trade_min_risk_percent < 0.01 ||
+    values.auto_trade_min_risk_percent >
+      values.auto_trade_base_risk_percent
+  ) {
+    return {
+      values: null,
+      error: 'O risco mínimo deve ficar entre 0,01% e o risco-base.',
+    };
+  }
+
+  if (
+    !Number.isFinite(values.auto_trade_max_risk_percent) ||
+    values.auto_trade_max_risk_percent <
+      values.auto_trade_base_risk_percent ||
+    values.auto_trade_max_risk_percent > 10
+  ) {
+    return {
+      values: null,
+      error: 'O risco máximo deve ser igual ou maior que o risco-base e no máximo 10%.',
+    };
+  }
+
+  if (
+    !Number.isFinite(values.auto_trade_win_multiplier) ||
+    values.auto_trade_win_multiplier < 1 ||
+    values.auto_trade_win_multiplier > 3
+  ) {
+    return {
+      values: null,
+      error: 'O multiplicador após vitória deve ficar entre 1 e 3.',
+    };
+  }
+
+  if (
+    !Number.isFinite(values.auto_trade_loss_multiplier) ||
+    values.auto_trade_loss_multiplier < 0.01 ||
+    values.auto_trade_loss_multiplier > 1
+  ) {
+    return {
+      values: null,
+      error: 'O multiplicador após perda deve ficar entre 0,01 e 1.',
+    };
+  }
+
+  if (
+    !Number.isInteger(values.auto_trade_loss_reduction_start) ||
+    values.auto_trade_loss_reduction_start < 1 ||
+    values.auto_trade_loss_reduction_start > 10
+  ) {
+    return {
+      values: null,
+      error: 'O início da redução deve ficar entre 1 e 10 perdas.',
+    };
+  }
+
+  if (
+    !Number.isFinite(
+      values.auto_trade_martingale_loss_multiplier,
+    ) ||
+    values.auto_trade_martingale_loss_multiplier < 1 ||
+    values.auto_trade_martingale_loss_multiplier > 3
+  ) {
+    return {
+      values: null,
+      error: 'O multiplicador do martingale deve ficar entre 1 e 3.',
+    };
+  }
+
+  if (
+    !Number.isFinite(values.auto_trade_max_multiplier) ||
+    values.auto_trade_max_multiplier < 1 ||
+    values.auto_trade_max_multiplier > 10
+  ) {
+    return {
+      values: null,
+      error: 'O multiplicador máximo do anti-martingale deve ficar entre 1 e 10.',
+    };
+  }
+
+  if (
+    !Number.isFinite(
+      values.auto_trade_martingale_max_multiplier,
+    ) ||
+    values.auto_trade_martingale_max_multiplier < 1 ||
+    values.auto_trade_martingale_max_multiplier > 64
+  ) {
+    return {
+      values: null,
+      error: 'O multiplicador máximo do martingale deve ficar entre 1 e 64.',
+    };
+  }
+
+  if (
+    !Number.isInteger(values.auto_trade_max_sequence_steps) ||
+    values.auto_trade_max_sequence_steps < 0 ||
+    values.auto_trade_max_sequence_steps > 10
+  ) {
+    return {
+      values: null,
+      error: 'As etapas da sequência devem ficar entre 0 e 10.',
+    };
+  }
+
+  if (
+    !Number.isInteger(
+      values.auto_trade_pause_after_consecutive_losses,
+    ) ||
+    values.auto_trade_pause_after_consecutive_losses < 0 ||
+    values.auto_trade_pause_after_consecutive_losses > 20
+  ) {
+    return {
+      values: null,
+      error: 'A pausa automática deve ficar entre 0 e 20 perdas consecutivas.',
+    };
+  }
+
+  if (
+    !Number.isFinite(
+      values.auto_trade_balance_usage_limit_pct,
+    ) ||
+    values.auto_trade_balance_usage_limit_pct < 0.01 ||
+    values.auto_trade_balance_usage_limit_pct > 100
+  ) {
+    return {
+      values: null,
+      error: 'O limite de uso do saldo deve ficar entre 0,01% e 100%.',
+    };
+  }
+
+  if (
+    !Number.isFinite(
+      values.auto_trade_estimated_fee_rate_pct,
+    ) ||
+    values.auto_trade_estimated_fee_rate_pct < 0 ||
+    values.auto_trade_estimated_fee_rate_pct > 5
+  ) {
+    return {
+      values: null,
+      error: 'A taxa estimada deve ficar entre 0% e 5% por execução.',
+    };
+  }
+
+  if (
+    !Number.isFinite(
+      values.auto_trade_estimated_slippage_pct,
+    ) ||
+    values.auto_trade_estimated_slippage_pct < 0 ||
+    values.auto_trade_estimated_slippage_pct > 5
+  ) {
+    return {
+      values: null,
+      error: 'O slippage estimado deve ficar entre 0% e 5% por execução.',
+    };
+  }
+
+  if (
+    !/^[0-9]+\.[0-9]+\.[0-9]+(?:[+-][A-Za-z0-9.-]+)?$/.test(
+      values.auto_trade_sizing_policy_version,
+    )
+  ) {
+    return {
+      values: null,
+      error: 'A versão da política deve seguir o formato 1.0.0.',
+    };
   }
 
   const invalidSymbol = symbols.find(
@@ -706,9 +1257,166 @@ function normalizeOrder(value: unknown): OrderRow {
     request_id: typeof row.request_id === 'string' ? row.request_id : null,
     protected_at: typeof row.protected_at === 'string' ? row.protected_at : null,
     last_checked_at: typeof row.last_checked_at === 'string' ? row.last_checked_at : null,
-    binance_status: typeof row.binance_status === 'string' ? row.binance_status : null,
-    unprotected_reason: typeof row.unprotected_reason === 'string' ? row.unprotected_reason : null,
-    opportunity_id: typeof row.opportunity_id === 'string' ? row.opportunity_id : null,
+    binance_status:
+      typeof row.binance_status === 'string'
+        ? row.binance_status
+        : null,
+
+    unprotected_reason:
+      typeof row.unprotected_reason === 'string'
+        ? row.unprotected_reason
+        : null,
+
+    opportunity_id:
+      typeof row.opportunity_id === 'string'
+        ? row.opportunity_id
+        : null,
+
+    position_sizing_decision_id:
+      typeof row.position_sizing_decision_id === 'string'
+        ? row.position_sizing_decision_id
+        : null,
+
+    sizing_mode:
+      row.sizing_mode === 'fixed' ||
+      row.sizing_mode === 'anti_martingale' ||
+      row.sizing_mode === 'martingale_testnet'
+        ? row.sizing_mode
+        : null,
+
+    base_risk_percent:
+      numberValue(row.base_risk_percent),
+
+    target_risk_percent:
+      numberValue(row.target_risk_percent),
+
+    applied_risk_percent:
+      numberValue(row.applied_risk_percent),
+
+    risk_multiplier:
+      numberValue(row.risk_multiplier),
+
+    planned_risk_usdt:
+      numberValue(row.planned_risk_usdt),
+
+    actual_risk_usdt:
+      numberValue(row.actual_risk_usdt),
+
+    sizing_snapshot:
+      row.sizing_snapshot !== null &&
+      typeof row.sizing_snapshot === 'object' &&
+      !Array.isArray(row.sizing_snapshot)
+        ? row.sizing_snapshot as Record<string, unknown>
+        : null,
+  };
+}
+
+function normalizePositionSizingDecision(
+  value: unknown,
+): PositionSizingDecisionRow {
+  const row = recordValue(value);
+
+  return {
+    id: String(row.id ?? ''),
+    order_id:
+      typeof row.order_id === 'string'
+        ? row.order_id
+        : null,
+
+    source:
+      typeof row.source === 'string'
+        ? row.source
+        : 'unknown',
+
+    status:
+      typeof row.status === 'string'
+        ? row.status
+        : 'reserved',
+
+    execution_environment:
+      row.execution_environment === 'real'
+        ? 'real'
+        : 'testnet',
+
+    sizing_mode:
+      normalizeSizingMode(row.sizing_mode),
+
+    sizing_scope:
+      normalizeSizingScope(row.sizing_scope),
+
+    policy_version:
+      typeof row.policy_version === 'string'
+        ? row.policy_version
+        : '1.0.0',
+
+    available_balance_usdt:
+      numberValue(row.available_balance_usdt),
+
+    balance_usage_limit_pct:
+      numberValue(row.balance_usage_limit_pct) ?? 100,
+
+    base_risk_percent:
+      numberValue(row.base_risk_percent) ?? 0,
+
+    target_risk_percent:
+      numberValue(row.target_risk_percent),
+
+    applied_risk_percent:
+      numberValue(row.applied_risk_percent),
+
+    risk_multiplier:
+      numberValue(row.risk_multiplier) ?? 1,
+
+    sequence_step:
+      numberValue(row.sequence_step) ?? 0,
+
+    consecutive_wins:
+      numberValue(row.consecutive_wins) ?? 0,
+
+    consecutive_losses:
+      numberValue(row.consecutive_losses) ?? 0,
+
+    account_consecutive_wins:
+      numberValue(row.account_consecutive_wins) ?? 0,
+
+    account_consecutive_losses:
+      numberValue(row.account_consecutive_losses) ?? 0,
+
+    planned_risk_usdt:
+      numberValue(row.planned_risk_usdt),
+
+    actual_risk_usdt:
+      numberValue(row.actual_risk_usdt),
+
+    requested_quote_amount:
+      numberValue(row.requested_quote_amount),
+
+    effective_quote_amount:
+      numberValue(row.effective_quote_amount),
+
+    limiting_rules: Array.isArray(row.limiting_rules)
+      ? row.limiting_rules.filter(
+          (item): item is string =>
+            typeof item === 'string',
+        )
+      : [],
+
+    calculation_input:
+      row.calculation_input !== null &&
+      typeof row.calculation_input === 'object' &&
+      !Array.isArray(row.calculation_input)
+        ? row.calculation_input as Record<string, unknown>
+        : {},
+
+    applied_at:
+      typeof row.applied_at === 'string'
+        ? row.applied_at
+        : null,
+
+    created_at:
+      typeof row.created_at === 'string'
+        ? row.created_at
+        : new Date(0).toISOString(),
   };
 }
 
@@ -772,7 +1480,25 @@ export default function ContaPage() {
     () => autoTradeToForm(DEFAULT_AUTO_TRADE),
   );
   const [autoTradeBusy, setAutoTradeBusy] = useState(false);
-  const [autoTradeMsg, setAutoTradeMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [autoTradeMsg, setAutoTradeMsg] = useState<{
+    text: string;
+    ok: boolean;
+  } | null>(null);
+
+  const [
+    sizingDecisions,
+    setSizingDecisions,
+  ] = useState<PositionSizingDecisionRow[]>([]);
+
+  const [
+    sizingDecisionsLoading,
+    setSizingDecisionsLoading,
+  ] = useState(false);
+
+  const [
+    sizingDecisionsError,
+    setSizingDecisionsError,
+  ] = useState('');
 
   const [ordSymbol, setOrdSymbol] = useState('BTCUSDT');
   const [ordAmount, setOrdAmount] = useState('50');
@@ -811,6 +1537,8 @@ export default function ContaPage() {
         setAutoTradeSettings(DEFAULT_AUTO_TRADE);
         setAutoTradeForm(autoTradeToForm(DEFAULT_AUTO_TRADE));
         setAutoTradeMsg(null);
+        setSizingDecisions([]);
+        setSizingDecisionsError('');
       }
     });
 
@@ -867,6 +1595,25 @@ export default function ContaPage() {
         'auto_trade_enabled',
         'auto_trade_environment',
         'auto_trade_quote_amount',
+
+        'auto_trade_sizing_mode',
+        'auto_trade_sizing_scope',
+        'auto_trade_base_risk_percent',
+        'auto_trade_min_risk_percent',
+        'auto_trade_max_risk_percent',
+        'auto_trade_win_multiplier',
+        'auto_trade_loss_multiplier',
+        'auto_trade_loss_reduction_start',
+        'auto_trade_martingale_loss_multiplier',
+        'auto_trade_max_multiplier',
+        'auto_trade_martingale_max_multiplier',
+        'auto_trade_max_sequence_steps',
+        'auto_trade_pause_after_consecutive_losses',
+        'auto_trade_balance_usage_limit_pct',
+        'auto_trade_estimated_fee_rate_pct',
+        'auto_trade_estimated_slippage_pct',
+        'auto_trade_sizing_policy_version',
+
         'auto_trade_symbols',
         'auto_trade_timeframes',
         'auto_trade_strategies',
@@ -894,6 +1641,34 @@ export default function ContaPage() {
 
     setAutoTradeSettings(loaded);
     setAutoTradeForm(autoTradeToForm(loaded));
+  }, [supabase]);
+
+  const loadPositionSizingDecisions = useCallback(async () => {
+    setSizingDecisionsLoading(true);
+    setSizingDecisionsError('');
+
+    const { data, error } = await supabase
+      .from('position_sizing_decisions')
+      .select(POSITION_SIZING_DECISION_SELECT)
+      .order('created_at', { ascending: false })
+      .limit(15);
+
+    if (error) {
+      setSizingDecisions([]);
+      setSizingDecisionsError(
+        `Não foi possível carregar as decisões de risco: ${error.message}`,
+      );
+      setSizingDecisionsLoading(false);
+      return;
+    }
+
+    setSizingDecisions(
+      Array.isArray(data)
+        ? data.map(normalizePositionSizingDecision)
+        : [],
+    );
+
+    setSizingDecisionsLoading(false);
   }, [supabase]);
 
   const loadOrders = useCallback(async () => {
@@ -1000,6 +1775,7 @@ export default function ContaPage() {
       loadKeyStatus(),
       loadRiskSettings(),
       loadAutoTradeSettings(),
+      loadPositionSizingDecisions(),
       loadOrders(),
     ]);
 
@@ -1012,7 +1788,13 @@ export default function ContaPage() {
     }
 
     setAccountLoading(false);
-  }, [loadAutoTradeSettings, loadKeyStatus, loadOrders, loadRiskSettings]);
+  }, [
+    loadAutoTradeSettings,
+    loadKeyStatus,
+    loadOrders,
+    loadPositionSizingDecisions,
+    loadRiskSettings,
+  ]);
 
   useEffect(() => {
     if (!session) return;
@@ -1026,7 +1808,10 @@ export default function ContaPage() {
     const scheduleRefresh = () => {
       if (refreshTimer) clearTimeout(refreshTimer);
       refreshTimer = setTimeout(() => {
-        void loadOrders();
+        void Promise.all([
+          loadOrders(),
+          loadPositionSizingDecisions(),
+        ]);
       }, 250);
     };
 
@@ -1056,13 +1841,24 @@ export default function ContaPage() {
       );
     }
 
+    channel.on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'position_sizing_decisions',
+        filter: `user_id=eq.${session.user.id}`,
+      },
+      scheduleRefresh,
+    );
+
     channel.subscribe();
 
     return () => {
       if (refreshTimer) clearTimeout(refreshTimer);
       void supabase.removeChannel(channel);
     };
-  }, [centralSchemaAvailable, loadOrders, session, supabase]);
+  }, [centralSchemaAvailable, loadOrders, loadPositionSizingDecisions, session, supabase]);
 
   const invoke = useCallback(async (
     payload: Record<string, unknown>,
@@ -1343,6 +2139,20 @@ export default function ContaPage() {
     }
 
     if (
+      parsed.values.auto_trade_environment === 'real' &&
+      parsed.values.auto_trade_sizing_mode ===
+        'martingale_testnet'
+    ) {
+      setAutoTradeMsg({
+        text:
+          'O martingale experimental é proibido em conta real. ' +
+          'Selecione valor fixo ou anti-martingale.',
+        ok: false,
+      });
+      return;
+    }
+
+    if (
       parsed.values.auto_trade_enabled &&
       parsed.values.auto_trade_environment === 'real'
     ) {
@@ -1378,7 +2188,15 @@ export default function ContaPage() {
       await loadAutoTradeSettings();
       setAutoTradeMsg({
         text: parsed.values.auto_trade_enabled
-          ? `Auto Trade ativado em ${parsed.values.auto_trade_environment === 'testnet' ? 'Testnet' : 'conta real'}.`
+          ? `Auto Trade ativado em ${
+              parsed.values.auto_trade_environment === 'testnet'
+                ? 'Testnet'
+                : 'conta real'
+            } com ${
+              POSITION_SIZING_MODE_LABEL[
+                parsed.values.auto_trade_sizing_mode
+              ]
+            }.`
           : 'Configurações salvas. O Auto Trade permanece desativado.',
         ok: true,
       });
@@ -2078,10 +2896,24 @@ export default function ContaPage() {
                   Ambiente
                   <select
                     value={autoTradeForm.auto_trade_environment}
-                    onChange={(event) => setAutoTradeForm((current) => ({
-                      ...current,
-                      auto_trade_environment: event.target.value === 'real' ? 'real' : 'testnet',
-                    }))}
+                    onChange={(event) => {
+                      const environment =
+                        event.target.value === 'real'
+                          ? 'real'
+                          : 'testnet';
+
+                      setAutoTradeForm((current) => ({
+                        ...current,
+                        auto_trade_environment: environment,
+
+                        auto_trade_sizing_mode:
+                          environment === 'real' &&
+                          current.auto_trade_sizing_mode ===
+                            'martingale_testnet'
+                            ? 'fixed'
+                            : current.auto_trade_sizing_mode,
+                      }));
+                    }}
                     disabled={autoTradeBusy}
                     style={{ ...inputStyle, width: 150 }}
                   >
@@ -2091,7 +2923,9 @@ export default function ContaPage() {
                 </label>
 
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim }}>
-                  Valor por operação (USDT)
+                  {autoTradeForm.auto_trade_sizing_mode === 'fixed'
+                    ? 'Valor por operação (USDT)'
+                    : 'Valor-base/fallback (USDT)'}
                   <input
                     type="number"
                     min="0.01"
@@ -2139,6 +2973,662 @@ export default function ContaPage() {
                     style={{ ...inputStyle, width: 160 }}
                   />
                 </label>
+              </div>
+
+              <div
+                style={{
+                  width: '100%',
+                  maxWidth: 680,
+                  border: `1px solid ${S.border}`,
+                  borderRadius: 10,
+                  padding: 14,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 14,
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 700 }}>
+                    Gerenciamento de posição
+                  </div>
+
+                  <div
+                    style={{
+                      color: S.dim,
+                      fontSize: 11,
+                      lineHeight: 1.5,
+                      marginTop: 4,
+                    }}
+                  >
+                    Define quanto será arriscado em cada entrada. O cálculo
+                    final é feito no servidor usando saldo, distância do
+                    stop, taxas, slippage e limites da conta.
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 12,
+                    justifyContent: 'center',
+                    alignItems: 'flex-end',
+                  }}
+                >
+                  <label
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 4,
+                      fontSize: 12,
+                      color: S.dim,
+                    }}
+                  >
+                    Método
+                    <select
+                      value={autoTradeForm.auto_trade_sizing_mode}
+                      onChange={(event) => {
+                        const mode =
+                          normalizeSizingMode(event.target.value);
+
+                        setAutoTradeForm((current) => ({
+                          ...current,
+                          auto_trade_sizing_mode: mode,
+                        }));
+                      }}
+                      disabled={autoTradeBusy}
+                      style={{ ...inputStyle, width: 210 }}
+                    >
+                      <option value="fixed">
+                        Valor fixo
+                      </option>
+
+                      <option value="anti_martingale">
+                        Anti-martingale
+                      </option>
+
+                      <option
+                        value="martingale_testnet"
+                        disabled={
+                          autoTradeForm.auto_trade_environment ===
+                          'real'
+                        }
+                      >
+                        Martingale experimental
+                      </option>
+                    </select>
+                  </label>
+
+                  <label
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 4,
+                      fontSize: 12,
+                      color: S.dim,
+                    }}
+                  >
+                    Sequência separada por
+                    <select
+                      value={autoTradeForm.auto_trade_sizing_scope}
+                      onChange={(event) =>
+                        setAutoTradeForm((current) => ({
+                          ...current,
+                          auto_trade_sizing_scope:
+                            normalizeSizingScope(
+                              event.target.value,
+                            ),
+                        }))
+                      }
+                      disabled={autoTradeBusy}
+                      style={{ ...inputStyle, width: 190 }}
+                    >
+                      <option value="account">
+                        Conta inteira
+                      </option>
+                      <option value="strategy">
+                        Estratégia
+                      </option>
+                      <option value="symbol">
+                        Ativo
+                      </option>
+                      <option value="symbol_timeframe">
+                        Ativo + timeframe
+                      </option>
+                    </select>
+                  </label>
+                </div>
+
+                {autoTradeForm.auto_trade_sizing_mode ===
+                  'fixed' ? (
+                  <div
+                    style={{
+                      color: S.blue,
+                      fontSize: 12,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    O modo fixo continua usando exatamente o valor em
+                    USDT informado acima, limitado pelo saldo e pelo
+                    máximo por ordem.
+                  </div>
+                ) : (
+                  <>
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: 12,
+                        justifyContent: 'center',
+                        alignItems: 'flex-end',
+                      }}
+                    >
+                      <label
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 4,
+                          fontSize: 12,
+                          color: S.dim,
+                        }}
+                      >
+                        Risco-base (%)
+                        <input
+                          type="number"
+                          min="0.01"
+                          max="10"
+                          step="0.01"
+                          value={
+                            autoTradeForm.auto_trade_base_risk_percent
+                          }
+                          onChange={(event) =>
+                            setAutoTradeForm((current) => ({
+                              ...current,
+                              auto_trade_base_risk_percent:
+                                event.target.value,
+                            }))
+                          }
+                          disabled={autoTradeBusy}
+                          style={{ ...inputStyle, width: 125 }}
+                        />
+                      </label>
+
+                      <label
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 4,
+                          fontSize: 12,
+                          color: S.dim,
+                        }}
+                      >
+                        Risco mínimo (%)
+                        <input
+                          type="number"
+                          min="0.01"
+                          max="10"
+                          step="0.01"
+                          value={
+                            autoTradeForm.auto_trade_min_risk_percent
+                          }
+                          onChange={(event) =>
+                            setAutoTradeForm((current) => ({
+                              ...current,
+                              auto_trade_min_risk_percent:
+                                event.target.value,
+                            }))
+                          }
+                          disabled={autoTradeBusy}
+                          style={{ ...inputStyle, width: 125 }}
+                        />
+                      </label>
+
+                      <label
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 4,
+                          fontSize: 12,
+                          color: S.dim,
+                        }}
+                      >
+                        Risco máximo (%)
+                        <input
+                          type="number"
+                          min="0.01"
+                          max="10"
+                          step="0.01"
+                          value={
+                            autoTradeForm.auto_trade_max_risk_percent
+                          }
+                          onChange={(event) =>
+                            setAutoTradeForm((current) => ({
+                              ...current,
+                              auto_trade_max_risk_percent:
+                                event.target.value,
+                            }))
+                          }
+                          disabled={autoTradeBusy}
+                          style={{ ...inputStyle, width: 125 }}
+                        />
+                      </label>
+                    </div>
+
+                    {autoTradeForm.auto_trade_sizing_mode ===
+                      'anti_martingale' && (
+                      <>
+                        <div
+                          style={{
+                            color: S.green,
+                            fontSize: 12,
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          Aumenta o risco após vitórias e reduz após
+                          perdas, sempre respeitando os limites mínimo
+                          e máximo.
+                        </div>
+
+                        <div
+                          style={{
+                            display: 'flex',
+                            flexWrap: 'wrap',
+                            gap: 12,
+                            justifyContent: 'center',
+                            alignItems: 'flex-end',
+                          }}
+                        >
+                          <label
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 4,
+                              fontSize: 12,
+                              color: S.dim,
+                            }}
+                          >
+                            Multiplicador após vitória
+                            <input
+                              type="number"
+                              min="1"
+                              max="3"
+                              step="0.05"
+                              value={
+                                autoTradeForm.auto_trade_win_multiplier
+                              }
+                              onChange={(event) =>
+                                setAutoTradeForm((current) => ({
+                                  ...current,
+                                  auto_trade_win_multiplier:
+                                    event.target.value,
+                                }))
+                              }
+                              disabled={autoTradeBusy}
+                              style={{ ...inputStyle, width: 185 }}
+                            />
+                          </label>
+
+                          <label
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 4,
+                              fontSize: 12,
+                              color: S.dim,
+                            }}
+                          >
+                            Multiplicador após perda
+                            <input
+                              type="number"
+                              min="0.01"
+                              max="1"
+                              step="0.05"
+                              value={
+                                autoTradeForm.auto_trade_loss_multiplier
+                              }
+                              onChange={(event) =>
+                                setAutoTradeForm((current) => ({
+                                  ...current,
+                                  auto_trade_loss_multiplier:
+                                    event.target.value,
+                                }))
+                              }
+                              disabled={autoTradeBusy}
+                              style={{ ...inputStyle, width: 185 }}
+                            />
+                          </label>
+
+                          <label
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 4,
+                              fontSize: 12,
+                              color: S.dim,
+                            }}
+                          >
+                            Reduzir após perdas
+                            <input
+                              type="number"
+                              min="1"
+                              max="10"
+                              step="1"
+                              value={
+                                autoTradeForm.auto_trade_loss_reduction_start
+                              }
+                              onChange={(event) =>
+                                setAutoTradeForm((current) => ({
+                                  ...current,
+                                  auto_trade_loss_reduction_start:
+                                    event.target.value,
+                                }))
+                              }
+                              disabled={autoTradeBusy}
+                              style={{ ...inputStyle, width: 160 }}
+                            />
+                          </label>
+
+                          <label
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 4,
+                              fontSize: 12,
+                              color: S.dim,
+                            }}
+                          >
+                            Multiplicador máximo
+                            <input
+                              type="number"
+                              min="1"
+                              max="10"
+                              step="0.05"
+                              value={
+                                autoTradeForm.auto_trade_max_multiplier
+                              }
+                              onChange={(event) =>
+                                setAutoTradeForm((current) => ({
+                                  ...current,
+                                  auto_trade_max_multiplier:
+                                    event.target.value,
+                                }))
+                              }
+                              disabled={autoTradeBusy}
+                              style={{ ...inputStyle, width: 165 }}
+                            />
+                          </label>
+                        </div>
+                      </>
+                    )}
+
+                    {autoTradeForm.auto_trade_sizing_mode ===
+                      'martingale_testnet' && (
+                      <>
+                        <div
+                          style={{
+                            color: S.red,
+                            fontSize: 12,
+                            fontWeight: 700,
+                            lineHeight: 1.55,
+                            border: `1px solid ${S.red}66`,
+                            background: `${S.red}0d`,
+                            borderRadius: 8,
+                            padding: 10,
+                          }}
+                        >
+                          ⚠️ Experimental e permitido somente na
+                          Testnet. Aumenta o risco após perdas e pode
+                          consumir rapidamente o saldo disponível.
+                        </div>
+
+                        <div
+                          style={{
+                            display: 'flex',
+                            flexWrap: 'wrap',
+                            gap: 12,
+                            justifyContent: 'center',
+                            alignItems: 'flex-end',
+                          }}
+                        >
+                          <label
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 4,
+                              fontSize: 12,
+                              color: S.dim,
+                            }}
+                          >
+                            Multiplicador após perda
+                            <input
+                              type="number"
+                              min="1"
+                              max="3"
+                              step="0.1"
+                              value={
+                                autoTradeForm.auto_trade_martingale_loss_multiplier
+                              }
+                              onChange={(event) =>
+                                setAutoTradeForm((current) => ({
+                                  ...current,
+                                  auto_trade_martingale_loss_multiplier:
+                                    event.target.value,
+                                }))
+                              }
+                              disabled={autoTradeBusy}
+                              style={{ ...inputStyle, width: 190 }}
+                            />
+                          </label>
+
+                          <label
+                            style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: 4,
+                              fontSize: 12,
+                              color: S.dim,
+                            }}
+                          >
+                            Multiplicador máximo
+                            <input
+                              type="number"
+                              min="1"
+                              max="64"
+                              step="0.5"
+                              value={
+                                autoTradeForm.auto_trade_martingale_max_multiplier
+                              }
+                              onChange={(event) =>
+                                setAutoTradeForm((current) => ({
+                                  ...current,
+                                  auto_trade_martingale_max_multiplier:
+                                    event.target.value,
+                                }))
+                              }
+                              disabled={autoTradeBusy}
+                              style={{ ...inputStyle, width: 170 }}
+                            />
+                          </label>
+                        </div>
+                      </>
+                    )}
+
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: 12,
+                        justifyContent: 'center',
+                        alignItems: 'flex-end',
+                      }}
+                    >
+                      <label
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 4,
+                          fontSize: 12,
+                          color: S.dim,
+                        }}
+                      >
+                        Máximo de etapas
+                        <input
+                          type="number"
+                          min="0"
+                          max="10"
+                          step="1"
+                          value={
+                            autoTradeForm.auto_trade_max_sequence_steps
+                          }
+                          onChange={(event) =>
+                            setAutoTradeForm((current) => ({
+                              ...current,
+                              auto_trade_max_sequence_steps:
+                                event.target.value,
+                            }))
+                          }
+                          disabled={autoTradeBusy}
+                          style={{ ...inputStyle, width: 145 }}
+                        />
+                      </label>
+
+                      <label
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 4,
+                          fontSize: 12,
+                          color: S.dim,
+                        }}
+                      >
+                        Pausar após perdas
+                        <input
+                          type="number"
+                          min="0"
+                          max="20"
+                          step="1"
+                          value={
+                            autoTradeForm.auto_trade_pause_after_consecutive_losses
+                          }
+                          onChange={(event) =>
+                            setAutoTradeForm((current) => ({
+                              ...current,
+                              auto_trade_pause_after_consecutive_losses:
+                                event.target.value,
+                            }))
+                          }
+                          disabled={autoTradeBusy}
+                          style={{ ...inputStyle, width: 150 }}
+                        />
+                      </label>
+
+                      <label
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 4,
+                          fontSize: 12,
+                          color: S.dim,
+                        }}
+                      >
+                        Uso máximo do saldo (%)
+                        <input
+                          type="number"
+                          min="0.01"
+                          max="100"
+                          step="0.1"
+                          value={
+                            autoTradeForm.auto_trade_balance_usage_limit_pct
+                          }
+                          onChange={(event) =>
+                            setAutoTradeForm((current) => ({
+                              ...current,
+                              auto_trade_balance_usage_limit_pct:
+                                event.target.value,
+                            }))
+                          }
+                          disabled={autoTradeBusy}
+                          style={{ ...inputStyle, width: 180 }}
+                        />
+                      </label>
+                    </div>
+
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: 12,
+                        justifyContent: 'center',
+                        alignItems: 'flex-end',
+                      }}
+                    >
+                      <label
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 4,
+                          fontSize: 12,
+                          color: S.dim,
+                        }}
+                      >
+                        Taxa estimada por execução (%)
+                        <input
+                          type="number"
+                          min="0"
+                          max="5"
+                          step="0.01"
+                          value={
+                            autoTradeForm.auto_trade_estimated_fee_rate_pct
+                          }
+                          onChange={(event) =>
+                            setAutoTradeForm((current) => ({
+                              ...current,
+                              auto_trade_estimated_fee_rate_pct:
+                                event.target.value,
+                            }))
+                          }
+                          disabled={autoTradeBusy}
+                          style={{ ...inputStyle, width: 210 }}
+                        />
+                      </label>
+
+                      <label
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 4,
+                          fontSize: 12,
+                          color: S.dim,
+                        }}
+                      >
+                        Slippage por execução (%)
+                        <input
+                          type="number"
+                          min="0"
+                          max="5"
+                          step="0.01"
+                          value={
+                            autoTradeForm.auto_trade_estimated_slippage_pct
+                          }
+                          onChange={(event) =>
+                            setAutoTradeForm((current) => ({
+                              ...current,
+                              auto_trade_estimated_slippage_pct:
+                                event.target.value,
+                            }))
+                          }
+                          disabled={autoTradeBusy}
+                          style={{ ...inputStyle, width: 200 }}
+                        />
+                      </label>
+                    </div>
+                  </>
+                )}
+
+                <div style={{ color: S.dim, fontSize: 10 }}>
+                  Política de dimensionamento v
+                  {autoTradeForm.auto_trade_sizing_policy_version}
+                </div>
               </div>
 
               <div style={{ width: '100%', maxWidth: 680, display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -2348,6 +3838,290 @@ export default function ContaPage() {
                   </div>
                 )}
               </div>
+            </Card>
+
+            {/* --------------------------- Decisões de dimensionamento --------------------------- */}
+            <Card>
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  gap: 10,
+                  marginBottom: 12,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <div style={{ fontSize: 15, fontWeight: 600 }}>
+                  Histórico de dimensionamento
+                </div>
+
+                <button
+                  onClick={() =>
+                    void loadPositionSizingDecisions()
+                  }
+                  disabled={sizingDecisionsLoading}
+                  style={{
+                    background: 'transparent',
+                    color: S.dim,
+                    border: `1px solid ${S.border}`,
+                    borderRadius: 6,
+                    padding: '4px 10px',
+                    fontSize: 11,
+                    cursor: 'pointer',
+                    opacity: sizingDecisionsLoading ? 0.6 : 1,
+                  }}
+                >
+                  {sizingDecisionsLoading
+                    ? 'Atualizando...'
+                    : 'Atualizar'}
+                </button>
+              </div>
+
+              {sizingDecisionsError && (
+                <div
+                  style={{
+                    color: S.red,
+                    fontSize: 12,
+                    textAlign: 'center',
+                    marginBottom: 10,
+                  }}
+                >
+                  {sizingDecisionsError}
+                </div>
+              )}
+
+              {sizingDecisions.length === 0 ? (
+                <div
+                  style={{
+                    color: S.dim,
+                    fontSize: 13,
+                    textAlign: 'center',
+                  }}
+                >
+                  {sizingDecisionsLoading
+                    ? 'Carregando decisões...'
+                    : 'Nenhuma decisão de dimensionamento registrada.'}
+                </div>
+              ) : (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                  }}
+                >
+                  {sizingDecisions.map((decision) => {
+                    const context =
+                      decision.calculation_input;
+
+                    const symbol =
+                      typeof context.symbol === 'string'
+                        ? context.symbol
+                        : '';
+
+                    const timeframe =
+                      typeof context.timeframe === 'string'
+                        ? context.timeframe
+                        : '';
+
+                    const strategy =
+                      typeof context.strategy === 'string'
+                        ? context.strategy
+                        : '';
+
+                    return (
+                      <div
+                        key={decision.id}
+                        style={{
+                          border: `1px solid ${S.border}`,
+                          borderRadius: 8,
+                          padding: '10px 12px',
+                          textAlign: 'center',
+                        }}
+                      >
+                        <div style={{ fontSize: 13 }}>
+                          <strong>
+                            {
+                              POSITION_SIZING_MODE_LABEL[
+                                decision.sizing_mode
+                              ]
+                            }
+                          </strong>
+
+                          {' '}·{' '}
+
+                          <span
+                            style={{
+                              color:
+                                decision.execution_environment ===
+                                'real'
+                                  ? S.red
+                                  : S.green,
+                              fontSize: 11,
+                            }}
+                          >
+                            {decision.execution_environment ===
+                            'real'
+                              ? 'REAL'
+                              : 'testnet'}
+                          </span>
+
+                          {' '}·{' '}
+
+                          <span
+                            style={{
+                              color:
+                                decision.status === 'applied'
+                                  ? S.green
+                                  : decision.status === 'failed'
+                                    ? S.red
+                                    : S.a,
+                            }}
+                          >
+                            {decision.status}
+                          </span>
+                        </div>
+
+                        {(symbol ||
+                          timeframe ||
+                          strategy) && (
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: S.dim,
+                              marginTop: 3,
+                            }}
+                          >
+                            {symbol || '—'}
+                            {timeframe && ` · ${timeframe}`}
+                            {strategy && ` · ${strategy}`}
+                          </div>
+                        )}
+
+                        <div
+                          style={{
+                            fontSize: 11,
+                            color: S.dim,
+                            marginTop: 5,
+                            lineHeight: 1.6,
+                          }}
+                        >
+                          Risco-base{' '}
+                          {fmt(
+                            decision.base_risk_percent,
+                            4,
+                          )}
+                          %
+
+                          {decision.applied_risk_percent !==
+                            null &&
+                            ` · aplicado ${fmt(
+                              decision.applied_risk_percent,
+                              4,
+                            )}%`}
+
+                          {' · '}multiplicador{' '}
+                          {fmt(
+                            decision.risk_multiplier,
+                            4,
+                          )}
+                          ×
+
+                          {' · '}etapa{' '}
+                          {decision.sequence_step}
+
+                          {decision.effective_quote_amount !==
+                            null &&
+                            ` · valor ${fmt(
+                              decision.effective_quote_amount,
+                            )} USDT`}
+                        </div>
+
+                        <div
+                          style={{
+                            fontSize: 11,
+                            color: S.dim,
+                            marginTop: 3,
+                            lineHeight: 1.6,
+                          }}
+                        >
+                          Sequência:{' '}
+                          {decision.consecutive_wins}{' '}
+                          vitória(s) /{' '}
+                          {decision.consecutive_losses}{' '}
+                          perda(s)
+
+                          {' · '}conta:{' '}
+                          {decision.account_consecutive_wins}{' '}
+                          vitória(s) /{' '}
+                          {decision.account_consecutive_losses}{' '}
+                          perda(s)
+                        </div>
+
+                        {(decision.planned_risk_usdt !== null ||
+                          decision.actual_risk_usdt !== null) && (
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: S.dim,
+                              marginTop: 3,
+                            }}
+                          >
+                            {decision.planned_risk_usdt !==
+                              null &&
+                              `Risco planejado ${fmt(
+                                decision.planned_risk_usdt,
+                              )} USDT`}
+
+                            {decision.actual_risk_usdt !==
+                              null &&
+                              ` · risco real ${fmt(
+                                decision.actual_risk_usdt,
+                              )} USDT`}
+                          </div>
+                        )}
+
+                        {decision.limiting_rules.length > 0 && (
+                          <div
+                            style={{
+                              fontSize: 10,
+                              color: S.a,
+                              marginTop: 4,
+                              lineHeight: 1.45,
+                            }}
+                          >
+                            Limitado por:{' '}
+                            {decision.limiting_rules.join(
+                              ', ',
+                            )}
+                          </div>
+                        )}
+
+                        <div
+                          style={{
+                            fontSize: 10,
+                            color: S.dim,
+                            marginTop: 4,
+                          }}
+                        >
+                          {fmtData(decision.created_at)}
+                          {' · '}
+                          {
+                            POSITION_SIZING_SCOPE_LABEL[
+                              decision.sizing_scope
+                            ]
+                          }
+                          {' · '}política v
+                          {decision.policy_version}
+                          {' · '}ID{' '}
+                          {decision.id.slice(0, 8)}…
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </Card>
 
             {/* --------------------------- Nova ordem --------------------------- */}
@@ -2623,6 +4397,79 @@ export default function ContaPage() {
                             >
                               Abrir histórico do cenário
                             </a>
+                          </div>
+                        )}
+
+                        {order.sizing_mode && (
+                          <div
+                            style={{
+                              marginTop: 7,
+                              padding: '7px 9px',
+                              borderRadius: 7,
+                              border: `1px solid ${S.a}44`,
+                              background: `${S.a}0b`,
+                              fontSize: 11,
+                              lineHeight: 1.55,
+                            }}
+                          >
+                            <div
+                              style={{
+                                color: S.a,
+                                fontWeight: 700,
+                              }}
+                            >
+                              {
+                                POSITION_SIZING_MODE_LABEL[
+                                  order.sizing_mode
+                                ]
+                              }
+                            </div>
+
+                            <div
+                              style={{
+                                color: S.dim,
+                                marginTop: 2,
+                              }}
+                            >
+                              {order.applied_risk_percent !== null &&
+                                `Risco aplicado ${fmt(
+                                  order.applied_risk_percent,
+                                  4,
+                                )}%`}
+
+                              {order.risk_multiplier !== null &&
+                                ` · multiplicador ${fmt(
+                                  order.risk_multiplier,
+                                  4,
+                                )}×`}
+
+                              {order.planned_risk_usdt !== null &&
+                                ` · risco planejado ${fmt(
+                                  order.planned_risk_usdt,
+                                )} USDT`}
+
+                              {order.actual_risk_usdt !== null &&
+                                ` · risco real ${fmt(
+                                  order.actual_risk_usdt,
+                                )} USDT`}
+                            </div>
+
+                            {order.position_sizing_decision_id && (
+                              <div
+                                style={{
+                                  color: S.dim,
+                                  fontSize: 10,
+                                  marginTop: 3,
+                                }}
+                              >
+                                Decisão{' '}
+                                {order.position_sizing_decision_id.slice(
+                                  0,
+                                  8,
+                                )}
+                                …
+                              </div>
+                            )}
                           </div>
                         )}
 
