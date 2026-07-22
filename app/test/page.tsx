@@ -1736,11 +1736,7 @@ export default function TestPage() {
       let cancelled =
         false;
 
-      let timeoutId:
-        ReturnType<
-          typeof window.setTimeout
-        > | null =
-        null;
+let timeoutId: number | null = null;
 
       const poll =
         async () => {
