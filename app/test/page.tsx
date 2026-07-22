@@ -12,6 +12,8 @@
  * - execução imediata para amostras menores;
  * - acompanhamento de análises assíncronas extensas;
  * - recuperação da análise em andamento após recarregar a página;
+ * - gerenciamento fixo, anti-martingale e martingale exclusivo de backtest/Testnet;
+ * - comparação do dimensionamento selecionado contra a mesma simulação em risco fixo;
  * - saída em Markdown e JSON.
  */
 
@@ -45,6 +47,11 @@ type StrategyId =
 type BacktestMode =
   | 'single'
   | 'compare_all';
+
+type MoneyManagementMode =
+  | 'fixed'
+  | 'anti_martingale'
+  | 'martingale_testnet';
 
 type HistoryMode =
   | 'candle_count'
@@ -207,6 +214,23 @@ const PRESET_LABELS: Record<PeriodPreset, string> = {
   '2y': '2 anos',
   custom: 'Personalizado',
 };
+
+const MONEY_MANAGEMENT_LABELS: Record<MoneyManagementMode, string> = {
+  fixed: 'Risco fixo',
+  anti_martingale: 'Anti-martingale',
+  martingale_testnet: 'Martingale · somente backtest/Testnet',
+};
+
+const MONEY_MANAGEMENT_DESCRIPTIONS: Record<MoneyManagementMode, string> = {
+  fixed:
+    'Mantém o mesmo percentual-base de risco em todas as operações.',
+  anti_martingale:
+    'Aumenta o risco após vitórias e reduz após perdas, sempre respeitando pisos, tetos e limite de sequência.',
+  martingale_testnet:
+    'Aumenta o risco após perdas. É experimental e fica restrito a backtest e Binance Spot Testnet.',
+};
+
+const MONEY_MANAGEMENT_POLICY_VERSION = '1.0.0';
 
 // -----------------------------------------------------------------------------
 // Estilos
@@ -431,6 +455,69 @@ function clamp(
     maximum,
     Math.max(minimum, value),
   );
+}
+
+function parseBoundedNumber(
+  value: string,
+  label: string,
+  minimum: number,
+  maximum: number,
+): number {
+  const parsed = Number(value);
+
+  if (
+    !Number.isFinite(parsed) ||
+    parsed < minimum ||
+    parsed > maximum
+  ) {
+    throw new Error(
+      `${label} deve estar entre ${minimum} e ${maximum}.`,
+    );
+  }
+
+  return parsed;
+}
+
+function parseBoundedInteger(
+  value: string,
+  label: string,
+  minimum: number,
+  maximum: number,
+): number {
+  const parsed = Number(value);
+
+  if (
+    !Number.isInteger(parsed) ||
+    parsed < minimum ||
+    parsed > maximum
+  ) {
+    throw new Error(
+      `${label} deve ser um inteiro entre ${minimum} e ${maximum}.`,
+    );
+  }
+
+  return parsed;
+}
+
+function formatSignedNumber(
+  value: unknown,
+  digits = 2,
+): string {
+  const number = asNumber(value);
+
+  if (number === null) {
+    return '—';
+  }
+
+  const prefix = number > 0 ? '+' : '';
+  return `${prefix}${formatNumber(number, digits)}`;
+}
+
+function formatMoneyManagementMode(
+  value: unknown,
+): string {
+  const mode = asString(value) as MoneyManagementMode;
+  return MONEY_MANAGEMENT_LABELS[mode] ?? mode ?? '—';
 }
 
 function formatNumber(
@@ -875,6 +962,18 @@ function buildSingleMarkdown(
           typeof value === 'string',
       );
 
+  const moneyManagement =
+    asRecord(result.moneyManagement);
+
+  const moneyPolicy =
+    asRecord(moneyManagement?.policy) ?? {};
+
+  const moneySummary =
+    asRecord(moneyManagement?.summary) ?? {};
+
+  const comparisonToFixed =
+    asRecord(moneyManagement?.comparisonToFixed);
+
   const lines = [
     `# Backtest — ${String(payload.symbol ?? '—')} · ${String(payload.timeframe ?? '—')}`,
     '',
@@ -908,6 +1007,46 @@ function buildSingleMarkdown(
     `| Exposição | ${formatNumber(metrics.exposurePct)}% do tempo |`,
     `| Holding médio | ${formatNumber(metrics.averageHoldingCandles, 1)} candles |`,
   ];
+
+  if (moneyManagement) {
+    lines.push(
+      '',
+      '## Gerenciamento de posição',
+      '',
+      `- Política: **${formatMoneyManagementMode(moneyPolicy.mode)}** · versão ${String(moneyPolicy.policyVersion ?? '—')}`,
+      `- Risco base / mínimo / máximo: ${formatNumber(moneyPolicy.baseRiskPercent)}% / ${formatNumber(moneyPolicy.minimumRiskPercent)}% / ${formatNumber(moneyPolicy.maximumRiskPercent)}%`,
+      `- Limite de sequência: ${formatInteger(moneyPolicy.maximumSequenceSteps)} etapa(s) · pausa sinalizada após ${formatInteger(moneyPolicy.pauseAfterConsecutiveLosses)} perda(s)`,
+      `- Uso máximo do saldo: ${formatNumber(moneyPolicy.balanceUsageLimitPct)}%`,
+      `- Maior multiplicador aplicado: ${formatNumber(moneySummary.maximumMultiplierApplied)}x`,
+      `- Risco aplicado máximo / médio: ${formatNumber(moneySummary.maximumAppliedRiskPercent)}% / ${formatNumber(moneySummary.averageAppliedRiskPercent)}%`,
+      `- Maior etapa da sequência: ${formatInteger(moneySummary.maximumSequenceStep)}`,
+      `- Maior sequência elegível de vitórias / perdas: ${formatInteger(moneySummary.maximumEligibleConsecutiveWins)} / ${formatInteger(moneySummary.maximumEligibleConsecutiveLosses)}`,
+      `- Sinais de pausa por perdas: ${formatInteger(moneySummary.pauseThresholdHits)}`,
+      `- Limitações por saldo / notional / mínimos da corretora / quantidade zero: ${formatInteger(moneySummary.balanceLimitedTrades)} / ${formatInteger(moneySummary.notionalLimitedTrades)} / ${formatInteger(moneySummary.exchangeMinimumBlockedTrades)} / ${formatInteger(moneySummary.zeroQuantityTrades)}`,
+    );
+
+    if (comparisonToFixed?.enabled === true) {
+      const selected =
+        asRecord(comparisonToFixed.selected) ?? {};
+      const fixed =
+        asRecord(comparisonToFixed.fixed) ?? {};
+      const effect =
+        asRecord(comparisonToFixed.effect) ?? {};
+
+      lines.push(
+        '',
+        '### Comparação com risco fixo',
+        '',
+        `- Mesmo caminho de sinais e saídas: ${comparisonToFixed.sameTradePath === true ? 'sim' : 'não'}`,
+        '',
+        '| Cenário | Capital final | Retorno | PnL | Drawdown |',
+        '|---|---:|---:|---:|---:|',
+        `| Política selecionada | ${formatNumber(selected.finalCapitalUsdt)} USDT | ${formatNumber(selected.netReturnPct)}% | ${formatNumber(selected.netPnlUsdt)} USDT | ${formatNumber(selected.maximumDrawdownPct)}% |`,
+        `| Risco fixo equivalente | ${formatNumber(fixed.finalCapitalUsdt)} USDT | ${formatNumber(fixed.netReturnPct)}% | ${formatNumber(fixed.netPnlUsdt)} USDT | ${formatNumber(fixed.maximumDrawdownPct)}% |`,
+        `| Efeito do dimensionamento | — | ${formatSignedNumber(effect.returnPct)} p.p. | ${formatSignedNumber(effect.pnlUsdt)} USDT | ${formatSignedNumber(effect.drawdownPct)} p.p. |`,
+      );
+    }
+  }
 
   if (warnings.length > 0) {
     lines.push(
@@ -1016,6 +1155,32 @@ function buildComparisonMarkdown(
           typeof value === 'string',
       );
 
+  const moneyManagement =
+    asRecord(comparison.moneyManagement);
+
+  const moneyPolicy =
+    asRecord(moneyManagement?.policy) ?? {};
+
+  const fixedRows =
+    asArray(moneyManagement?.fixedRows)
+      .map(asRecord)
+      .filter(
+        (
+          row,
+        ): row is Record<string, unknown> =>
+          row !== null,
+      );
+
+  const fixedRowsByStrategy =
+    new Map(
+      fixedRows.map(
+        (row) => [
+          asString(row.strategy),
+          row,
+        ],
+      ),
+    );
+
   const period =
     formatDateRange(
       comparison.firstCandleOpenTime,
@@ -1046,6 +1211,38 @@ function buildComparisonMarkdown(
     lines.push(
       `| ${String(row.shortLabel ?? row.label ?? row.strategy ?? '—')} | ${executionMode} | ${formatInteger(row.totalTrades)} | ${formatNumber(row.winRatePct)}% | ${formatNumber(row.netReturnPct)}% | ${formatNumber(row.netPnlUsdt)} | ${formatProfitFactor(row.profitFactor)} | ${formatNumber(row.averageR)} | ${formatNumber(row.maximumDrawdownPct)}% | ${String(row.sampleQuality ?? '—')} |`,
     );
+  }
+
+  if (moneyManagement) {
+    lines.push(
+      '',
+      '## Gerenciamento de posição',
+      '',
+      `- Política: **${formatMoneyManagementMode(moneyPolicy.mode)}** · versão ${String(moneyPolicy.policyVersion ?? '—')}`,
+      `- Risco base / mínimo / máximo: ${formatNumber(moneyPolicy.baseRiskPercent)}% / ${formatNumber(moneyPolicy.minimumRiskPercent)}% / ${formatNumber(moneyPolicy.maximumRiskPercent)}%`,
+      `- Mesmo caminho técnico em todos os cenários: ${moneyManagement.sameSignalAndExitPath === true ? 'sim' : 'não'}`,
+    );
+
+    if (fixedRows.length > 0) {
+      lines.push(
+        '',
+        '### Política selecionada versus risco fixo',
+        '',
+        '| Estratégia | Retorno selecionado | Retorno fixo | Efeito | DD selecionado | DD fixo |',
+        '|---|---:|---:|---:|---:|---:|',
+      );
+
+      for (const row of rows) {
+        const fixedRow =
+          fixedRowsByStrategy.get(
+            asString(row.strategy),
+          );
+
+        lines.push(
+          `| ${String(row.shortLabel ?? row.label ?? row.strategy ?? '—')} | ${formatNumber(row.netReturnPct)}% | ${formatNumber(fixedRow?.netReturnPct)}% | ${formatSignedNumber((asNumber(row.netReturnPct) ?? 0) - (asNumber(fixedRow?.netReturnPct) ?? 0))} p.p. | ${formatNumber(row.maximumDrawdownPct)}% | ${formatNumber(fixedRow?.maximumDrawdownPct)}% |`,
+        );
+      }
+    }
   }
 
   if (ranking.length > 0) {
@@ -1196,6 +1393,73 @@ export default function TestPage() {
     riskPercent,
     setRiskPercent,
   ] = useState('1');
+
+  const [
+    moneyManagementMode,
+    setMoneyManagementMode,
+  ] = useState<MoneyManagementMode>(
+    'fixed',
+  );
+
+  const [
+    minimumRiskPercent,
+    setMinimumRiskPercent,
+  ] = useState('0.25');
+
+  const [
+    maximumRiskPercent,
+    setMaximumRiskPercent,
+  ] = useState('2');
+
+  const [
+    winMultiplier,
+    setWinMultiplier,
+  ] = useState('1.25');
+
+  const [
+    lossMultiplier,
+    setLossMultiplier,
+  ] = useState('0.5');
+
+  const [
+    lossReductionStart,
+    setLossReductionStart,
+  ] = useState('2');
+
+  const [
+    martingaleLossMultiplier,
+    setMartingaleLossMultiplier,
+  ] = useState('2');
+
+  const [
+    maximumMultiplier,
+    setMaximumMultiplier,
+  ] = useState('1.5');
+
+  const [
+    martingaleMaximumMultiplier,
+    setMartingaleMaximumMultiplier,
+  ] = useState('4');
+
+  const [
+    maximumSequenceSteps,
+    setMaximumSequenceSteps,
+  ] = useState('2');
+
+  const [
+    pauseAfterConsecutiveLosses,
+    setPauseAfterConsecutiveLosses,
+  ] = useState('3');
+
+  const [
+    balanceUsageLimitPct,
+    setBalanceUsageLimitPct,
+  ] = useState('95');
+
+  const [
+    compareWithFixed,
+    setCompareWithFixed,
+  ] = useState(true);
 
   const [
     minimumTradesForRanking,
@@ -1472,7 +1736,11 @@ export default function TestPage() {
       let cancelled =
         false;
 
-let timeoutId: number | null = null;
+      let timeoutId:
+        ReturnType<
+          typeof window.setTimeout
+        > | null =
+        null;
 
       const poll =
         async () => {
@@ -1683,7 +1951,100 @@ let timeoutId: number | null = null;
           }
 
           const parsedRiskPercent =
-            Number(riskPercent);
+            parseBoundedNumber(
+              riskPercent,
+              'O risco-base',
+              0.01,
+              2,
+            );
+
+          const parsedMinimumRiskPercent =
+            parseBoundedNumber(
+              minimumRiskPercent,
+              'O risco mínimo',
+              0.01,
+              2,
+            );
+
+          const parsedMaximumRiskPercent =
+            parseBoundedNumber(
+              maximumRiskPercent,
+              'O risco máximo',
+              0.01,
+              2,
+            );
+
+          const parsedWinMultiplier =
+            parseBoundedNumber(
+              winMultiplier,
+              'O multiplicador por vitória',
+              1,
+              3,
+            );
+
+          const parsedLossMultiplier =
+            parseBoundedNumber(
+              lossMultiplier,
+              'O fator após perda',
+              0.01,
+              1,
+            );
+
+          const parsedLossReductionStart =
+            parseBoundedInteger(
+              lossReductionStart,
+              'O início da redução',
+              1,
+              10,
+            );
+
+          const parsedMartingaleLossMultiplier =
+            parseBoundedNumber(
+              martingaleLossMultiplier,
+              'O multiplicador martingale',
+              1,
+              3,
+            );
+
+          const parsedMaximumMultiplier =
+            parseBoundedNumber(
+              maximumMultiplier,
+              'O teto do anti-martingale',
+              1,
+              10,
+            );
+
+          const parsedMartingaleMaximumMultiplier =
+            parseBoundedNumber(
+              martingaleMaximumMultiplier,
+              'O teto do martingale',
+              1,
+              64,
+            );
+
+          const parsedMaximumSequenceSteps =
+            parseBoundedInteger(
+              maximumSequenceSteps,
+              'O limite da sequência',
+              0,
+              10,
+            );
+
+          const parsedPauseAfterConsecutiveLosses =
+            parseBoundedInteger(
+              pauseAfterConsecutiveLosses,
+              'A pausa após perdas',
+              0,
+              20,
+            );
+
+          const parsedBalanceUsageLimitPct =
+            parseBoundedNumber(
+              balanceUsageLimitPct,
+              'O uso máximo do saldo',
+              1,
+              100,
+            );
 
           const parsedMinimumTrades =
             Number(
@@ -1691,14 +2052,20 @@ let timeoutId: number | null = null;
             );
 
           if (
-            !Number.isFinite(
-              parsedRiskPercent,
-            ) ||
-            parsedRiskPercent <= 0 ||
-            parsedRiskPercent > 2
+            moneyManagementMode !== 'fixed' &&
+            parsedMinimumRiskPercent > parsedRiskPercent
           ) {
             throw new Error(
-              'O risco deve ser maior que zero e no máximo 2%.',
+              'O risco mínimo não pode ser maior que o risco-base.',
+            );
+          }
+
+          if (
+            moneyManagementMode !== 'fixed' &&
+            parsedMaximumRiskPercent < parsedRiskPercent
+          ) {
+            throw new Error(
+              'O risco máximo não pode ser menor que o risco-base.',
             );
           }
 
@@ -1771,6 +2138,44 @@ let timeoutId: number | null = null;
             backtest_options: {
               riskPercent:
                 parsedRiskPercent,
+            },
+            money_management_options: {
+              mode:
+                moneyManagementMode,
+              policyVersion:
+                MONEY_MANAGEMENT_POLICY_VERSION,
+              baseRiskPercent:
+                parsedRiskPercent,
+              minimumRiskPercent:
+                moneyManagementMode === 'fixed'
+                  ? parsedRiskPercent
+                  : parsedMinimumRiskPercent,
+              maximumRiskPercent:
+                moneyManagementMode === 'fixed'
+                  ? parsedRiskPercent
+                  : parsedMaximumRiskPercent,
+              winMultiplier:
+                parsedWinMultiplier,
+              lossMultiplier:
+                parsedLossMultiplier,
+              lossReductionStart:
+                parsedLossReductionStart,
+              martingaleLossMultiplier:
+                parsedMartingaleLossMultiplier,
+              maximumMultiplier:
+                parsedMaximumMultiplier,
+              martingaleMaximumMultiplier:
+                parsedMartingaleMaximumMultiplier,
+              maximumSequenceSteps:
+                parsedMaximumSequenceSteps,
+              pauseAfterConsecutiveLosses:
+                parsedPauseAfterConsecutiveLosses,
+              balanceUsageLimitPct:
+                parsedBalanceUsageLimitPct,
+              compareWithFixed:
+                moneyManagementMode === 'fixed'
+                  ? false
+                  : compareWithFixed,
             },
           };
 
@@ -1906,6 +2311,19 @@ let timeoutId: number | null = null;
       [
         activeRun,
         riskPercent,
+        moneyManagementMode,
+        minimumRiskPercent,
+        maximumRiskPercent,
+        winMultiplier,
+        lossMultiplier,
+        lossReductionStart,
+        martingaleLossMultiplier,
+        maximumMultiplier,
+        martingaleMaximumMultiplier,
+        maximumSequenceSteps,
+        pauseAfterConsecutiveLosses,
+        balanceUsageLimitPct,
+        compareWithFixed,
         minimumTradesForRanking,
         historyMode,
         candleCount,
@@ -1991,7 +2409,7 @@ let timeoutId: number | null = null;
             marginTop: 2,
           }}
         >
-          uso interno · quatro estratégias · histórico rápido ou análise aprofundada
+          uso interno · quatro estratégias · risco fixo ou sequencial · histórico rápido ou aprofundado
         </div>
       </header>
 
@@ -2147,12 +2565,12 @@ let timeoutId: number | null = null;
                       </label>
 
                       <label style={labelStyle}>
-                        Risco por operação
+                        Risco-base por operação (%)
                         <input
                           type="number"
-                          min="0.1"
+                          min="0.01"
                           max="2"
-                          step="0.1"
+                          step="0.05"
                           value={riskPercent}
                           disabled={Boolean(activeRun)}
                           onChange={(event) =>
@@ -2190,6 +2608,331 @@ let timeoutId: number | null = null;
                         />
                       </label>
                     </div>
+                  </Card>
+
+                  <Card>
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'flex-start',
+                        flexWrap: 'wrap',
+                        gap: 12,
+                        marginBottom: 14,
+                      }}
+                    >
+                      <div style={{ flex: '1 1 320px' }}>
+                        <strong style={{ fontSize: 14 }}>
+                          Gerenciamento de posição
+                        </strong>
+
+                        <div
+                          style={{
+                            color: COLORS.muted,
+                            fontSize: 11,
+                            marginTop: 3,
+                            lineHeight: 1.5,
+                          }}
+                        >
+                          O caminho técnico da estratégia permanece igual. Apenas quantidade, risco em USDT, custos proporcionais, PnL e curva patrimonial são recalculados.
+                        </div>
+                      </div>
+
+                      <label
+                        style={{
+                          ...labelStyle,
+                          flex: '1 1 280px',
+                          maxWidth: 420,
+                        }}
+                      >
+                        Política
+                        <select
+                          value={moneyManagementMode}
+                          disabled={Boolean(activeRun)}
+                          onChange={(event) =>
+                            setMoneyManagementMode(
+                              event.target.value as MoneyManagementMode,
+                            )
+                          }
+                          style={inputStyle}
+                        >
+                          <option value="fixed">
+                            Risco fixo
+                          </option>
+
+                          <option value="anti_martingale">
+                            Anti-martingale
+                          </option>
+
+                          <option value="martingale_testnet">
+                            Martingale · somente backtest/Testnet
+                          </option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div
+                      style={{
+                        border: `1px solid ${
+                          moneyManagementMode === 'martingale_testnet'
+                            ? 'rgba(208, 85, 85, 0.55)'
+                            : COLORS.border
+                        }`,
+                        background:
+                          moneyManagementMode === 'martingale_testnet'
+                            ? 'rgba(208, 85, 85, 0.08)'
+                            : COLORS.panelSoft,
+                        borderRadius: 8,
+                        padding: '10px 12px',
+                        color:
+                          moneyManagementMode === 'martingale_testnet'
+                            ? COLORS.red
+                            : COLORS.muted,
+                        fontSize: 12,
+                        lineHeight: 1.55,
+                        marginBottom:
+                          moneyManagementMode === 'fixed'
+                            ? 0
+                            : 14,
+                      }}
+                    >
+                      <strong
+                        style={{
+                          color:
+                            moneyManagementMode === 'martingale_testnet'
+                              ? COLORS.red
+                              : COLORS.text,
+                        }}
+                      >
+                        {MONEY_MANAGEMENT_LABELS[moneyManagementMode]}
+                      </strong>
+                      {' — '}
+                      {MONEY_MANAGEMENT_DESCRIPTIONS[moneyManagementMode]}
+                      {moneyManagementMode === 'martingale_testnet'
+                        ? ' Esta opção não autoriza nem deve ser transportada para operações com dinheiro real.'
+                        : ''}
+                    </div>
+
+                    {moneyManagementMode !== 'fixed' && (
+                      <>
+                        <div
+                          style={{
+                            display: 'grid',
+                            gridTemplateColumns:
+                              'repeat(auto-fit, minmax(155px, 1fr))',
+                            gap: 12,
+                            alignItems: 'end',
+                          }}
+                        >
+                          <label style={labelStyle}>
+                            Risco mínimo (%)
+                            <input
+                              type="number"
+                              min="0.01"
+                              max="2"
+                              step="0.05"
+                              value={minimumRiskPercent}
+                              disabled={Boolean(activeRun)}
+                              onChange={(event) =>
+                                setMinimumRiskPercent(event.target.value)
+                              }
+                              style={inputStyle}
+                            />
+                          </label>
+
+                          <label style={labelStyle}>
+                            Risco máximo (%)
+                            <input
+                              type="number"
+                              min="0.01"
+                              max="2"
+                              step="0.05"
+                              value={maximumRiskPercent}
+                              disabled={Boolean(activeRun)}
+                              onChange={(event) =>
+                                setMaximumRiskPercent(event.target.value)
+                              }
+                              style={inputStyle}
+                            />
+                          </label>
+
+                          {moneyManagementMode === 'anti_martingale'
+                            ? (
+                                <>
+                                  <label style={labelStyle}>
+                                    Multiplicador por vitória
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      max="3"
+                                      step="0.05"
+                                      value={winMultiplier}
+                                      disabled={Boolean(activeRun)}
+                                      onChange={(event) =>
+                                        setWinMultiplier(event.target.value)
+                                      }
+                                      style={inputStyle}
+                                    />
+                                  </label>
+
+                                  <label style={labelStyle}>
+                                    Redução após perda
+                                    <input
+                                      type="number"
+                                      min="0.01"
+                                      max="1"
+                                      step="0.05"
+                                      value={lossMultiplier}
+                                      disabled={Boolean(activeRun)}
+                                      onChange={(event) =>
+                                        setLossMultiplier(event.target.value)
+                                      }
+                                      style={inputStyle}
+                                    />
+                                  </label>
+
+                                  <label style={labelStyle}>
+                                    Reduzir a partir da perda nº
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      max="10"
+                                      step="1"
+                                      value={lossReductionStart}
+                                      disabled={Boolean(activeRun)}
+                                      onChange={(event) =>
+                                        setLossReductionStart(event.target.value)
+                                      }
+                                      style={inputStyle}
+                                    />
+                                  </label>
+
+                                  <label style={labelStyle}>
+                                    Teto do multiplicador
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      max="10"
+                                      step="0.05"
+                                      value={maximumMultiplier}
+                                      disabled={Boolean(activeRun)}
+                                      onChange={(event) =>
+                                        setMaximumMultiplier(event.target.value)
+                                      }
+                                      style={inputStyle}
+                                    />
+                                  </label>
+                                </>
+                              )
+                            : (
+                                <>
+                                  <label style={labelStyle}>
+                                    Multiplicador após perda
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      max="3"
+                                      step="0.1"
+                                      value={martingaleLossMultiplier}
+                                      disabled={Boolean(activeRun)}
+                                      onChange={(event) =>
+                                        setMartingaleLossMultiplier(event.target.value)
+                                      }
+                                      style={inputStyle}
+                                    />
+                                  </label>
+
+                                  <label style={labelStyle}>
+                                    Teto do martingale
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      max="64"
+                                      step="0.5"
+                                      value={martingaleMaximumMultiplier}
+                                      disabled={Boolean(activeRun)}
+                                      onChange={(event) =>
+                                        setMartingaleMaximumMultiplier(event.target.value)
+                                      }
+                                      style={inputStyle}
+                                    />
+                                  </label>
+                                </>
+                              )}
+
+                          <label style={labelStyle}>
+                            Máximo de etapas
+                            <input
+                              type="number"
+                              min="0"
+                              max="10"
+                              step="1"
+                              value={maximumSequenceSteps}
+                              disabled={Boolean(activeRun)}
+                              onChange={(event) =>
+                                setMaximumSequenceSteps(event.target.value)
+                              }
+                              style={inputStyle}
+                            />
+                          </label>
+
+                          <label style={labelStyle}>
+                            Sinalizar pausa após perdas
+                            <input
+                              type="number"
+                              min="0"
+                              max="20"
+                              step="1"
+                              value={pauseAfterConsecutiveLosses}
+                              disabled={Boolean(activeRun)}
+                              onChange={(event) =>
+                                setPauseAfterConsecutiveLosses(event.target.value)
+                              }
+                              style={inputStyle}
+                            />
+                          </label>
+
+                          <label style={labelStyle}>
+                            Uso máximo do saldo (%)
+                            <input
+                              type="number"
+                              min="1"
+                              max="100"
+                              step="1"
+                              value={balanceUsageLimitPct}
+                              disabled={Boolean(activeRun)}
+                              onChange={(event) =>
+                                setBalanceUsageLimitPct(event.target.value)
+                              }
+                              style={inputStyle}
+                            />
+                          </label>
+                        </div>
+
+                        <label
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: 9,
+                            marginTop: 14,
+                            color: COLORS.muted,
+                            fontSize: 12,
+                            cursor: activeRun ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={compareWithFixed}
+                            disabled={Boolean(activeRun)}
+                            onChange={(event) =>
+                              setCompareWithFixed(event.target.checked)
+                            }
+                          />
+                          Comparar o resultado com a mesma sequência em risco fixo
+                        </label>
+                      </>
+                    )}
                   </Card>
 
                   <Card>
