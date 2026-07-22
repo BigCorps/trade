@@ -119,6 +119,68 @@ interface RealtimePayloadLike {
   old: Record<string, unknown>;
 }
 
+type PositionSizingMode =
+  | 'fixed'
+  | 'anti_martingale'
+  | 'martingale_testnet';
+
+type PositionSizingScope =
+  | 'account'
+  | 'strategy'
+  | 'symbol'
+  | 'symbol_timeframe';
+
+interface PositionSizingDecision {
+  id: UUID;
+  opportunity_id: UUID;
+  order_id: UUID | null;
+
+  source: string;
+  status: string;
+  execution_environment: 'testnet' | 'real';
+
+  sizing_mode: PositionSizingMode;
+  sizing_scope: PositionSizingScope;
+  policy_version: string;
+
+  available_balance_usdt: number | null;
+  balance_usage_limit_pct: number;
+
+  base_risk_percent: number;
+  target_risk_percent: number | null;
+  applied_risk_percent: number | null;
+  risk_multiplier: number;
+  sequence_step: number;
+
+  consecutive_wins: number;
+  consecutive_losses: number;
+  account_consecutive_wins: number;
+  account_consecutive_losses: number;
+
+  stop_distance_pct: number;
+  estimated_fee_rate_pct: number;
+  estimated_slippage_pct: number;
+  estimated_total_cost_pct: number;
+  estimated_loss_rate_pct: number;
+
+  planned_risk_usdt: number | null;
+  actual_risk_usdt: number | null;
+
+  requested_quote_amount: number | null;
+  effective_quote_amount: number | null;
+  max_order_usdt: number;
+
+  limiting_rules: string[];
+
+  calculation_input: JsonObject;
+  policy_snapshot: JsonObject;
+  result_snapshot: JsonObject;
+
+  applied_at: ISODateString | null;
+  created_at: ISODateString;
+  updated_at: ISODateString;
+}
+
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -161,6 +223,106 @@ const TAB_LABELS: Readonly<Record<MainTab, string>> = {
   history: 'Histórico',
   performance: 'Desempenho',
 };
+
+const POSITION_SIZING_MODE_LABEL: Readonly<
+  Record<PositionSizingMode, string>
+> = {
+  fixed: 'Valor fixo',
+  anti_martingale: 'Anti-martingale',
+  martingale_testnet: 'Martingale experimental',
+};
+
+const POSITION_SIZING_SCOPE_LABEL: Readonly<
+  Record<PositionSizingScope, string>
+> = {
+  account: 'Conta inteira',
+  strategy: 'Estratégia',
+  symbol: 'Ativo',
+  symbol_timeframe: 'Ativo + timeframe',
+};
+
+function getPositionSizingModeTone(
+  mode: PositionSizingMode,
+): StatusTone {
+  if (mode === 'anti_martingale') {
+    return 'positive';
+  }
+
+  if (mode === 'martingale_testnet') {
+    return 'danger';
+  }
+
+  return 'neutral';
+}
+
+function getPositionSizingStatusPresentation(
+  status: string,
+): {
+  label: string;
+  tone: StatusTone;
+} {
+  if (status === 'applied') {
+    return {
+      label: 'Aplicado',
+      tone: 'positive',
+    };
+  }
+
+  if (status === 'reserved') {
+    return {
+      label: 'Reservado',
+      tone: 'warning',
+    };
+  }
+
+  if (status === 'cancelled') {
+    return {
+      label: 'Cancelado',
+      tone: 'muted',
+    };
+  }
+
+  if (status === 'failed') {
+    return {
+      label: 'Falhou',
+      tone: 'danger',
+    };
+  }
+
+  return {
+    label: status || 'Desconhecido',
+    tone: 'neutral',
+  };
+}
+
+function displayLimitingRule(rule: string): string {
+  const labels: Readonly<Record<string, string>> = {
+    risk: 'limite de risco',
+    risk_limit: 'limite de risco',
+    available_balance: 'saldo disponível',
+    balance_usage_limit: 'percentual máximo do saldo',
+    max_order_usdt: 'máximo por ordem',
+    configured_order_limit: 'máximo configurado por ordem',
+    exchange_min_notional: 'mínimo da Binance',
+    exchange_max_notional: 'máximo da Binance',
+    exchange_notional_limit: 'limite de valor da Binance',
+    minimum_risk: 'risco mínimo',
+    maximum_risk: 'risco máximo',
+    maximum_multiplier: 'multiplicador máximo',
+    maximum_sequence_steps: 'máximo de etapas',
+    consecutive_loss_pause: 'pausa por perdas consecutivas',
+  };
+
+  if (labels[rule]) {
+    return labels[rule];
+  }
+
+  return rule
+    .replaceAll('_', ' ')
+    .replace(/\b\w/g, (letter) =>
+      letter.toLocaleUpperCase('pt-BR'),
+    );
+}
 
 const inputStyle: CSSProperties = {
   width: '100%',
@@ -615,6 +777,201 @@ function normalizeWarnings(value: string[] | JsonArray): string[] {
   );
 }
 
+function normalizePositionSizingMode(
+  value: unknown,
+): PositionSizingMode {
+  return value === 'anti_martingale' ||
+      value === 'martingale_testnet'
+    ? value
+    : 'fixed';
+}
+
+function normalizePositionSizingScope(
+  value: unknown,
+): PositionSizingScope {
+  return value === 'account' ||
+      value === 'symbol' ||
+      value === 'symbol_timeframe'
+    ? value
+    : 'strategy';
+}
+
+function normalizeJsonObject(value: unknown): JsonObject {
+  return isRecord(value)
+    ? value as JsonObject
+    : {};
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter(
+    (item): item is string =>
+      typeof item === 'string' && item.trim() !== '',
+  );
+}
+
+function normalizePositionSizingDecision(
+  value: unknown,
+): PositionSizingDecision | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id =
+    typeof value.id === 'string'
+      ? value.id
+      : null;
+
+  const opportunityId =
+    typeof value.opportunity_id === 'string'
+      ? value.opportunity_id
+      : null;
+
+  if (
+    !id ||
+    !opportunityId ||
+    !UUID_PATTERN.test(id) ||
+    !UUID_PATTERN.test(opportunityId)
+  ) {
+    return null;
+  }
+
+  const environment =
+    value.execution_environment === 'real'
+      ? 'real'
+      : 'testnet';
+
+  const createdAt =
+    typeof value.created_at === 'string'
+      ? value.created_at
+      : new Date(0).toISOString();
+
+  const updatedAt =
+    typeof value.updated_at === 'string'
+      ? value.updated_at
+      : createdAt;
+
+  return {
+    id: id as UUID,
+    opportunity_id: opportunityId as UUID,
+
+    order_id:
+      typeof value.order_id === 'string' &&
+      UUID_PATTERN.test(value.order_id)
+        ? value.order_id as UUID
+        : null,
+
+    source:
+      typeof value.source === 'string'
+        ? value.source
+        : 'unknown',
+
+    status:
+      typeof value.status === 'string'
+        ? value.status
+        : 'reserved',
+
+    execution_environment: environment,
+
+    sizing_mode:
+      normalizePositionSizingMode(value.sizing_mode),
+
+    sizing_scope:
+      normalizePositionSizingScope(value.sizing_scope),
+
+    policy_version:
+      typeof value.policy_version === 'string'
+        ? value.policy_version
+        : '1.0.0',
+
+    available_balance_usdt:
+      finiteNumber(value.available_balance_usdt),
+
+    balance_usage_limit_pct:
+      finiteNumber(value.balance_usage_limit_pct) ?? 100,
+
+    base_risk_percent:
+      finiteNumber(value.base_risk_percent) ?? 0,
+
+    target_risk_percent:
+      finiteNumber(value.target_risk_percent),
+
+    applied_risk_percent:
+      finiteNumber(value.applied_risk_percent),
+
+    risk_multiplier:
+      finiteNumber(value.risk_multiplier) ?? 1,
+
+    sequence_step:
+      finiteNumber(value.sequence_step) ?? 0,
+
+    consecutive_wins:
+      finiteNumber(value.consecutive_wins) ?? 0,
+
+    consecutive_losses:
+      finiteNumber(value.consecutive_losses) ?? 0,
+
+    account_consecutive_wins:
+      finiteNumber(value.account_consecutive_wins) ?? 0,
+
+    account_consecutive_losses:
+      finiteNumber(value.account_consecutive_losses) ?? 0,
+
+    stop_distance_pct:
+      finiteNumber(value.stop_distance_pct) ?? 0,
+
+    estimated_fee_rate_pct:
+      finiteNumber(value.estimated_fee_rate_pct) ?? 0,
+
+    estimated_slippage_pct:
+      finiteNumber(value.estimated_slippage_pct) ?? 0,
+
+    estimated_total_cost_pct:
+      finiteNumber(value.estimated_total_cost_pct) ?? 0,
+
+    estimated_loss_rate_pct:
+      finiteNumber(value.estimated_loss_rate_pct) ?? 0,
+
+    planned_risk_usdt:
+      finiteNumber(value.planned_risk_usdt),
+
+    actual_risk_usdt:
+      finiteNumber(value.actual_risk_usdt),
+
+    requested_quote_amount:
+      finiteNumber(value.requested_quote_amount),
+
+    effective_quote_amount:
+      finiteNumber(value.effective_quote_amount),
+
+    max_order_usdt:
+      finiteNumber(value.max_order_usdt) ?? 0,
+
+    limiting_rules:
+      normalizeStringArray(value.limiting_rules),
+
+    calculation_input:
+      normalizeJsonObject(value.calculation_input),
+
+    policy_snapshot:
+      normalizeJsonObject(value.policy_snapshot),
+
+    result_snapshot:
+      normalizeJsonObject(value.result_snapshot),
+
+    applied_at:
+      typeof value.applied_at === 'string'
+        ? value.applied_at
+        : null,
+
+    created_at: createdAt,
+    updated_at: updatedAt,
+  };
+}
+
 function marketSnapshotNumber(
   opportunity: TradeOpportunity,
   key: 'lastLivePrice' | 'lastClosedPrice',
@@ -780,15 +1137,60 @@ function OutcomeBadge({
   );
 }
 
+function PositionSizingBadge({
+  decision,
+}: {
+  decision: PositionSizingDecision | null;
+}) {
+  if (!decision) {
+    return null;
+  }
+
+  const effectiveRisk =
+    decision.applied_risk_percent ??
+    decision.target_risk_percent ??
+    decision.base_risk_percent;
+
+  const status =
+    getPositionSizingStatusPresentation(decision.status);
+
+  return (
+    <Pill
+      tone={
+        decision.status === 'failed'
+          ? 'danger'
+          : getPositionSizingModeTone(decision.sizing_mode)
+      }
+      title={[
+        POSITION_SIZING_MODE_LABEL[decision.sizing_mode],
+        `Status: ${status.label}`,
+        `Risco: ${fmtNumber(effectiveRisk, 4)}%`,
+        `Multiplicador: ${fmtNumber(
+          decision.risk_multiplier,
+          4,
+        )}×`,
+      ].join(' · ')}
+    >
+      {POSITION_SIZING_MODE_LABEL[decision.sizing_mode]}
+      {' · '}
+      {fmtNumber(effectiveRisk, 2)}%
+      {' · '}
+      {fmtNumber(decision.risk_multiplier, 2)}×
+    </Pill>
+  );
+}
+
 function OpportunityCard({
   opportunity,
   theoreticalOutcome,
   executedOutcome,
+  sizingDecision,
   onOpen,
 }: {
   opportunity: TradeOpportunity;
   theoreticalOutcome: OpportunityOutcome | null;
   executedOutcome: OpportunityOutcome | null;
+  sizingDecision: PositionSizingDecision | null;
   onOpen: (opportunity: TradeOpportunity) => void;
 }) {
   const state = getOpportunityCardState(opportunity);
@@ -961,6 +1363,7 @@ function OpportunityCard({
         </Pill>
         <OutcomeBadge outcome={theoreticalOutcome} />
         <OutcomeBadge outcome={executedOutcome} />
+        <PositionSizingBadge decision={sizingDecision} />
       </div>
 
       <div
@@ -1104,6 +1507,478 @@ function PlanGrid({
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function PositionSizingPanel({
+  decisions,
+}: {
+  decisions: readonly PositionSizingDecision[];
+}) {
+  if (decisions.length === 0) {
+    return (
+      <div
+        style={{
+          color: S.dim,
+          fontSize: 12,
+          border: `1px dashed ${S.borderStrong}`,
+          borderRadius: 9,
+          padding: 12,
+          lineHeight: 1.5,
+        }}
+      >
+        O valor da posição ainda não foi calculado. A decisão de risco
+        é criada no servidor imediatamente antes da execução, depois
+        da conferência do saldo, stop, custos e limites da conta.
+      </div>
+    );
+  }
+
+  const decision = decisions[0];
+  const status =
+    getPositionSizingStatusPresentation(decision.status);
+
+  const effectiveRisk =
+    decision.applied_risk_percent ??
+    decision.target_risk_percent ??
+    decision.base_risk_percent;
+
+  const quoteAmount =
+    decision.effective_quote_amount ??
+    decision.requested_quote_amount;
+
+  return (
+    <div
+      style={{
+        border: `1px solid ${
+          decision.sizing_mode === 'martingale_testnet'
+            ? `${S.red}66`
+            : `${TONE_COLOR[
+                getPositionSizingModeTone(
+                  decision.sizing_mode,
+                )
+              ]}55`
+        }`,
+        borderRadius: 10,
+        padding: 13,
+        background:
+          decision.sizing_mode === 'martingale_testnet'
+            ? `${S.red}08`
+            : S.bg,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          flexWrap: 'wrap',
+        }}
+      >
+        <div>
+          <div
+            style={{
+              color: S.textStrong,
+              fontSize: 14,
+              fontWeight: 800,
+            }}
+          >
+            {
+              POSITION_SIZING_MODE_LABEL[
+                decision.sizing_mode
+              ]
+            }
+          </div>
+
+          <div
+            style={{
+              color: S.dim,
+              fontSize: 10,
+              marginTop: 3,
+            }}
+          >
+            Sequência por{' '}
+            {
+              POSITION_SIZING_SCOPE_LABEL[
+                decision.sizing_scope
+              ]
+            }
+            {' · '}política v{decision.policy_version}
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: 'flex',
+            gap: 6,
+            flexWrap: 'wrap',
+          }}
+        >
+          <Pill tone={status.tone}>
+            {status.label}
+          </Pill>
+
+          <Pill
+            tone={
+              decision.execution_environment === 'real'
+                ? 'danger'
+                : 'info'
+            }
+          >
+            {decision.execution_environment === 'real'
+              ? 'CONTA REAL'
+              : 'TESTNET'}
+          </Pill>
+        </div>
+      </div>
+
+      {decision.sizing_mode === 'martingale_testnet' && (
+        <div
+          style={{
+            color: S.red,
+            fontSize: 11,
+            fontWeight: 800,
+            lineHeight: 1.5,
+            border: `1px solid ${S.red}55`,
+            borderRadius: 8,
+            padding: 9,
+            marginTop: 11,
+          }}
+        >
+          ⚠️ Martingale experimental. Este método permanece restrito
+          à Testnet e aumenta o risco depois de perdas.
+        </div>
+      )}
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns:
+            'repeat(auto-fit, minmax(130px, 1fr))',
+          gap: 8,
+          marginTop: 12,
+        }}
+      >
+        <MetricCard
+          label="Valor efetivo"
+          value={
+            quoteAmount === null
+              ? '—'
+              : `${fmtNumber(quoteAmount, 4)} USDT`
+          }
+          detail={
+            decision.requested_quote_amount !== null
+              ? `Solicitado: ${fmtNumber(
+                  decision.requested_quote_amount,
+                  4,
+                )} USDT`
+              : undefined
+          }
+          tone="info"
+        />
+
+        <MetricCard
+          label="Risco aplicado"
+          value={`${fmtNumber(effectiveRisk, 4)}%`}
+          detail={`Base: ${fmtNumber(
+            decision.base_risk_percent,
+            4,
+          )}%`}
+          tone={
+            effectiveRisk >
+            decision.base_risk_percent
+              ? 'warning'
+              : 'neutral'
+          }
+        />
+
+        <MetricCard
+          label="Multiplicador"
+          value={`${fmtNumber(
+            decision.risk_multiplier,
+            4,
+          )}×`}
+          detail={`Etapa ${fmtNumber(
+            decision.sequence_step,
+            0,
+          )}`}
+          tone={getPositionSizingModeTone(
+            decision.sizing_mode,
+          )}
+        />
+
+        <MetricCard
+          label="Risco planejado"
+          value={
+            decision.planned_risk_usdt === null
+              ? '—'
+              : `${fmtNumber(
+                  decision.planned_risk_usdt,
+                  4,
+                )} USDT`
+          }
+          detail={
+            decision.actual_risk_usdt !== null
+              ? `Real: ${fmtNumber(
+                  decision.actual_risk_usdt,
+                  4,
+                )} USDT`
+              : 'Aguardando risco real'
+          }
+          tone="danger"
+        />
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns:
+            'repeat(auto-fit, minmax(185px, 1fr))',
+          gap: 8,
+          marginTop: 10,
+        }}
+      >
+        <div
+          style={{
+            border: `1px solid ${S.border}`,
+            borderRadius: 8,
+            padding: 10,
+          }}
+        >
+          <div
+            style={{
+              color: S.dim,
+              fontSize: 9,
+              fontWeight: 800,
+              textTransform: 'uppercase',
+            }}
+          >
+            Sequência do escopo
+          </div>
+
+          <div
+            style={{
+              color: S.text,
+              fontSize: 11,
+              marginTop: 5,
+              lineHeight: 1.5,
+            }}
+          >
+            {fmtNumber(decision.consecutive_wins, 0)} vitória(s)
+            {' · '}
+            {fmtNumber(decision.consecutive_losses, 0)} perda(s)
+          </div>
+        </div>
+
+        <div
+          style={{
+            border: `1px solid ${S.border}`,
+            borderRadius: 8,
+            padding: 10,
+          }}
+        >
+          <div
+            style={{
+              color: S.dim,
+              fontSize: 9,
+              fontWeight: 800,
+              textTransform: 'uppercase',
+            }}
+          >
+            Sequência da conta
+          </div>
+
+          <div
+            style={{
+              color: S.text,
+              fontSize: 11,
+              marginTop: 5,
+              lineHeight: 1.5,
+            }}
+          >
+            {fmtNumber(
+              decision.account_consecutive_wins,
+              0,
+            )}{' '}
+            vitória(s)
+            {' · '}
+            {fmtNumber(
+              decision.account_consecutive_losses,
+              0,
+            )}{' '}
+            perda(s)
+          </div>
+        </div>
+
+        <div
+          style={{
+            border: `1px solid ${S.border}`,
+            borderRadius: 8,
+            padding: 10,
+          }}
+        >
+          <div
+            style={{
+              color: S.dim,
+              fontSize: 9,
+              fontWeight: 800,
+              textTransform: 'uppercase',
+            }}
+          >
+            Saldo considerado
+          </div>
+
+          <div
+            style={{
+              color: S.text,
+              fontSize: 11,
+              marginTop: 5,
+              lineHeight: 1.5,
+            }}
+          >
+            {decision.available_balance_usdt === null
+              ? '—'
+              : `${fmtNumber(
+                  decision.available_balance_usdt,
+                  4,
+                )} USDT`}
+            {' · '}
+            uso máximo{' '}
+            {fmtNumber(
+              decision.balance_usage_limit_pct,
+              2,
+            )}
+            %
+          </div>
+        </div>
+
+        <div
+          style={{
+            border: `1px solid ${S.border}`,
+            borderRadius: 8,
+            padding: 10,
+          }}
+        >
+          <div
+            style={{
+              color: S.dim,
+              fontSize: 9,
+              fontWeight: 800,
+              textTransform: 'uppercase',
+            }}
+          >
+            Perda estimada no stop
+          </div>
+
+          <div
+            style={{
+              color: S.text,
+              fontSize: 11,
+              marginTop: 5,
+              lineHeight: 1.5,
+            }}
+          >
+            {fmtNumber(
+              decision.estimated_loss_rate_pct,
+              4,
+            )}
+            %
+            {' · '}stop{' '}
+            {fmtNumber(
+              decision.stop_distance_pct,
+              4,
+            )}
+            %
+          </div>
+        </div>
+      </div>
+
+      <div
+        style={{
+          color: S.dim,
+          fontSize: 10,
+          lineHeight: 1.55,
+          marginTop: 10,
+        }}
+      >
+        Custos estimados de ida e volta:{' '}
+        {fmtNumber(
+          decision.estimated_total_cost_pct,
+          4,
+        )}
+        %
+        {' · '}taxa por execução{' '}
+        {fmtNumber(
+          decision.estimated_fee_rate_pct,
+          4,
+        )}
+        %
+        {' · '}slippage por execução{' '}
+        {fmtNumber(
+          decision.estimated_slippage_pct,
+          4,
+        )}
+        %
+      </div>
+
+      {decision.limiting_rules.length > 0 && (
+        <div
+          style={{
+            border: `1px solid ${S.a}55`,
+            background: `${S.a}08`,
+            borderRadius: 8,
+            padding: 10,
+            marginTop: 10,
+          }}
+        >
+          <div
+            style={{
+              color: S.a,
+              fontSize: 10,
+              fontWeight: 800,
+            }}
+          >
+            O valor foi limitado por
+          </div>
+
+          <div
+            style={{
+              color: S.dimStrong,
+              fontSize: 10,
+              lineHeight: 1.5,
+              marginTop: 4,
+            }}
+          >
+            {decision.limiting_rules
+              .map(displayLimitingRule)
+              .join(' · ')}
+          </div>
+        </div>
+      )}
+
+      <div
+        style={{
+          color: S.dim,
+          fontSize: 9,
+          marginTop: 10,
+          lineHeight: 1.45,
+        }}
+      >
+        Criado em {fmtDate(decision.created_at, true)}
+        {decision.applied_at
+          ? ` · aplicado em ${fmtDate(
+              decision.applied_at,
+              true,
+            )}`
+          : ''}
+        {' · '}origem {decision.source}
+        {' · '}ID {decision.id.slice(0, 8)}…
+        {decisions.length > 1
+          ? ` · ${decisions.length} versões registradas`
+          : ''}
+      </div>
     </div>
   );
 }
@@ -1867,6 +2742,11 @@ export default function OportunidadesPage() {
     OpportunityOrder[]
   >([]);
 
+  const [
+    sizingDecisions,
+    setSizingDecisions,
+  ] = useState<PositionSizingDecision[]>([]);
+
   const [activeTab, setActiveTab] =
     useState<MainTab>('pending');
   const [selectedId, setSelectedId] =
@@ -1926,6 +2806,7 @@ export default function OportunidadesPage() {
             setDecisions([]);
             setEvents([]);
             setOrders([]);
+            setSizingDecisions([]);
             setSelectedId(null);
             setLoadState('idle');
             setRealtimeState('disconnected');
@@ -1972,6 +2853,7 @@ export default function OportunidadesPage() {
       let loadedDecisions: OpportunityDecision[] = [];
       let loadedEvents: OpportunityEvent[] = [];
       let loadedOrders: OpportunityOrder[] = [];
+      let loadedSizingDecisions: PositionSizingDecision[] = [];
 
       if (ids.length > 0) {
         const [
@@ -1979,6 +2861,7 @@ export default function OportunidadesPage() {
           decisionResult,
           eventResult,
           orderResult,
+          positionSizingResult,
         ] = await Promise.all([
           supabase
             .from('opportunity_outcomes')
@@ -2004,13 +2887,20 @@ export default function OportunidadesPage() {
             .in('opportunity_id', ids)
             .order('criado_em', { ascending: false })
             .limit(RELATED_LIMIT),
+          supabase
+            .from('position_sizing_decisions')
+            .select('*')
+            .in('opportunity_id', ids)
+            .order('created_at', { ascending: false })
+            .limit(RELATED_LIMIT),
         ]);
 
         const relatedError =
           outcomeResult.error ??
           decisionResult.error ??
           eventResult.error ??
-          orderResult.error;
+          orderResult.error ??
+          positionSizingResult.error;
 
         if (relatedError) {
           throw relatedError;
@@ -2026,6 +2916,22 @@ export default function OportunidadesPage() {
           (eventResult.data as OpportunityEvent[] | null) ?? [];
         loadedOrders =
           (orderResult.data as OpportunityOrder[] | null) ?? [];
+
+        loadedSizingDecisions = (
+          positionSizingResult.data ?? []
+        )
+          .map(normalizePositionSizingDecision)
+          .filter(
+            (
+              decision,
+            ): decision is PositionSizingDecision =>
+              decision !== null,
+          )
+          .sort(
+            (left, right) =>
+              Date.parse(right.created_at) -
+              Date.parse(left.created_at),
+          );
       }
 
       setOpportunities(
@@ -2037,6 +2943,7 @@ export default function OportunidadesPage() {
       setDecisions(loadedDecisions);
       setEvents(loadedEvents);
       setOrders(loadedOrders);
+      setSizingDecisions(loadedSizingDecisions);
       setLoadState('ready');
 
       const focus = safeFocusFromLocation();
@@ -2289,6 +3196,55 @@ export default function OportunidadesPage() {
           );
         },
       )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'position_sizing_decisions',
+          filter: userFilter,
+        },
+        (payload) => {
+          const change =
+            payload as unknown as RealtimePayloadLike;
+
+          const row =
+            change.eventType === 'DELETE'
+              ? change.old
+              : change.new;
+
+          const id =
+            typeof row.id === 'string'
+              ? row.id
+              : null;
+
+          if (!id) {
+            return;
+          }
+
+          if (change.eventType === 'DELETE') {
+            setSizingDecisions((current) =>
+              removeById(current, id),
+            );
+            return;
+          }
+
+          const decision =
+            normalizePositionSizingDecision(row);
+
+          if (!decision) {
+            return;
+          }
+
+          setSizingDecisions((current) =>
+            upsertById(current, decision).sort(
+              (left, right) =>
+                Date.parse(right.created_at) -
+                Date.parse(left.created_at),
+            ),
+          );
+        },
+      )
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
           setRealtimeState('live');
@@ -2325,6 +3281,30 @@ export default function OportunidadesPage() {
 
     return index;
   }, [outcomes]);
+
+  const latestSizingDecisionByOpportunity = useMemo(() => {
+    const index = new Map<
+      UUID,
+      PositionSizingDecision
+    >();
+
+    const sorted = [...sizingDecisions].sort(
+      (left, right) =>
+        Date.parse(right.created_at) -
+        Date.parse(left.created_at),
+    );
+
+    for (const decision of sorted) {
+      if (!index.has(decision.opportunity_id)) {
+        index.set(
+          decision.opportunity_id,
+          decision,
+        );
+      }
+    }
+
+    return index;
+  }, [sizingDecisions]);
 
   const metrics = useMemo(
     () =>
@@ -2442,6 +3422,24 @@ export default function OportunidadesPage() {
           )
         : [],
     [decisions, selectedOpportunity],
+  );
+
+  const selectedSizingDecisions = useMemo(
+    () =>
+      selectedOpportunity
+        ? sizingDecisions
+            .filter(
+              (decision) =>
+                decision.opportunity_id ===
+                selectedOpportunity.id,
+            )
+            .sort(
+              (left, right) =>
+                Date.parse(right.created_at) -
+                Date.parse(left.created_at),
+            )
+        : [],
+    [selectedOpportunity, sizingDecisions],
   );
 
   // Autenticação ------------------------------------------------------------
@@ -2993,6 +3991,11 @@ export default function OportunidadesPage() {
             executedOutcome={
               outcomeIndex.get(
                 `${opportunity.id}:executed`,
+              ) ?? null
+            }
+            sizingDecision={
+              latestSizingDecisionByOpportunity.get(
+                opportunity.id,
               ) ?? null
             }
             onOpen={openOpportunity}
@@ -3759,6 +4762,17 @@ export default function OportunidadesPage() {
                   opportunity={selectedOpportunity}
                 />
 
+                <div style={{ marginTop: 14 }}>
+                  <SectionTitle
+                    title="Gerenciamento da posição"
+                    subtitle="Valor calculado pelo servidor com base no saldo, stop, custos, sequência de resultados e limites configurados."
+                  />
+
+                  <PositionSizingPanel
+                    decisions={selectedSizingDecisions}
+                  />
+                </div>
+
                 <div
                   style={{
                     display: 'grid',
@@ -3861,7 +4875,11 @@ export default function OportunidadesPage() {
                   <div>
                     <SectionTitle
                       title="Linha do tempo"
-                      subtitle={`${selectedEvents.length} evento(s) · ${selectedDecisions.length} decisão(ões)`}
+                      subtitle={[
+                        `${selectedEvents.length} evento(s)`,
+                        `${selectedDecisions.length} decisão(ões) do usuário`,
+                        `${selectedSizingDecisions.length} cálculo(s) de risco`,
+                      ].join(' · ')}
                     />
                     <Timeline events={selectedEvents} />
                   </div>
