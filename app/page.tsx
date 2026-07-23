@@ -1848,11 +1848,11 @@ export default function AnalisePage() {
 <span style={{ color: S.a, fontWeight: 600 }}>Análise</span>
 
 <a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>
-  Day Trade
+  Validação
 </a>
 
 <a href="/oportunidades" style={{ color: S.dim, textDecoration: 'none' }}>
-  Oportunidades
+  Teste prospectivo
 </a>
 
 <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
@@ -2135,14 +2135,14 @@ export default function AnalisePage() {
           <a href="/alertas" style={{ color: S.a, textDecoration: 'none' }}>
             Alertas
           </a>{' '}
-          para acompanhar mudanças e a{' '}
+          para acompanhar mudanças e o{' '}
           <a
             href="/oportunidades"
             style={{ color: S.b, textDecoration: 'none' }}
           >
-            Central de Oportunidades
+            Teste prospectivo
           </a>{' '}
-          para revisar setups, decisões e resultados monitorados.
+          para acompanhar a validação das estratégias diárias em curso.
         </p>
 
         {/* Controles */}
