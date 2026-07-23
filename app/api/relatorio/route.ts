@@ -192,7 +192,20 @@ function normalizeOrigin(value: string): string {
 
 function isAllowedOrigin(req: Request): boolean {
   const origin = req.headers.get('origin');
-  if (!origin) return true;
+
+  /**
+   * Ausência do cabeçalho Origin costumava liberar a requisição, o que anulava
+   * toda a proteção: bastava chamar o endpoint sem o cabeçalho (curl, script,
+   * bot) para passar direto e consumir a cota da API paga.
+   *
+   * Navegadores enviam Origin em toda requisição POST, inclusive de mesma
+   * origem, então exigir o cabeçalho não afeta o uso legítimo pelo site. Em
+   * desenvolvimento a ausência continua tolerada para não atrapalhar testes
+   * locais com curl.
+   */
+  if (!origin) {
+    return process.env.NODE_ENV !== 'production';
+  }
 
   const requestUrl = new URL(req.url);
   const forwardedHost = req.headers.get('x-forwarded-host');

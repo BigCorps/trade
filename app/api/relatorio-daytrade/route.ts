@@ -156,7 +156,15 @@ function normalizeOrigin(value: string): string {
 
 function isAllowedOrigin(req: Request): boolean {
   const origin = req.headers.get('origin');
-  if (!origin) return true;
+
+  /**
+   * Sem esta checagem, qualquer chamada sem cabeçalho Origin (curl, script,
+   * bot) passava direto e consumia a cota da API paga. Navegadores sempre
+   * enviam Origin em POST, então o uso legítimo pelo site não é afetado.
+   */
+  if (!origin) {
+    return process.env.NODE_ENV !== 'production';
+  }
 
   const requestUrl = new URL(req.url);
   const forwardedHost = req.headers.get('x-forwarded-host');

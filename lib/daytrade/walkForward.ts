@@ -148,6 +148,23 @@ export interface WalkForwardAggregate {
   averageR: number | null;
   medianR: number | null;
 
+  /** Desvio padrão do resultado por operação, em R. */
+  standardDeviationR: number | null;
+
+  /** Erro padrão da média (desvio padrão dividido pela raiz de n). */
+  standardErrorR: number | null;
+
+  /**
+   * Estatística t da média contra zero (média / erro padrão).
+   *
+   * Regra prática: |t| abaixo de 2 significa que o resultado NÃO é
+   * distinguível de sorte. Não é prova de ausência de vantagem, é ausência
+   * de evidência. Atenção: quando muitas configurações são comparadas, um
+   * |t| acima de 2 aparece por acaso com frequência — este número só tem
+   * valor pleno em teste definido antes de rodar.
+   */
+  tStatistic: number | null;
+
   /** Soma dos R positivos dividida pela soma absoluta dos R negativos. */
   profitFactorR: number | null;
 
@@ -253,6 +270,7 @@ interface TradeSetStats {
   medianR: number | null;
   bestR: number | null;
   worstR: number | null;
+  standardDeviationR: number | null;
 }
 
 function computeTradeSetStats(
@@ -266,6 +284,31 @@ function computeTradeSetStats(
 
   const decisive = wins + losses;
 
+  const averageR =
+    rValues.length === 0 ? null : sum(rValues) / rValues.length;
+
+  /**
+   * Desvio padrão amostral (n-1), base do erro padrão da média.
+   *
+   * Quando todas as operações têm o mesmo resultado (por exemplo, poucas
+   * operações todas encerradas no stop cheio), a soma dos quadrados dá um
+   * resíduo de ponto flutuante em vez de zero exato. Sem o corte abaixo, esse
+   * resíduo vira um erro padrão minúsculo e produz uma estatística t
+   * absurdamente alta. Valores abaixo da tolerância são tratados como zero.
+   */
+  const rawStandardDeviation =
+    rValues.length < 2 || averageR === null
+      ? null
+      : Math.sqrt(
+          sum(rValues.map((value) => (value - averageR) ** 2)) /
+            (rValues.length - 1),
+        );
+
+  const standardDeviationR =
+    rawStandardDeviation === null || rawStandardDeviation < 1e-6
+      ? null
+      : rawStandardDeviation;
+
   return {
     trades: trades.length,
     wins,
@@ -273,10 +316,11 @@ function computeTradeSetStats(
     breakeven,
     winRatePct: decisive === 0 ? null : (wins / decisive) * 100,
     sumR: sum(rValues),
-    averageR: rValues.length === 0 ? null : sum(rValues) / rValues.length,
+    averageR,
     medianR: median(rValues),
     bestR: rValues.length === 0 ? null : Math.max(...rValues),
     worstR: rValues.length === 0 ? null : Math.min(...rValues),
+    standardDeviationR,
   };
 }
 
@@ -521,6 +565,26 @@ export function runWalkForwardBacktest(
       sumR: globalStats.sumR,
       averageR: globalStats.averageR,
       medianR: globalStats.medianR,
+
+      standardDeviationR: globalStats.standardDeviationR,
+
+      standardErrorR:
+        globalStats.standardDeviationR === null || globalStats.trades < 2
+          ? null
+          : globalStats.standardDeviationR / Math.sqrt(globalStats.trades),
+
+      /**
+       * Nulo quando não há dispersão mensurável ou a amostra é pequena demais.
+       * Com menos de 5 operações a estatística t não tem significado prático,
+       * mesmo quando é calculável.
+       */
+      tStatistic:
+        globalStats.standardDeviationR === null ||
+        globalStats.averageR === null ||
+        globalStats.trades < 5
+          ? null
+          : globalStats.averageR /
+            (globalStats.standardDeviationR / Math.sqrt(globalStats.trades)),
 
       profitFactorR: negativeR === 0 ? null : positiveR / negativeR,
 

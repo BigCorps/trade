@@ -1,0 +1,46 @@
+Bateria walk-forward · 1h · 360 dias · janela 2000
+Símbolos: XRPUSDT, ADAUSDT, DOGEUSDT, AVAXUSDT, LINKUSDT · Estratégias: trend_pullback, trend_breakout
+Gerado em: 2026-07-23T15:05:43.954Z
+
+simbolo | estrategia | gestao | trades | acerto% | somaR | mediaR | medianaR | PF | janelasPos | piorJanela | obs
+---|---|---|---|---|---|---|---|---|---|---|---
+DOGEUSDT | trend_pullback | nenhuma | 34 | 41.2 | +0.20 | +0.01 | -1.00 | 1.01 | 3/4 | -6.00 | amostra baixa
+XRPUSDT | trend_breakout | nenhuma | 98 | 38.8 | -4.92 | -0.05 | -1.00 | 0.92 | 2/4 | -6.31 | amostra baixa
+XRPUSDT | trend_breakout | trailing | 98 | 35.7 | -7.66 | -0.08 | -1.00 | 0.87 | 2/4 | -5.23 | amostra baixa
+XRPUSDT | trend_breakout | breakeven | 98 | 32.7 | -9.16 | -0.09 | -1.00 | 0.84 | 1/4 | -5.46 | amostra baixa
+XRPUSDT | trend_breakout | parcial | 98 | 44.9 | -13.39 | -0.14 | -1.00 | 0.75 | 0/4 | -6.43 | amostra baixa
+DOGEUSDT | trend_pullback | breakeven | 38 | 28.9 | -5.48 | -0.14 | -1.00 | 0.74 | 1/4 | -6.00 | amostra baixa
+DOGEUSDT | trend_pullback | parcial | 38 | 47.4 | -5.43 | -0.14 | -1.00 | 0.73 | 2/4 | -6.00 | amostra baixa
+DOGEUSDT | trend_breakout | breakeven | 96 | 29.2 | -13.06 | -0.14 | -1.00 | 0.77 | 0/4 | -4.99 | amostra baixa
+LINKUSDT | trend_breakout | parcial | 78 | 50.0 | -10.84 | -0.14 | -0.44 | 0.72 | 0/4 | -5.75 | amostra baixa
+DOGEUSDT | trend_pullback | trailing | 36 | 33.3 | -5.91 | -0.16 | -1.00 | 0.71 | 1/4 | -6.00 | amostra baixa
+DOGEUSDT | trend_breakout | parcial | 96 | 42.7 | -15.48 | -0.16 | -1.00 | 0.72 | 0/4 | -5.55 | amostra baixa
+DOGEUSDT | trend_breakout | trailing | 96 | 33.3 | -15.17 | -0.16 | -1.00 | 0.74 | 1/4 | -5.42 | amostra baixa
+XRPUSDT | trend_pullback | breakeven | 42 | 28.6 | -7.08 | -0.17 | -1.00 | 0.70 | 1/4 | -4.04 | amostra baixa
+DOGEUSDT | trend_breakout | nenhuma | 93 | 32.3 | -16.00 | -0.17 | -1.00 | 0.75 | 1/4 | -7.48 | amostra baixa
+XRPUSDT | trend_pullback | parcial | 42 | 47.6 | -7.47 | -0.18 | -1.00 | 0.66 | 1/4 | -4.41 | amostra baixa
+XRPUSDT | trend_pullback | trailing | 39 | 35.9 | -7.11 | -0.18 | -1.00 | 0.69 | 1/4 | -3.86 | amostra baixa
+ADAUSDT | trend_breakout | nenhuma | 81 | 32.1 | -14.55 | -0.18 | -1.00 | 0.74 | 0/4 | -7.82 | amostra baixa
+LINKUSDT | trend_breakout | breakeven | 78 | 23.1 | -13.94 | -0.18 | -0.63 | 0.67 | 0/4 | -6.23 | amostra baixa
+XRPUSDT | trend_pullback | nenhuma | 37 | 35.1 | -7.05 | -0.19 | -1.00 | 0.71 | 1/4 | -3.99 | amostra baixa
+ADAUSDT | trend_breakout | breakeven | 82 | 25.6 | -16.09 | -0.20 | -1.00 | 0.67 | 0/4 | -5.52 | amostra baixa
+ADAUSDT | trend_breakout | trailing | 82 | 34.1 | -17.33 | -0.21 | -1.00 | 0.66 | 0/4 | -7.61 | amostra baixa
+LINKUSDT | trend_breakout | trailing | 79 | 31.6 | -16.78 | -0.21 | -0.70 | 0.61 | 0/4 | -7.92 | amostra baixa
+ADAUSDT | trend_pullback | parcial | 35 | 45.7 | -7.81 | -0.22 | -1.00 | 0.59 | 1/4 | -5.91 | amostra baixa
+ADAUSDT | trend_breakout | parcial | 82 | 42.7 | -18.04 | -0.22 | -1.00 | 0.62 | 0/4 | -6.58 | amostra baixa
+AVAXUSDT | trend_breakout | trailing | 82 | 31.7 | -18.36 | -0.22 | -1.00 | 0.64 | 0/4 | -14.57 | amostra baixa
+AVAXUSDT | trend_breakout | parcial | 83 | 41.0 | -18.92 | -0.23 | -1.00 | 0.61 | 0/4 | -15.72 | amostra baixa
+LINKUSDT | trend_pullback | parcial | 52 | 48.1 | -12.29 | -0.24 | -1.00 | 0.54 | 0/4 | -3.71 | amostra baixa
+LINKUSDT | trend_breakout | nenhuma | 75 | 29.3 | -18.88 | -0.25 | -1.00 | 0.64 | 0/4 | -8.87 | amostra baixa
+AVAXUSDT | trend_breakout | nenhuma | 82 | 29.3 | -21.11 | -0.26 | -1.00 | 0.64 | 0/4 | -14.57 | amostra baixa
+AVAXUSDT | trend_breakout | breakeven | 83 | 22.9 | -21.25 | -0.26 | -1.00 | 0.58 | 0/4 | -14.57 | amostra baixa
+ADAUSDT | trend_pullback | breakeven | 35 | 20.0 | -10.14 | -0.29 | -1.00 | 0.50 | 1/4 | -6.39 | amostra baixa
+ADAUSDT | trend_pullback | nenhuma | 32 | 28.1 | -9.84 | -0.31 | -1.00 | 0.57 | 1/4 | -6.15 | amostra baixa
+AVAXUSDT | trend_pullback | parcial | 63 | 41.3 | -19.42 | -0.31 | -1.00 | 0.48 | 0/4 | -5.50 | amostra baixa
+LINKUSDT | trend_pullback | breakeven | 52 | 17.3 | -16.10 | -0.31 | -1.00 | 0.46 | 0/4 | -5.17 | amostra baixa
+ADAUSDT | trend_pullback | trailing | 37 | 24.3 | -12.66 | -0.34 | -1.00 | 0.45 | 1/4 | -6.72 | amostra baixa
+AVAXUSDT | trend_pullback | breakeven | 63 | 19.0 | -21.61 | -0.34 | -1.00 | 0.45 | 0/4 | -7.17 | amostra baixa
+AVAXUSDT | trend_pullback | trailing | 59 | 27.1 | -19.93 | -0.34 | -1.00 | 0.50 | 0/4 | -8.00 | amostra baixa
+LINKUSDT | trend_pullback | nenhuma | 49 | 26.5 | -16.56 | -0.34 | -1.00 | 0.54 | 0/4 | -6.39 | amostra baixa
+AVAXUSDT | trend_pullback | nenhuma | 52 | 25.0 | -19.66 | -0.38 | -1.00 | 0.50 | 0/4 | -6.23 | amostra baixa
+LINKUSDT | trend_pullback | trailing | 53 | 22.6 | -22.68 | -0.43 | -1.00 | 0.35 | 0/4 | -8.19 | amostra baixa

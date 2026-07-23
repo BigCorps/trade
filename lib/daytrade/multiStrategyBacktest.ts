@@ -75,6 +75,51 @@ export type MultiStrategyBacktestSkippedSignalReason =
   | 'entry_above_reference_limit'
   | 'position_sizing_failed';
 
+export interface MultiStrategyBacktestPartialTakeOptions {
+  /** Múltiplo de R que dispara a realização parcial (ex.: 1 = +1R). */
+  triggerR: number;
+
+  /** Fração da quantidade encerrada na parcial (0 < fração < 1). */
+  fraction: number;
+}
+
+export interface MultiStrategyBacktestAtrTrailingOptions {
+  /** Múltiplo de R que ativa o trailing (ex.: 1 = +1R). */
+  triggerR: number;
+
+  /** Distância do trailing em múltiplos do ATR do sinal. */
+  atrMultiple: number;
+}
+
+/**
+ * Gestão intra-trade opcional, aplicada de forma conservadora:
+ * - Saídas do candle são avaliadas SEMPRE contra o stop vigente antes de
+ *   qualquer ajuste; movimentos de stop passam a valer no candle seguinte.
+ * - Se o mesmo candle toca o gatilho e o stop, prevalece o stop
+ *   (intrabarPriority stop_first é preservado).
+ * - Breakeven move o stop para o preço de entrada; a saída nesse nível
+ *   ainda paga taxas e slippage, portanto resulta levemente negativa.
+ * - A parcial é preenchida no preço exato do gatilho (limite conservador),
+ *   sem arredondamento por stepSize (aproximação documentada).
+ * - O trailing usa o ATR do momento do sinal (constante durante o trade).
+ */
+export interface MultiStrategyBacktestManagementOptions {
+  /** Move o stop para a entrada ao atingir este múltiplo de R. */
+  breakevenAtR?: number | null;
+
+  /** Realização parcial ao atingir o gatilho. */
+  partialTakeProfit?: MultiStrategyBacktestPartialTakeOptions | null;
+
+  /** Trailing stop por ATR após o gatilho. */
+  atrTrailing?: MultiStrategyBacktestAtrTrailingOptions | null;
+}
+
+export interface ResolvedMultiStrategyBacktestManagement {
+  breakevenAtR: number | null;
+  partialTakeProfit: MultiStrategyBacktestPartialTakeOptions | null;
+  atrTrailing: MultiStrategyBacktestAtrTrailingOptions | null;
+}
+
 export interface MultiStrategyBacktestOptions {
   /** Patrimônio inicial da simulação. Padrão: 1.000 USDT. */
   initialCapitalUsdt?: number;
@@ -119,6 +164,9 @@ export interface MultiStrategyBacktestOptions {
    * Quando omitida, usa o limite padrão da estratégia selecionada.
    */
   maximumNextOpenDistanceAtr?: number;
+
+  /** Gestão intra-trade opcional (breakeven, parcial, trailing). */
+  management?: MultiStrategyBacktestManagementOptions | null;
 }
 
 export interface ResolvedMultiStrategyBacktestOptions {
@@ -133,6 +181,7 @@ export interface ResolvedMultiStrategyBacktestOptions {
   intrabarPriority: MultiStrategyBacktestIntrabarPriority;
   maximumHoldingCandles: number;
   maximumNextOpenDistanceAtr: number;
+  management: ResolvedMultiStrategyBacktestManagement;
 }
 
 export interface MultiStrategyBacktestInput {
@@ -408,7 +457,73 @@ export function resolveMultiStrategyBacktestOptions(
     );
   }
 
+  const managementInput =
+    options.management ?? null;
+
+  const management: ResolvedMultiStrategyBacktestManagement = {
+    breakevenAtR: null,
+    partialTakeProfit: null,
+    atrTrailing: null,
+  };
+
+  if (managementInput) {
+    if (
+      managementInput.breakevenAtR !== null &&
+      managementInput.breakevenAtR !== undefined
+    ) {
+      management.breakevenAtR = positiveBacktestNumber(
+        managementInput.breakevenAtR,
+        'management.breakevenAtR',
+      );
+    }
+
+    if (managementInput.partialTakeProfit) {
+      const partial = managementInput.partialTakeProfit;
+
+      positiveBacktestNumber(
+        partial.triggerR,
+        'management.partialTakeProfit.triggerR',
+      );
+
+      if (
+        !Number.isFinite(partial.fraction) ||
+        partial.fraction <= 0 ||
+        partial.fraction >= 1
+      ) {
+        throw new Error(
+          'management.partialTakeProfit.fraction deve estar entre 0 e 1 (exclusivos).',
+        );
+      }
+
+      management.partialTakeProfit = {
+        triggerR: partial.triggerR,
+        fraction: partial.fraction,
+      };
+    }
+
+    if (managementInput.atrTrailing) {
+      const trailing = managementInput.atrTrailing;
+
+      positiveBacktestNumber(
+        trailing.triggerR,
+        'management.atrTrailing.triggerR',
+      );
+
+      positiveBacktestNumber(
+        trailing.atrMultiple,
+        'management.atrTrailing.atrMultiple',
+      );
+
+      management.atrTrailing = {
+        triggerR: trailing.triggerR,
+        atrMultiple: trailing.atrMultiple,
+      };
+    }
+  }
+
   return {
+    management,
+
     initialCapitalUsdt:
       positiveBacktestNumber(
         options.initialCapitalUsdt ??
@@ -917,6 +1032,22 @@ interface OpenMultiStrategyBacktestTrade {
   entryFeeUsdt: number;
 
   equityBefore: number;
+
+  /** Stop original do plano, base da distância de 1R para a gestão. */
+  initialStopPrice: number;
+
+  /** Quantidade ainda aberta (reduzida por realizações parciais). */
+  quantityRemaining: number;
+
+  /** PnL bruto já realizado por parciais. */
+  realizedGrossPnlUsdt: number;
+
+  /** Taxas de saída já pagas em parciais. */
+  realizedExitFeesUsdt: number;
+
+  breakevenApplied: boolean;
+  trailingActive: boolean;
+  partialDone: boolean;
 }
 
 function applyBacktestBuySlippage(
@@ -1090,6 +1221,133 @@ function chooseMultiStrategyBacktestExit(
   }
 
   return null;
+}
+
+/**
+ * Aplica a gestão intra-trade ao fim do candle, APÓS a checagem de saídas.
+ * Qualquer ajuste de stop feito aqui só é avaliado a partir do candle
+ * seguinte, o que evita lookahead e preserva o conservadorismo stop_first.
+ */
+function applyMultiStrategyBacktestManagement(
+  trade: OpenMultiStrategyBacktestTrade,
+  candle: DayTradeCandle,
+  options: ResolvedMultiStrategyBacktestOptions,
+): void {
+  const management = options.management;
+
+  const riskDistance =
+    trade.entryPrice -
+    trade.initialStopPrice;
+
+  if (
+    !Number.isFinite(riskDistance) ||
+    riskDistance <= 0
+  ) {
+    return;
+  }
+
+  const priceAtR = (multiple: number): number =>
+    trade.entryPrice +
+    multiple * riskDistance;
+
+  // Realização parcial (preenchimento no preço do gatilho, conservador).
+  if (
+    management.partialTakeProfit &&
+    !trade.partialDone
+  ) {
+    const partial = management.partialTakeProfit;
+    const triggerPrice = priceAtR(partial.triggerR);
+
+    if (
+      triggerPrice < trade.targetPrice &&
+      candle.high >= triggerPrice
+    ) {
+      const partialQuantity =
+        trade.quantityRemaining *
+        partial.fraction;
+
+      if (partialQuantity > 0) {
+        const partialExitPrice =
+          applyBacktestSellSlippage(
+            triggerPrice,
+            options.slippagePct,
+          );
+
+        const partialFeeUsdt =
+          calculateBacktestExecutionFee(
+            partialExitPrice,
+            partialQuantity,
+            options.feeRatePct,
+          );
+
+        trade.realizedGrossPnlUsdt +=
+          (
+            partialExitPrice -
+            trade.entryPrice
+          ) *
+          partialQuantity;
+
+        trade.realizedExitFeesUsdt +=
+          partialFeeUsdt;
+
+        trade.quantityRemaining -=
+          partialQuantity;
+
+        trade.partialDone = true;
+      }
+    }
+  }
+
+  // Breakeven: stop vai para a entrada; vale a partir do próximo candle.
+  if (
+    management.breakevenAtR !== null &&
+    !trade.breakevenApplied &&
+    candle.high >= priceAtR(management.breakevenAtR)
+  ) {
+    trade.stopPrice = Math.max(
+      trade.stopPrice,
+      trade.entryPrice,
+    );
+
+    trade.breakevenApplied = true;
+  }
+
+  // Trailing por ATR do sinal, após o gatilho; vale a partir do próximo candle.
+  if (management.atrTrailing) {
+    const trailing = management.atrTrailing;
+
+    if (
+      !trade.trailingActive &&
+      candle.high >= priceAtR(trailing.triggerR)
+    ) {
+      trade.trailingActive = true;
+    }
+
+    if (trade.trailingActive) {
+      const signalAtr =
+        trade.plan.stopDistanceAtr > 0
+          ? (
+              trade.plan.riskPerUnit /
+              trade.plan.stopDistanceAtr
+            )
+          : 0;
+
+      if (signalAtr > 0) {
+        const candidateStop =
+          candle.close -
+          trailing.atrMultiple *
+            signalAtr;
+
+        if (
+          candidateStop >
+          trade.stopPrice
+        ) {
+          trade.stopPrice =
+            candidateStop;
+        }
+      }
+    }
+  }
 }
 
 function createMultiStrategyBacktestTrade(
@@ -1304,6 +1562,19 @@ function createMultiStrategyBacktestTrade(
 
       targetPrice,
 
+      initialStopPrice:
+        plan.stopReference,
+
+      quantityRemaining:
+        sizing.quantity,
+
+      realizedGrossPnlUsdt: 0,
+      realizedExitFeesUsdt: 0,
+
+      breakevenApplied: false,
+      trailingActive: false,
+      partialDone: false,
+
       quantity:
         sizing.quantity,
 
@@ -1343,19 +1614,21 @@ function closeMultiStrategyBacktestTrade(
   const exitFeeUsdt =
     calculateBacktestExecutionFee(
       exitPrice,
-      trade.quantity,
+      trade.quantityRemaining,
       options.feeRatePct,
     );
 
   const grossPnlUsdt =
+    trade.realizedGrossPnlUsdt +
     (
       exitPrice -
       trade.entryPrice
     ) *
-    trade.quantity;
+    trade.quantityRemaining;
 
   const totalFeesUsdt =
     trade.entryFeeUsdt +
+    trade.realizedExitFeesUsdt +
     exitFeeUsdt;
 
   const netPnlUsdt =
@@ -2039,6 +2312,12 @@ export function runMultiStrategyBacktest(
           closed.equityAfter;
 
         openTrade = null;
+      } else {
+        applyMultiStrategyBacktestManagement(
+          openTrade,
+          candle,
+          options,
+        );
       }
     }
 

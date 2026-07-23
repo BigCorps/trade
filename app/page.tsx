@@ -178,6 +178,14 @@ interface KeyInfo {
   is_testnet: boolean;
 }
 
+/** Retorno da RPC get_exchange_key_status(): sem chave completa nem segredo. */
+interface KeyStatusRow {
+  configured: boolean;
+  api_key_masked: string | null;
+  is_testnet: boolean | null;
+  atualizado_em: string | null;
+}
+
 type OpportunityLifecycleStatus =
   | 'pending'
   | 'under_review'
@@ -724,10 +732,10 @@ export default function AnalisePage() {
         .from('alert_rules')
         .select('id', { count: 'exact', head: true })
         .eq('ativo', true),
-      supabase
-        .from('exchange_keys')
-        .select('is_testnet')
-        .maybeSingle(),
+      // Nunca consultar exchange_keys direto: a tabela guarda a chave e o
+      // segredo cifrado, e o cliente não tem mais permissão de leitura.
+      // A RPC devolve apenas status e chave mascarada.
+      supabase.rpc('get_exchange_key_status'),
       supabase
         .from('orders')
         .select(
@@ -745,7 +753,15 @@ export default function AnalisePage() {
     ]);
 
     setAlertCount(alerts.error ? 0 : alerts.count ?? 0);
-    setKeyInfo(keys.error ? null : (keys.data as KeyInfo | null) ?? null);
+    const keyStatus = Array.isArray(keys.data)
+      ? (keys.data[0] as KeyStatusRow | undefined)
+      : (keys.data as KeyStatusRow | null);
+
+    setKeyInfo(
+      keys.error || !keyStatus || !keyStatus.configured
+        ? null
+        : { is_testnet: Boolean(keyStatus.is_testnet) },
+    );
     setLastOrders(orders.error ? [] : (orders.data as OrderRow[]) ?? []);
     setLastAnalyses(
       analyses.error ? [] : (analyses.data as AnalysisRow[]) ?? [],

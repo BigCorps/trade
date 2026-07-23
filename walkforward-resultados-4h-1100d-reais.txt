@@ -1,0 +1,79 @@
+Bateria walk-forward · 4h · 1100 dias · janela 750
+Custos: taxa 0.1% + slippage 0.05% · Stop mínimo: padrão
+Símbolos: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT, ADAUSDT, DOGEUSDT, AVAXUSDT, LINKUSDT · Estratégias: trend_pullback, trend_breakout
+Gerado em: 2026-07-23T17:45:40.162Z
+
+simbolo | estrategia | gestao | trades | acerto% | somaR | mediaR | medianaR | PF | t | janelasPos | piorJanela | obs
+---|---|---|---|---|---|---|---|---|---|---|---|---
+DOGEUSDT | trend_breakout | nenhuma | 81 | 45.7 | +22.00 | +0.27 | -1.00 | 1.50 | +1.75 | 6/8 | -5.32 | indistinguivel de sorte
+DOGEUSDT | trend_pullback | nenhuma | 54 | 44.4 | +12.60 | +0.23 | -1.00 | 1.42 | +1.23 | 5/8 | -6.00 | indistinguivel de sorte
+XRPUSDT | trend_breakout | breakeven | 68 | 38.2 | +14.72 | +0.22 | -0.09 | 1.47 | +1.41 | 5/8 | -2.66 | indistinguivel de sorte
+ETHUSDT | trend_breakout | nenhuma | 89 | 43.8 | +16.51 | +0.19 | -1.00 | 1.33 | +1.30 | 6/8 | -0.65 | indistinguivel de sorte
+XRPUSDT | trend_breakout | trailing | 69 | 44.9 | +13.15 | +0.19 | -0.54 | 1.38 | +1.24 | 4/8 | -3.06 | indistinguivel de sorte
+XRPUSDT | trend_breakout | nenhuma | 68 | 42.6 | +11.70 | +0.17 | -1.00 | 1.30 | +1.04 | 3/8 | -2.00 | indistinguivel de sorte
+DOGEUSDT | trend_breakout | breakeven | 82 | 34.1 | +14.32 | +0.17 | -0.07 | 1.40 | +1.29 | 4/8 | -3.57 | indistinguivel de sorte
+DOGEUSDT | trend_breakout | trailing | 82 | 40.2 | +13.66 | +0.17 | -0.30 | 1.35 | +1.20 | 5/8 | -4.03 | indistinguivel de sorte
+DOGEUSDT | trend_pullback | trailing | 58 | 44.8 | +9.09 | +0.16 | -0.74 | 1.31 | +0.93 | 5/8 | -6.00 | indistinguivel de sorte
+DOGEUSDT | trend_breakout | parcial | 82 | 58.5 | +13.51 | +0.16 | +0.40 | 1.40 | +1.40 | 3/8 | -2.58 | indistinguivel de sorte
+XRPUSDT | trend_breakout | parcial | 68 | 55.9 | +10.32 | +0.15 | +0.36 | 1.34 | +1.14 | 5/8 | -2.64 | indistinguivel de sorte
+DOGEUSDT | trend_pullback | breakeven | 59 | 32.2 | +7.65 | +0.13 | -0.07 | 1.29 | +0.83 | 4/8 | -5.04 | indistinguivel de sorte
+AVAXUSDT | trend_pullback | nenhuma | 37 | 40.5 | +4.93 | +0.13 | -1.00 | 1.22 | +0.58 | 4/8 | -3.20 | indistinguivel de sorte
+DOGEUSDT | trend_pullback | parcial | 59 | 57.6 | +7.05 | +0.12 | +0.39 | 1.28 | +0.88 | 6/8 | -4.57 | indistinguivel de sorte
+SOLUSDT | trend_pullback | nenhuma | 57 | 40.4 | +6.45 | +0.11 | -1.00 | 1.19 | +0.63 | 4/8 | -2.00 | indistinguivel de sorte
+SOLUSDT | trend_breakout | breakeven | 104 | 31.7 | +9.95 | +0.10 | -0.07 | 1.20 | +0.81 | 5/8 | -7.65 | indistinguivel de sorte
+BTCUSDT | trend_breakout | breakeven | 102 | 34.3 | +9.44 | +0.09 | -0.12 | 1.20 | +0.80 | 3/8 | -3.66 | indistinguivel de sorte
+SOLUSDT | trend_pullback | trailing | 64 | 39.1 | +5.70 | +0.09 | -0.70 | 1.17 | +0.57 | 2/8 | -1.89 | indistinguivel de sorte
+SOLUSDT | trend_breakout | parcial | 104 | 54.8 | +9.44 | +0.09 | +0.39 | 1.20 | +0.87 | 6/8 | -6.68 | indistinguivel de sorte
+BTCUSDT | trend_breakout | nenhuma | 100 | 41.0 | +7.86 | +0.08 | -1.00 | 1.13 | +0.60 | 3/8 | -2.97 | indistinguivel de sorte
+BTCUSDT | trend_breakout | parcial | 102 | 55.9 | +8.05 | +0.08 | +0.31 | 1.18 | +0.77 | 3/8 | -2.34 | indistinguivel de sorte
+SOLUSDT | trend_pullback | breakeven | 65 | 32.3 | +5.06 | +0.08 | -0.12 | 1.16 | +0.51 | 3/8 | -2.48 | indistinguivel de sorte
+SOLUSDT | trend_breakout | nenhuma | 100 | 39.0 | +8.27 | +0.08 | -1.00 | 1.14 | +0.61 | 5/8 | -9.44 | indistinguivel de sorte
+AVAXUSDT | trend_pullback | parcial | 42 | 57.1 | +3.37 | +0.08 | +0.40 | 1.19 | +0.51 | 3/8 | -2.24 | indistinguivel de sorte
+ETHUSDT | trend_breakout | breakeven | 95 | 33.7 | +6.87 | +0.07 | -0.10 | 1.15 | +0.58 | 6/8 | -4.37 | indistinguivel de sorte
+AVAXUSDT | trend_pullback | breakeven | 42 | 28.6 | +2.66 | +0.06 | -0.07 | 1.14 | +0.35 | 4/8 | -3.08 | indistinguivel de sorte
+ETHUSDT | trend_pullback | nenhuma | 56 | 39.3 | +2.72 | +0.05 | -1.00 | 1.08 | +0.28 | 4/8 | -3.00 | indistinguivel de sorte
+BTCUSDT | trend_breakout | trailing | 103 | 40.8 | +3.88 | +0.04 | -0.33 | 1.07 | +0.33 | 3/8 | -4.73 | indistinguivel de sorte
+ETHUSDT | trend_breakout | parcial | 95 | 51.6 | +4.03 | +0.04 | +0.35 | 1.09 | +0.39 | 5/8 | -3.87 | indistinguivel de sorte
+ETHUSDT | trend_breakout | trailing | 97 | 41.2 | +4.15 | +0.04 | -1.00 | 1.08 | +0.35 | 5/8 | -5.20 | indistinguivel de sorte
+SOLUSDT | trend_pullback | parcial | 65 | 52.3 | +2.60 | +0.04 | +0.32 | 1.08 | +0.30 | 3/8 | -2.44 | indistinguivel de sorte
+SOLUSDT | trend_breakout | trailing | 104 | 42.3 | +4.26 | +0.04 | -0.57 | 1.08 | +0.35 | 4/8 | -9.26 | indistinguivel de sorte
+BTCUSDT | trend_pullback | nenhuma | 62 | 40.3 | +1.72 | +0.03 | -1.00 | 1.05 | +0.17 | 4/8 | -5.51 | indistinguivel de sorte
+BTCUSDT | trend_pullback | parcial | 67 | 56.7 | +1.37 | +0.02 | +0.26 | 1.05 | +0.17 | 3/8 | -3.20 | indistinguivel de sorte
+BTCUSDT | trend_pullback | breakeven | 67 | 31.3 | +0.94 | +0.01 | -0.16 | 1.03 | +0.10 | 3/8 | -3.72 | indistinguivel de sorte
+BTCUSDT | trend_pullback | trailing | 69 | 42.0 | +0.05 | +0.00 | -0.45 | 1.00 | +0.01 | 3/8 | -5.23 | indistinguivel de sorte
+AVAXUSDT | trend_pullback | trailing | 42 | 40.5 | +0.08 | +0.00 | -0.54 | 1.00 | +0.01 | 4/8 | -2.77 | indistinguivel de sorte
+ETHUSDT | trend_pullback | parcial | 60 | 51.7 | -0.79 | -0.01 | +0.26 | 0.97 | -0.10 | 5/8 | -3.57 | indistinguivel de sorte
+ETHUSDT | trend_pullback | trailing | 59 | 37.3 | -0.85 | -0.01 | -0.72 | 0.97 | -0.09 | 3/8 | -4.32 | indistinguivel de sorte
+ADAUSDT | trend_pullback | parcial | 37 | 54.1 | -0.50 | -0.01 | +0.39 | 0.97 | -0.08 | 2/8 | -2.00 | indistinguivel de sorte
+BNBUSDT | trend_pullback | parcial | 67 | 53.7 | -1.38 | -0.02 | +0.26 | 0.96 | -0.17 | 3/8 | -2.47 | indistinguivel de sorte
+LINKUSDT | trend_breakout | parcial | 89 | 50.6 | -1.70 | -0.02 | +0.35 | 0.96 | -0.17 | 4/8 | -4.50 | indistinguivel de sorte
+ETHUSDT | trend_pullback | breakeven | 60 | 28.3 | -2.10 | -0.03 | -0.21 | 0.93 | -0.24 | 3/8 | -4.05 | indistinguivel de sorte
+LINKUSDT | trend_pullback | parcial | 52 | 53.8 | -1.67 | -0.03 | +0.37 | 0.93 | -0.24 | 3/8 | -4.59 | indistinguivel de sorte
+LINKUSDT | trend_breakout | breakeven | 89 | 27.0 | -3.07 | -0.03 | -0.16 | 0.93 | -0.28 | 5/8 | -5.70 | indistinguivel de sorte
+ADAUSDT | trend_pullback | nenhuma | 35 | 34.3 | -1.54 | -0.04 | -1.00 | 0.93 | -0.19 | 3/8 | -3.00 | indistinguivel de sorte
+ADAUSDT | trend_pullback | breakeven | 37 | 24.3 | -1.65 | -0.04 | -0.07 | 0.91 | -0.24 | 2/8 | -2.05 | indistinguivel de sorte
+BNBUSDT | trend_pullback | breakeven | 67 | 28.4 | -3.25 | -0.05 | -0.16 | 0.90 | -0.36 | 2/8 | -3.78 | indistinguivel de sorte
+BNBUSDT | trend_breakout | parcial | 103 | 53.4 | -4.85 | -0.05 | +0.29 | 0.90 | -0.49 | 4/8 | -5.69 | indistinguivel de sorte
+ADAUSDT | trend_pullback | trailing | 37 | 35.1 | -2.11 | -0.06 | -0.83 | 0.90 | -0.29 | 2/8 | -2.83 | indistinguivel de sorte
+LINKUSDT | trend_breakout | nenhuma | 85 | 34.1 | -4.78 | -0.06 | -1.00 | 0.91 | -0.39 | 3/8 | -9.34 | indistinguivel de sorte
+XRPUSDT | trend_pullback | parcial | 44 | 45.5 | -3.42 | -0.08 | -1.00 | 0.86 | -0.48 | 3/8 | -5.00 | indistinguivel de sorte
+AVAXUSDT | trend_breakout | trailing | 75 | 37.3 | -5.65 | -0.08 | -1.00 | 0.86 | -0.57 | 3/8 | -3.55 | indistinguivel de sorte
+BNBUSDT | trend_breakout | breakeven | 103 | 25.2 | -9.17 | -0.09 | -0.14 | 0.82 | -0.84 | 4/8 | -7.02 | indistinguivel de sorte
+XRPUSDT | trend_pullback | breakeven | 44 | 27.3 | -4.05 | -0.09 | -1.00 | 0.83 | -0.52 | 3/8 | -5.00 | indistinguivel de sorte
+ADAUSDT | trend_breakout | parcial | 82 | 48.8 | -8.35 | -0.10 | -1.00 | 0.80 | -0.93 | 3/8 | -5.79 | indistinguivel de sorte
+AVAXUSDT | trend_breakout | parcial | 76 | 47.4 | -7.58 | -0.10 | -1.00 | 0.81 | -0.85 | 3/8 | -3.90 | indistinguivel de sorte
+LINKUSDT | trend_pullback | trailing | 51 | 33.3 | -5.21 | -0.10 | -1.00 | 0.82 | -0.62 | 3/8 | -5.57 | indistinguivel de sorte
+LINKUSDT | trend_breakout | trailing | 89 | 33.7 | -8.65 | -0.10 | -1.00 | 0.83 | -0.78 | 2/8 | -6.99 | indistinguivel de sorte
+BNBUSDT | trend_breakout | trailing | 102 | 32.4 | -11.02 | -0.11 | -0.80 | 0.80 | -0.98 | 4/8 | -8.50 | indistinguivel de sorte
+XRPUSDT | trend_pullback | nenhuma | 40 | 32.5 | -4.45 | -0.11 | -1.00 | 0.84 | -0.54 | 3/8 | -5.00 | indistinguivel de sorte
+LINKUSDT | trend_pullback | breakeven | 52 | 21.2 | -5.59 | -0.11 | -0.11 | 0.78 | -0.73 | 3/8 | -5.06 | indistinguivel de sorte
+BNBUSDT | trend_pullback | trailing | 65 | 32.3 | -8.69 | -0.13 | -0.95 | 0.78 | -0.94 | 2/8 | -3.84 | indistinguivel de sorte
+ADAUSDT | trend_breakout | trailing | 82 | 32.9 | -10.85 | -0.13 | -1.00 | 0.77 | -1.05 | 1/8 | -5.38 | indistinguivel de sorte
+BNBUSDT | trend_pullback | nenhuma | 63 | 33.3 | -9.03 | -0.14 | -1.00 | 0.79 | -0.93 | 2/8 | -3.61 | indistinguivel de sorte
+BNBUSDT | trend_breakout | nenhuma | 97 | 33.0 | -13.11 | -0.14 | -1.00 | 0.80 | -1.07 | 3/8 | -7.25 | indistinguivel de sorte
+ADAUSDT | trend_breakout | nenhuma | 80 | 31.3 | -11.26 | -0.14 | -1.00 | 0.80 | -0.98 | 2/8 | -5.38 | indistinguivel de sorte
+AVAXUSDT | trend_breakout | breakeven | 76 | 22.4 | -10.72 | -0.14 | -1.00 | 0.74 | -1.11 | 2/8 | -3.47 | indistinguivel de sorte
+ADAUSDT | trend_breakout | breakeven | 82 | 22.0 | -12.12 | -0.15 | -1.00 | 0.72 | -1.23 | 2/8 | -5.38 | indistinguivel de sorte
+AVAXUSDT | trend_breakout | nenhuma | 75 | 30.7 | -10.90 | -0.15 | -1.00 | 0.79 | -0.97 | 3/8 | -4.43 | indistinguivel de sorte
+XRPUSDT | trend_pullback | trailing | 44 | 31.8 | -7.03 | -0.16 | -1.00 | 0.73 | -0.93 | 3/8 | -5.00 | indistinguivel de sorte
+LINKUSDT | trend_pullback | nenhuma | 51 | 27.5 | -12.10 | -0.24 | -1.00 | 0.67 | -1.35 | 2/8 | -6.00 | indistinguivel de sorte

@@ -1,0 +1,47 @@
+Bateria walk-forward · 1h · 360 dias · janela 2000
+Custos: taxa 0.075% + slippage 0.025% · Stop mínimo: padrão
+Símbolos: BNBUSDT, BTCUSDT, ETHUSDT, XRPUSDT, DOGEUSDT · Estratégias: trend_breakout, trend_pullback
+Gerado em: 2026-07-23T16:52:23.706Z
+
+simbolo | estrategia | gestao | trades | acerto% | somaR | mediaR | medianaR | PF | t | janelasPos | piorJanela | obs
+---|---|---|---|---|---|---|---|---|---|---|---|---
+DOGEUSDT | trend_pullback | nenhuma | 33 | 42.4 | +3.41 | +0.10 | -1.00 | 1.18 | +0.45 | 3/4 | -6.00 | indistinguivel de sorte
+BNBUSDT | trend_breakout | parcial | 118 | 60.2 | +10.20 | +0.09 | +0.25 | 1.22 | +0.97 | 3/4 | -0.23 | indistinguivel de sorte
+BNBUSDT | trend_breakout | nenhuma | 112 | 43.8 | +8.49 | +0.08 | -1.00 | 1.13 | +0.65 | 3/4 | -2.39 | indistinguivel de sorte
+BNBUSDT | trend_breakout | breakeven | 118 | 34.7 | +7.90 | +0.07 | -0.17 | 1.15 | +0.67 | 2/4 | -0.52 | indistinguivel de sorte
+BNBUSDT | trend_breakout | trailing | 118 | 39.0 | +4.05 | +0.03 | -0.44 | 1.07 | +0.34 | 2/4 | -1.91 | indistinguivel de sorte
+XRPUSDT | trend_breakout | nenhuma | 98 | 38.8 | +1.05 | +0.01 | -1.00 | 1.02 | +0.08 | 3/4 | -5.10 | indistinguivel de sorte
+BTCUSDT | trend_pullback | nenhuma | 53 | 43.4 | +0.20 | +0.00 | -1.00 | 1.01 | +0.02 | 1/4 | -2.99 | indistinguivel de sorte
+BTCUSDT | trend_pullback | breakeven | 58 | 36.2 | -0.00 | -0.00 | -0.20 | 1.00 | -0.00 | 2/4 | -2.78 | indistinguivel de sorte
+BTCUSDT | trend_pullback | trailing | 59 | 44.1 | +0.10 | +0.00 | -0.36 | 1.00 | +0.01 | 2/4 | -3.00 | indistinguivel de sorte
+ETHUSDT | trend_pullback | nenhuma | 50 | 40.0 | -0.47 | -0.01 | -1.00 | 0.98 | -0.05 | 2/4 | -2.28 | indistinguivel de sorte
+ETHUSDT | trend_pullback | trailing | 53 | 41.5 | -0.84 | -0.02 | -0.60 | 0.97 | -0.10 | 2/4 | -1.10 | indistinguivel de sorte
+BTCUSDT | trend_pullback | parcial | 58 | 55.2 | -1.96 | -0.03 | +0.19 | 0.92 | -0.28 | 2/4 | -2.25 | indistinguivel de sorte
+ETHUSDT | trend_pullback | parcial | 56 | 55.4 | -1.86 | -0.03 | +0.20 | 0.93 | -0.26 | 3/4 | -5.33 | indistinguivel de sorte
+XRPUSDT | trend_breakout | trailing | 99 | 35.4 | -3.34 | -0.03 | -1.00 | 0.94 | -0.27 | 2/4 | -4.22 | indistinguivel de sorte
+BNBUSDT | trend_pullback | parcial | 84 | 52.4 | -3.95 | -0.05 | +0.10 | 0.90 | -0.44 | 1/4 | -2.96 | indistinguivel de sorte
+XRPUSDT | trend_breakout | breakeven | 99 | 32.3 | -4.76 | -0.05 | -1.00 | 0.92 | -0.40 | 2/4 | -4.21 | indistinguivel de sorte
+XRPUSDT | trend_pullback | parcial | 42 | 52.4 | -2.72 | -0.06 | +0.19 | 0.86 | -0.43 | 2/4 | -4.16 | indistinguivel de sorte
+BNBUSDT | trend_pullback | breakeven | 84 | 31.0 | -5.61 | -0.07 | -0.27 | 0.87 | -0.57 | 1/4 | -3.06 | indistinguivel de sorte
+BNBUSDT | trend_pullback | trailing | 84 | 39.3 | -5.82 | -0.07 | -0.79 | 0.87 | -0.58 | 1/4 | -3.61 | indistinguivel de sorte
+XRPUSDT | trend_pullback | breakeven | 42 | 28.6 | -2.91 | -0.07 | -0.21 | 0.86 | -0.41 | 2/4 | -3.73 | indistinguivel de sorte
+DOGEUSDT | trend_pullback | breakeven | 37 | 29.7 | -2.41 | -0.07 | -1.00 | 0.88 | -0.35 | 3/4 | -6.00 | indistinguivel de sorte
+DOGEUSDT | trend_pullback | parcial | 37 | 48.6 | -2.57 | -0.07 | -1.00 | 0.86 | -0.41 | 2/4 | -6.00 | indistinguivel de sorte
+ETHUSDT | trend_breakout | parcial | 92 | 47.8 | -7.32 | -0.08 | -1.00 | 0.85 | -0.74 | 1/4 | -3.86 | indistinguivel de sorte
+DOGEUSDT | trend_pullback | trailing | 35 | 37.1 | -2.89 | -0.08 | -1.00 | 0.85 | -0.43 | 2/4 | -6.00 | indistinguivel de sorte
+ETHUSDT | trend_breakout | breakeven | 92 | 29.3 | -8.39 | -0.09 | -1.00 | 0.83 | -0.78 | 1/4 | -3.66 | indistinguivel de sorte
+DOGEUSDT | trend_breakout | breakeven | 96 | 29.2 | -8.94 | -0.09 | -1.00 | 0.84 | -0.77 | 0/4 | -4.14 | indistinguivel de sorte
+XRPUSDT | trend_breakout | parcial | 99 | 44.4 | -10.09 | -0.10 | -1.00 | 0.82 | -0.96 | 1/4 | -5.77 | indistinguivel de sorte
+XRPUSDT | trend_pullback | trailing | 39 | 35.9 | -4.29 | -0.11 | -1.00 | 0.81 | -0.61 | 1/4 | -3.53 | indistinguivel de sorte
+DOGEUSDT | trend_breakout | trailing | 96 | 34.4 | -11.02 | -0.11 | -1.00 | 0.81 | -0.95 | 1/4 | -4.49 | indistinguivel de sorte
+ETHUSDT | trend_pullback | breakeven | 56 | 25.0 | -6.75 | -0.12 | -0.20 | 0.76 | -0.89 | 2/4 | -9.44 | indistinguivel de sorte
+XRPUSDT | trend_pullback | nenhuma | 37 | 35.1 | -4.57 | -0.12 | -1.00 | 0.81 | -0.62 | 1/4 | -3.70 | indistinguivel de sorte
+DOGEUSDT | trend_breakout | parcial | 96 | 42.7 | -11.80 | -0.12 | -1.00 | 0.79 | -1.12 | 0/4 | -4.41 | indistinguivel de sorte
+BNBUSDT | trend_pullback | nenhuma | 74 | 35.1 | -9.92 | -0.13 | -1.00 | 0.79 | -0.97 | 1/4 | -5.35 | indistinguivel de sorte
+DOGEUSDT | trend_breakout | nenhuma | 93 | 32.3 | -12.13 | -0.13 | -1.00 | 0.81 | -0.99 | 1/4 | -6.76 | indistinguivel de sorte
+ETHUSDT | trend_breakout | trailing | 92 | 34.8 | -12.55 | -0.14 | -1.00 | 0.77 | -1.16 | 1/4 | -5.33 | indistinguivel de sorte
+ETHUSDT | trend_breakout | nenhuma | 90 | 33.3 | -13.55 | -0.15 | -1.00 | 0.77 | -1.18 | 1/4 | -7.01 | indistinguivel de sorte
+BTCUSDT | trend_breakout | parcial | 97 | 48.5 | -17.03 | -0.18 | -1.00 | 0.66 | -1.89 | 1/4 | -9.67 | indistinguivel de sorte
+BTCUSDT | trend_breakout | trailing | 96 | 38.5 | -18.71 | -0.19 | -1.00 | 0.65 | -1.92 | 1/4 | -9.62 | indistinguivel de sorte
+BTCUSDT | trend_breakout | breakeven | 97 | 23.7 | -20.16 | -0.21 | -1.00 | 0.62 | -2.04 | 0/4 | -9.05 | amostra baixa
+BTCUSDT | trend_breakout | nenhuma | 88 | 30.7 | -22.02 | -0.25 | -1.00 | 0.64 | -2.06 | 0/4 | -11.34 | amostra baixa

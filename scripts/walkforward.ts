@@ -5,13 +5,20 @@
  *
  * Uso (no Codespace, na raiz do repo):
  *
- *   npx tsx scripts/walkforward.ts <SYMBOL> <TIMEFRAME> <DIAS> [ESTRATEGIA] [JANELA]
+ *   npx tsx scripts/walkforward.ts <SYMBOL> <TIMEFRAME> <DIAS> [ESTRATEGIA] [JANELA] [GESTAO]
  *
  * Exemplos:
  *
  *   npx tsx scripts/walkforward.ts BTCUSDT 15m 180
  *   npx tsx scripts/walkforward.ts LINKUSDT 5m 90 trend_breakout 2000
  *   npx tsx scripts/walkforward.ts XRPUSDT 1h 365 trend_pullback
+ *   npx tsx scripts/walkforward.ts ETHUSDT 1h 360 trend_pullback 2000 breakeven
+ *
+ * GESTAO define a gestão intra-trade (padrão: nenhuma):
+ *   nenhuma   — stop e alvo fixos do plano, como antes;
+ *   breakeven — stop vai para a entrada ao atingir +1R;
+ *   parcial   — realiza 50% em +1R e move o stop para a entrada;
+ *   trailing  — trailing stop de 2x ATR do sinal após +1R.
  *
  * O script baixa o histórico da Binance (paginado, candles encerrados),
  * roda o walk-forward com custos padrão (taxa 0,1% + slippage 0,05%) e
@@ -33,6 +40,8 @@ import {
   type WalkForwardResult,
 } from '../lib/daytrade/walkForward';
 
+import type { MultiStrategyBacktestManagementOptions } from '../lib/daytrade/multiStrategyBacktest';
+
 // -----------------------------------------------------------------------------
 // Configuração
 // -----------------------------------------------------------------------------
@@ -47,6 +56,8 @@ const TIMEFRAME_MS: Record<DayTradeIndicatorTimeframe, number> = {
   '15m': 15 * 60 * 1_000,
   '30m': 30 * 60 * 1_000,
   '1h': 60 * 60 * 1_000,
+  '4h': 4 * 60 * 60 * 1_000,
+  '1d': 24 * 60 * 60 * 1_000,
 };
 
 const VALID_STRATEGIES: DayTradeStrategyId[] = [
@@ -55,6 +66,21 @@ const VALID_STRATEGIES: DayTradeStrategyId[] = [
   'squeeze_breakout',
   'range_mean_reversion',
 ];
+
+const MANAGEMENT_PRESETS: Record<
+  string,
+  MultiStrategyBacktestManagementOptions | undefined
+> = {
+  nenhuma: undefined,
+  breakeven: { breakevenAtR: 1 },
+  parcial: {
+    breakevenAtR: 1,
+    partialTakeProfit: { triggerR: 1, fraction: 0.5 },
+  },
+  trailing: {
+    atrTrailing: { triggerR: 1, atrMultiple: 2 },
+  },
+};
 
 const PAGE_SIZE = 1_000;
 const MAX_PAGES = 250; // 250k candles de teto de segurança
@@ -72,7 +98,7 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-const [, , rawSymbol, rawTimeframe, rawDays, rawStrategy, rawWindow] =
+const [, , rawSymbol, rawTimeframe, rawDays, rawStrategy, rawWindow, rawManagement] =
   process.argv;
 
 if (!rawSymbol || !rawTimeframe || !rawDays) {
@@ -88,14 +114,26 @@ if (!/^[A-Z0-9]{5,20}$/.test(symbol)) {
 const timeframe = rawTimeframe as DayTradeIndicatorTimeframe;
 
 if (!(timeframe in TIMEFRAME_MS)) {
-  fail(`Timeframe inválido: ${rawTimeframe}. Use 5m, 15m, 30m ou 1h.`);
+  fail(
+    `Timeframe inválido: ${rawTimeframe}. Use 5m, 15m, 30m, 1h, 4h ou 1d.`,
+  );
 }
 
 const days = Number(rawDays);
 
-if (!Number.isFinite(days) || days < 5 || days > 730) {
-  fail(`Dias inválido: ${rawDays}. Use entre 5 e 730.`);
+if (!Number.isFinite(days) || days < 5 || days > 3_650) {
+  fail(`Dias inválido: ${rawDays}. Use entre 5 e 3650.`);
 }
+
+/** Janela padrão por timeframe (ver comentário no script de bateria). */
+const WINDOW_BY_TIMEFRAME: Record<DayTradeIndicatorTimeframe, number> = {
+  '5m': 2_000,
+  '15m': 2_000,
+  '30m': 2_000,
+  '1h': 2_000,
+  '4h': 750,
+  '1d': 250,
+};
 
 const strategyId = (rawStrategy ?? 'trend_breakout') as DayTradeStrategyId;
 
@@ -105,11 +143,23 @@ if (!VALID_STRATEGIES.includes(strategyId)) {
   );
 }
 
-const windowCandles = rawWindow ? Number(rawWindow) : 2_000;
+const windowCandles = rawWindow
+  ? Number(rawWindow)
+  : WINDOW_BY_TIMEFRAME[timeframe];
 
 if (!Number.isInteger(windowCandles) || windowCandles < 300) {
   fail(`Janela inválida: ${rawWindow}. Use um inteiro >= 300.`);
 }
+
+const managementKey = (rawManagement ?? 'nenhuma').toLowerCase().trim();
+
+if (!(managementKey in MANAGEMENT_PRESETS)) {
+  fail(
+    `Gestão inválida: ${rawManagement}. Use uma de: ${Object.keys(MANAGEMENT_PRESETS).join(', ')}.`,
+  );
+}
+
+const management = MANAGEMENT_PRESETS[managementKey];
 
 // -----------------------------------------------------------------------------
 // Download paginado da Binance
@@ -272,7 +322,7 @@ function printResult(result: WalkForwardResult): void {
 
 async function main(): Promise<void> {
   console.log(
-    `Walk-forward: ${strategyId} · ${symbol} · ${timeframe} · ${days} dias · janela ${windowCandles} candles`,
+    `Walk-forward: ${strategyId} · ${symbol} · ${timeframe} · ${days} dias · janela ${windowCandles} candles · gestão: ${managementKey}`,
   );
 
   const candles = await fetchHistory();
@@ -294,6 +344,7 @@ async function main(): Promise<void> {
       riskPercent: 1,
       feeRatePct: 0.1,
       slippagePct: 0.05,
+      management,
     },
     walkForwardOptions: {
       windowCandles,

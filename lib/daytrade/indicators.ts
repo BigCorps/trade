@@ -876,6 +876,20 @@ export const DAYTRADE_TIMEFRAME_INDICATOR_OPTIONS = {
     periodsPerYear: 24 * 365,
     volatilityWindow: 24,
   },
+  /**
+   * Timeframes de swing. Nos intradiários a janela de volatilidade equivale a
+   * um dia de retornos; no 4h e no diário isso daria 6 e 1 observações, poucas
+   * demais para estimar desvio padrão, então usam-se janelas de 5 dias e de
+   * um mês de pregão respectivamente.
+   */
+  '4h': {
+    periodsPerYear: 6 * 365,
+    volatilityWindow: 30,
+  },
+  '1d': {
+    periodsPerYear: 365,
+    volatilityWindow: 20,
+  },
 } as const satisfies Record<string, DayTradeIndicatorOptions>;
 
 export type DayTradeIndicatorTimeframe =
