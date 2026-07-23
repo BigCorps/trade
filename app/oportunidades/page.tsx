@@ -648,6 +648,49 @@ function fmtR(value: number | null | undefined): string {
   return `${sign}${fmtNumber(value, 2)}R`;
 }
 
+interface BreakevenSimulation {
+  eligible: number;
+  converted: number;
+  baselineSumR: number;
+  adjustedSumR: number;
+}
+
+/**
+ * Simulação aproximada de "stop a breakeven ao atingir +1R", baseada no MFE.
+ * Considera apenas outcomes teóricos com result_r presente.
+ * Aproximação: stop com MFE >= 1R vira 0R; demais resultados ficam como estão.
+ * Ignora o caminho do preço após o breakeven. É indicador de direção,
+ * não um backtest.
+ */
+function simulateBreakevenAtOneR(
+  outcomes: readonly OpportunityOutcome[],
+): BreakevenSimulation {
+  let eligible = 0;
+  let converted = 0;
+  let baselineSumR = 0;
+  let adjustedSumR = 0;
+
+  for (const outcome of outcomes) {
+    if (outcome.mode !== 'theoretical') continue;
+    if (outcome.result_r === null) continue;
+
+    eligible += 1;
+    baselineSumR += outcome.result_r;
+
+    const mfe = outcome.maximum_favorable_excursion_r;
+    const stoppedAfterOneR =
+      outcome.result_r < 0 && mfe !== null && mfe >= 1;
+
+    if (stoppedAfterOneR) {
+      converted += 1;
+    } else {
+      adjustedSumR += outcome.result_r;
+    }
+  }
+
+  return { eligible, converted, baselineSumR, adjustedSumR };
+}
+
 function fmtDate(
   value: ISODateString | null | undefined,
   includeYear = false,
@@ -2481,11 +2524,16 @@ function PerformanceModeSection({
   title,
   subtitle,
   metrics,
+  outcomes,
 }: {
   title: string;
   subtitle: string;
   metrics: OpportunityDashboardMetrics['theoretical'];
+  outcomes?: readonly OpportunityOutcome[];
 }) {
+  const breakeven =
+    outcomes ? simulateBreakevenAtOneR(outcomes) : null;
+
   return (
     <Card>
       <SectionTitle title={title} subtitle={subtitle} />
@@ -2574,6 +2622,22 @@ function PerformanceModeSection({
           detail="Máxima excursão adversa"
           tone="danger"
         />
+        {breakeven !== null && breakeven.eligible > 0 && (
+          <MetricCard
+            label="Hipótese: breakeven a +1R"
+            value={fmtR(breakeven.adjustedSumR)}
+            detail={
+              `vs ${fmtR(breakeven.baselineSumR)} real · ` +
+              `${breakeven.converted} stop(s) virariam 0R · ` +
+              'aproximação por MFE, não é backtest'
+            }
+            tone={
+              breakeven.adjustedSumR > breakeven.baselineSumR
+                ? 'positive'
+                : 'neutral'
+            }
+          />
+        )}
       </div>
     </Card>
   );
@@ -5195,6 +5259,7 @@ export default function OportunidadesPage() {
                   title="Qualidade teórica dos setups"
                   subtitle="Inclui oportunidades aceitas, recusadas, ignoradas ou expiradas que tiveram um plano válido."
                   metrics={metrics.theoretical}
+                  outcomes={outcomes}
                 />
 
                 <PerformanceModeSection

@@ -1724,6 +1724,50 @@ export default function TestPage() {
       [],
     );
 
+  const cancelActiveRun =
+    useCallback(
+      async () => {
+        if (!activeRun) {
+          return;
+        }
+
+        const {
+          data,
+          error: rpcError,
+        } =
+          await supabase.rpc(
+            'cancel_backtest_run',
+            {
+              p_run_id: activeRun.id,
+            },
+          );
+
+        if (rpcError) {
+          setError(
+            `Não foi possível cancelar: ${rpcError.message}`,
+          );
+          return;
+        }
+
+        if (data !== true) {
+          // A run já saiu de "pending" (o worker assumiu ou concluiu).
+          // O polling existente resolverá o estado final sozinho.
+          setError(
+            'A análise já está em processamento e não pode mais ser cancelada. Aguarde a conclusão.',
+          );
+          return;
+        }
+
+        clearActiveRun();
+        setBusy(false);
+      },
+      [
+        activeRun,
+        supabase,
+        clearActiveRun,
+      ],
+    );
+
   useEffect(
     () => {
       if (
@@ -3334,6 +3378,24 @@ let timeoutId: number | null = null;
                         </div>
 
                         <StatusBadge status={runProgress.status} />
+
+                        {runProgress.status === 'pending' && (
+                          <button
+                            type="button"
+                            onClick={() => void cancelActiveRun()}
+                            style={{
+                              background: 'transparent',
+                              color: COLORS.red,
+                              border: `1px solid ${COLORS.red}`,
+                              borderRadius: 8,
+                              padding: '4px 10px',
+                              fontSize: 11,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Cancelar análise
+                          </button>
+                        )}
                       </div>
 
                       <div

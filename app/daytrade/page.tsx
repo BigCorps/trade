@@ -1,469 +1,395 @@
 'use client';
 
 /**
- * app/daytrade/page.tsx — VigIA Trade
+ * app/oportunidades/page.tsx — VigIA Trade
  * ---------------------------------------------------------------------------
- * Painel intradiário independente da análise principal.
+ * Central autenticada e em tempo real para acompanhar oportunidades.
  *
- * Recursos:
- * - Timeframes de 5m, 15m, 30m e 1h.
- * - Períodos curtos adequados a day trade.
- * - Aquecimento da janela de volatilidade sem criar trecho vazio no gráfico.
- * - Métricas calculadas somente com candles encerrados.
- * - Preço e candle em formação acompanhados por WebSocket da Binance.
- * - Performance, volatilidade anualizada e volume financeiro.
- * - Retorno, drawdown, amplitude, correlação e extremos intradiários.
- * - Relatório explicativo com IA, fallback local e sem recomendação.
- * - Histórico separado no localStorage, sem misturar com análises de longo prazo.
- * - Playbook educacional de tendência com rompimento, checklist e semáforo.
- * - Plano de entrada, invalidação, alvo e calculadora de tamanho da posição.
+ * Recursos desta primeira versão:
+ * - login por magic link sem senha;
+ * - carregamento de oportunidades, resultados, decisões, eventos e ordens;
+ * - seções Pendentes, Posições, Saídas, Histórico e Desempenho;
+ * - atualização por Supabase Realtime, sem polling contínuo;
+ * - abertura de card com marcação de leitura e início de revisão;
+ * - segundo clique explícito para aceitar ou recusar uma entrada;
+ * - sincronização manual de setups e atualização de resultados teóricos;
+ * - deep link seguro no formato /oportunidades?focus=<uuid>;
+ * - métricas teóricas separadas das métricas realmente executadas.
+ *
+ * Limites intencionais:
+ * - aceitar uma oportunidade coloca o registro em revalidação;
+ * - esta página não executa compra, venda, OCO ou saída diretamente;
+ * - o servidor, as RPCs e as Edge Functions continuam sendo a fonte de verdade.
  */
 
 import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactNode,
 } from 'react';
 import type { Session } from '@supabase/supabase-js';
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Legend,
-  Line,
-  LineChart,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
+
 import { getSupabase } from '../../lib/supabaseClient';
 import {
-  DAYTRADE_TIMEFRAME_INDICATOR_OPTIONS,
-  getRequiredCandleCount,
-  type DayTradeIndicators,
-} from '../../lib/daytrade/indicators';
+  calculateMetricBreakdown,
+  calculateOpportunityDashboardMetrics,
+  removeOutcomeFromCollection,
+  upsertOutcomeCollection,
+  type OpportunityDashboardMetrics,
+  type OpportunityMetricBreakdownItem,
+} from '../../lib/opportunities/metrics';
 import {
-  analyzeTrendBreakout,
-  TREND_BREAKOUT_STATUS_LABELS,
-  type TrendBreakoutEvaluation,
-  type TrendBreakoutStatus,
-} from '../../lib/daytrade/strategies/trendBreakout';
-import {
-  calculatePositionSizeFromPlan,
-  calculateRiskReward,
-  type PositionSizingResult,
-} from '../../lib/daytrade/risk';
+  compareOpportunitiesForDashboard,
+  getEntryDecisionPresentation,
+  getExecutionEnvironmentLabel,
+  getLifecyclePresentation,
+  getOpportunityCardState,
+  getOpportunitySourceLabel,
+  getOrderStatusPresentation,
+  getOutcomeModeLabel,
+  getOutcomeStatusPresentation,
+  getOutcomeTone,
+  type OpportunitySection,
+  type StatusTone,
+} from '../../lib/opportunities/status';
 import type {
-  TrendBreakoutBacktestResult,
-  TrendBreakoutBacktestTrade,
-} from '../../lib/daytrade/backtest';
+  ISODateString,
+  JsonArray,
+  JsonObject,
+  OpportunityConditionSnapshot,
+  OpportunityDecision,
+  OpportunityEvent,
+  OpportunityLifecycleStatus,
+  OpportunityListItem,
+  OpportunityOrder,
+  OpportunityOutcome,
+  OpportunityOutcomeMode,
+  OpportunityRealtimeEventType,
+  TradeOpportunity,
+  UUID,
+} from '../../lib/opportunities/types';
 
 // ---------------------------------------------------------------------------
 // Configuração
 // ---------------------------------------------------------------------------
 
-interface PeriodOption {
-  label: string;
-  durationMs: number;
-}
+type MainTab =
+  | 'pending'
+  | 'positions'
+  | 'exits'
+  | 'history'
+  | 'performance';
 
-const HOUR = 60 * 60 * 1_000;
-const DAY = 24 * HOUR;
+type LoadState = 'idle' | 'loading' | 'ready' | 'error';
 
-const TIMEFRAMES = {
-  '5m': {
-    label: '5 minutos',
-    shortLabel: '5m',
-    intervalMs: 5 * 60 * 1_000,
-    periodsPerYear: 12 * 24 * 365,
-    volWindow: 288,
-    volWindowLabel: 'janela móvel de 24h',
-    periods: [
-      { label: '6 horas', durationMs: 6 * HOUR },
-      { label: '12 horas', durationMs: 12 * HOUR },
-      { label: '24 horas', durationMs: DAY },
-      { label: '3 dias', durationMs: 3 * DAY },
-    ] as PeriodOption[],
-  },
-  '15m': {
-    label: '15 minutos',
-    shortLabel: '15m',
-    intervalMs: 15 * 60 * 1_000,
-    periodsPerYear: 4 * 24 * 365,
-    volWindow: 96,
-    volWindowLabel: 'janela móvel de 24h',
-    periods: [
-      { label: '12 horas', durationMs: 12 * HOUR },
-      { label: '24 horas', durationMs: DAY },
-      { label: '3 dias', durationMs: 3 * DAY },
-      { label: '7 dias', durationMs: 7 * DAY },
-    ] as PeriodOption[],
-  },
-  '30m': {
-    label: '30 minutos',
-    shortLabel: '30m',
-    intervalMs: 30 * 60 * 1_000,
-    periodsPerYear: 2 * 24 * 365,
-    volWindow: 48,
-    volWindowLabel: 'janela móvel de 24h',
-    periods: [
-      { label: '24 horas', durationMs: DAY },
-      { label: '3 dias', durationMs: 3 * DAY },
-      { label: '7 dias', durationMs: 7 * DAY },
-      { label: '14 dias', durationMs: 14 * DAY },
-    ] as PeriodOption[],
-  },
-  '1h': {
-    label: '1 hora',
-    shortLabel: '1h',
-    intervalMs: HOUR,
-    periodsPerYear: 24 * 365,
-    volWindow: 24,
-    volWindowLabel: 'janela móvel de 24h',
-    periods: [
-      { label: '3 dias', durationMs: 3 * DAY },
-      { label: '7 dias', durationMs: 7 * DAY },
-      { label: '14 dias', durationMs: 14 * DAY },
-      { label: '30 dias', durationMs: 30 * DAY },
-    ] as PeriodOption[],
-  },
-} as const;
+type RealtimeState =
+  | 'disconnected'
+  | 'connecting'
+  | 'live'
+  | 'error';
 
-type Timeframe = keyof typeof TIMEFRAMES;
-type Regime = 'calmo' | 'normal' | 'volátil' | 'extremo';
-type LoadStatus = 'idle' | 'loading' | 'done' | 'error';
-type WebSocketStatus = 'desconectado' | 'conectando' | 'ao vivo' | 'reconectando';
+type RemoteActionState =
+  | 'idle'
+  | 'loading'
+  | 'success'
+  | 'error';
 
-const SYMBOLS = [
-  'BTCUSDT',
-  'ETHUSDT',
-  'SOLUSDT',
-  'BNBUSDT',
-  'XRPUSDT',
-  'ADAUSDT',
-  'DOGEUSDT',
-  'AVAXUSDT',
-  'LINKUSDT',
-  'nenhum',
-];
-
-const MIN_VISIBLE_CANDLES = 20;
-const HISTORY_KEY = 'vigia_daytrade_history_v1';
-const HISTORY_LIMIT = 20;
-
-const JOURNAL_LIMIT = 30;
-const BACKTEST_DEFAULT_CANDLES = 750;
-
-type RemoteActionStatus = 'idle' | 'loading' | 'success' | 'error' | 'fallback';
-type DayTradeAlertableStatus =
-  | 'observar'
-  | 'condicoes_atendidas'
-  | 'entrada_atrasada'
-  | 'invalidado';
-
-// ---------------------------------------------------------------------------
-// Tipos
-// ---------------------------------------------------------------------------
-
-interface Candle {
-  openTime: number;
-  closeTime: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-  quoteVolume: number;
-}
-
-interface LiveCandle extends Candle {
-  symbol: string;
-  isClosed: boolean;
-}
-
-interface IntradayStats {
-  symbol: string;
-  candleCount: number;
-  lastPrice: number;
-  returnPct: number;
-  maxDrawdownPct: number;
-  currentDrawdownPct: number;
-  timeInDrawdownPct: number;
-  annualVolPct: number;
-  currentVolPct: number;
-  sharpe: number;
-  pctPositive: number;
-  regime: Regime;
-  bestCandlePct: number;
-  worstCandlePct: number;
-  periodHigh: number;
-  periodLow: number;
-  amplitudePct: number;
-  averageQuoteVolume: number;
-  lastQuoteVolume: number;
-}
-
-interface HistoryRecord {
-  id: string;
-  createdAt: string;
-  symbolA: string;
-  symbolB: string;
-  timeframe: Timeframe;
-  periodLabel: string;
-  returnA: number;
-  returnB: number | null;
-  correlation: number | null;
-  report?: string;
-}
-
-interface RunOverride {
-  symbolA: string;
-  symbolB: string;
-  timeframe: Timeframe;
-  periodLabel: string;
-}
-
-
-interface RemoteActionState {
-  status: RemoteActionStatus;
+interface ActionFeedback {
+  state: RemoteActionState;
   message: string;
 }
 
-interface ServerSetupRecord {
+interface ConditionView {
   id: string;
-  symbol: string;
-  timeframe: Timeframe;
-  strategy: string;
-  status: TrendBreakoutStatus;
-  score: number;
-  total_conditions: number;
-  candle_open_time: string;
-  candle_close_time: string;
-  criado_em?: string;
-  atualizado_em?: string;
+  label: string;
+  passed: boolean | null;
+  available: boolean;
+  currentValue: string;
+  requiredValue: string;
+  explanation: string;
 }
 
-interface TestnetSizingPreview {
-  quoteAmountUsdt?: number;
-  estimatedQuantity?: number;
-  estimatedTotalRiskUsdt?: number;
-  estimatedTotalRiskPct?: number;
-  grossRiskRewardRatio?: number;
-  stopDistancePct?: number;
-  targetDistancePct?: number;
-  warnings?: string[];
-  [key: string]: unknown;
+interface RealtimePayloadLike {
+  eventType: OpportunityRealtimeEventType;
+  new: Record<string, unknown>;
+  old: Record<string, unknown>;
 }
 
-interface TestnetPreviewPayload {
-  setup: {
-    id: string;
-    symbol: string;
-    timeframe: Timeframe;
-    strategy: string;
-    status: string;
-    candle_close_time: string;
-    expires_at: string;
-    age_ms: number;
-  };
-  plan: {
-    entry_reference: number;
-    stop_reference: number;
-    target_reference: number;
-    saved_risk_reward_ratio: number;
-    stop_pct: number;
-    target_pct: number;
-    gross_risk_reward_ratio: number;
-    atr: number;
-    breakout_level: number;
-    latest_acceptable_entry: number;
-  };
-  market: {
-    public_price: number;
-    public_source: string;
-    testnet_price: number;
-  };
-  account: {
-    environment: 'testnet';
-    total_usdt: number;
-    free_usdt: number;
-    locked_usdt: number;
-    max_order_usdt: number;
-  };
-  sizing: TestnetSizingPreview;
-  execution: {
-    mode: 'testnet';
-    request_id: string;
-    quote_amount: number;
-    stop_pct: number;
-    target_pct: number;
-    requires_confirmation: boolean;
-  };
-}
+type PositionSizingMode =
+  | 'fixed'
+  | 'anti_martingale'
+  | 'martingale_testnet';
 
-interface TestnetPreviewResponse {
-  ok: boolean;
-  action: 'preview';
-  executable: boolean;
-  preview: TestnetPreviewPayload;
-}
+type PositionSizingScope =
+  | 'account'
+  | 'strategy'
+  | 'symbol'
+  | 'symbol_timeframe';
 
-interface DayTradeJournalRecord {
-  id: string;
-  setup_id: string | null;
-  order_id: string | null;
-  mode: 'observacao' | 'testnet' | 'real';
+interface PositionSizingDecision {
+  id: UUID;
+  opportunity_id: UUID;
+  order_id: UUID | null;
+
+  source: string;
   status: string;
-  symbol: string;
-  timeframe: Timeframe;
-  strategy: string;
-  entry_reference: number | string;
-  stop_reference: number | string;
-  target_reference: number | string;
-  risk_reward_ratio: number | string;
-  planned_quantity: number | string | null;
-  planned_notional: number | string | null;
-  risk_usdt: number | string | null;
-  risk_percent: number | string | null;
-  entry_price: number | string | null;
-  exit_price: number | string | null;
-  quantity: number | string | null;
-  fees_usdt: number | string;
-  pnl_usdt: number | string | null;
-  result_r: number | string | null;
-  notes: string | null;
-  aberto_em: string | null;
-  fechado_em: string | null;
-  criado_em: string;
-  atualizado_em: string;
+  execution_environment: 'testnet' | 'real';
+
+  sizing_mode: PositionSizingMode;
+  sizing_scope: PositionSizingScope;
+  policy_version: string;
+
+  available_balance_usdt: number | null;
+  balance_usage_limit_pct: number;
+
+  base_risk_percent: number;
+  target_risk_percent: number | null;
+  applied_risk_percent: number | null;
+  risk_multiplier: number;
+  sequence_step: number;
+
+  consecutive_wins: number;
+  consecutive_losses: number;
+  account_consecutive_wins: number;
+  account_consecutive_losses: number;
+
+  stop_distance_pct: number;
+  estimated_fee_rate_pct: number;
+  estimated_slippage_pct: number;
+  estimated_total_cost_pct: number;
+  estimated_loss_rate_pct: number;
+
+  planned_risk_usdt: number | null;
+  actual_risk_usdt: number | null;
+
+  requested_quote_amount: number | null;
+  effective_quote_amount: number | null;
+  max_order_usdt: number;
+
+  limiting_rules: string[];
+
+  calculation_input: JsonObject;
+  policy_snapshot: JsonObject;
+  result_snapshot: JsonObject;
+
+  applied_at: ISODateString | null;
+  created_at: ISODateString;
+  updated_at: ISODateString;
 }
 
-interface DayTradeAlertRuleRecord {
-  id: string;
-  symbol: string;
-  timeframe: Timeframe;
-  strategy: string;
-  notify_statuses: DayTradeAlertableStatus[];
-  canal: 'email';
-  ativo: boolean;
-  cooldown_minutes: number;
-  last_status: TrendBreakoutStatus | null;
-  last_candle_open_time: string | null;
-  last_triggered_at: string | null;
-  criado_em: string;
-  atualizado_em: string;
-}
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-interface BacktestApiResponse {
-  ok: boolean;
-  symbol: string;
-  timeframe: Timeframe;
-  requested_candles: number;
-  execution_ms: number;
-  generated_at: string;
-  result: TrendBreakoutBacktestResult;
-}
-
-// ---------------------------------------------------------------------------
-// Visual
-// ---------------------------------------------------------------------------
+const OPPORTUNITY_LIMIT = 200;
+const RELATED_LIMIT = 1_000;
 
 const S = {
   bg: '#101418',
   panel: '#181f26',
-  panelSoft: '#141a20',
+  panelRaised: '#1d252e',
   border: '#2a343f',
+  borderStrong: '#3a4653',
   text: '#d7dee6',
+  textStrong: '#f2f5f8',
   dim: '#7d8a97',
+  dimStrong: '#9ba7b3',
   a: '#e8a13c',
-  b: '#4f8fd0',
+  aDark: '#1a1206',
+  blue: '#4f8fd0',
   green: '#3fb26f',
   red: '#d05555',
-  yellow: '#d6b35b',
-  regime: {
-    calmo: '#4f8fd0',
-    normal: '#3fb26f',
-    'volátil': '#e8a13c',
-    extremo: '#d05555',
-  } as Record<Regime, string>,
+  purple: '#9a79d0',
+  cyan: '#42aeb8',
 };
 
-const SETUP_STATUS_COLORS: Record<TrendBreakoutStatus, string> = {
-  dados_insuficientes: S.dim,
-  aguardar: S.yellow,
-  observar: S.b,
-  condicoes_atendidas: S.green,
-  entrada_atrasada: S.a,
-  invalidado: S.red,
+const TONE_COLOR: Readonly<Record<StatusTone, string>> = {
+  neutral: S.dimStrong,
+  info: S.blue,
+  positive: S.green,
+  warning: S.a,
+  danger: S.red,
+  critical: '#ff6b6b',
+  muted: S.dim,
 };
 
-const SETUP_STATUS_ICONS: Record<TrendBreakoutStatus, string> = {
-  dados_insuficientes: '○',
-  aguardar: '●',
-  observar: '◉',
-  condicoes_atendidas: '✓',
-  entrada_atrasada: '!',
-  invalidado: '×',
+const TAB_LABELS: Readonly<Record<MainTab, string>> = {
+  pending: 'Pendentes',
+  positions: 'Em andamento',
+  exits: 'Saídas',
+  history: 'Histórico',
+  performance: 'Desempenho',
 };
 
-const fmt = (value: number, digits = 2) =>
-  value.toLocaleString('pt-BR', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
-
-const fmtPct = (value: number, digits = 2) =>
-  `${value >= 0 ? '+' : ''}${fmt(value, digits)}%`;
-
-const fmtPrice = (value: number) => {
-  if (value >= 1_000) return fmt(value, 2);
-  if (value >= 1) return fmt(value, 4);
-  return fmt(value, 6);
+const POSITION_SIZING_MODE_LABEL: Readonly<
+  Record<PositionSizingMode, string>
+> = {
+  fixed: 'Valor fixo',
+  anti_martingale: 'Anti-martingale',
+  martingale_testnet: 'Martingale experimental',
 };
 
-const fmtCompactUsdt = (value: number) =>
-  new Intl.NumberFormat('pt-BR', {
-    notation: 'compact',
-    maximumFractionDigits: 2,
-  }).format(value);
-
-const fmtDateTime = (iso: string) =>
-  new Date(iso).toLocaleString('pt-BR', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-
-const parseUserNumber = (value: string): number =>
-  Number(value.trim().replace(',', '.'));
-
-const formatConditionValue = (value: number | string | null): string => {
-  if (value === null) return '—';
-  if (typeof value === 'string') return value;
-  return fmt(value, Math.abs(value) >= 100 ? 2 : 3);
+const POSITION_SIZING_SCOPE_LABEL: Readonly<
+  Record<PositionSizingScope, string>
+> = {
+  account: 'Conta inteira',
+  strategy: 'Estratégia',
+  symbol: 'Ativo',
+  symbol_timeframe: 'Ativo + timeframe',
 };
+
+function getPositionSizingModeTone(
+  mode: PositionSizingMode,
+): StatusTone {
+  if (mode === 'anti_martingale') {
+    return 'positive';
+  }
+
+  if (mode === 'martingale_testnet') {
+    return 'danger';
+  }
+
+  return 'neutral';
+}
+
+function getPositionSizingStatusPresentation(
+  status: string,
+): {
+  label: string;
+  tone: StatusTone;
+} {
+  if (status === 'applied') {
+    return {
+      label: 'Aplicado',
+      tone: 'positive',
+    };
+  }
+
+  if (status === 'reserved') {
+    return {
+      label: 'Reservado',
+      tone: 'warning',
+    };
+  }
+
+  if (status === 'cancelled') {
+    return {
+      label: 'Cancelado',
+      tone: 'muted',
+    };
+  }
+
+  if (status === 'failed') {
+    return {
+      label: 'Falhou',
+      tone: 'danger',
+    };
+  }
+
+  return {
+    label: status || 'Desconhecido',
+    tone: 'neutral',
+  };
+}
+
+function displayLimitingRule(rule: string): string {
+  const labels: Readonly<Record<string, string>> = {
+    risk: 'limite de risco',
+    risk_limit: 'limite de risco',
+    available_balance: 'saldo disponível',
+    balance_usage_limit: 'percentual máximo do saldo',
+    max_order_usdt: 'máximo por ordem',
+    configured_order_limit: 'máximo configurado por ordem',
+    exchange_min_notional: 'mínimo da Binance',
+    exchange_max_notional: 'máximo da Binance',
+    exchange_notional_limit: 'limite de valor da Binance',
+    minimum_risk: 'risco mínimo',
+    maximum_risk: 'risco máximo',
+    maximum_multiplier: 'multiplicador máximo',
+    maximum_sequence_steps: 'máximo de etapas',
+    consecutive_loss_pause: 'pausa por perdas consecutivas',
+  };
+
+  if (labels[rule]) {
+    return labels[rule];
+  }
+
+  return rule
+    .replaceAll('_', ' ')
+    .replace(/\b\w/g, (letter) =>
+      letter.toLocaleUpperCase('pt-BR'),
+    );
+}
+
+const inputStyle: CSSProperties = {
+  width: '100%',
+  minHeight: 40,
+  background: S.bg,
+  border: `1px solid ${S.border}`,
+  borderRadius: 8,
+  color: S.text,
+  padding: '9px 11px',
+  fontSize: 14,
+  outline: 'none',
+  fontFamily: 'inherit',
+};
+
+const subtleButtonStyle: CSSProperties = {
+  background: 'transparent',
+  color: S.dimStrong,
+  border: `1px solid ${S.border}`,
+  borderRadius: 8,
+  padding: '8px 12px',
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+};
+
+const primaryButtonStyle: CSSProperties = {
+  background: S.a,
+  color: S.aDark,
+  border: 'none',
+  borderRadius: 8,
+  padding: '10px 16px',
+  fontSize: 13,
+  fontWeight: 800,
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+};
+
+const dangerButtonStyle: CSSProperties = {
+  background: 'transparent',
+  color: S.red,
+  border: `1px solid ${S.red}88`,
+  borderRadius: 8,
+  padding: '10px 16px',
+  fontSize: 13,
+  fontWeight: 700,
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+};
+
+// ---------------------------------------------------------------------------
+// Componentes visuais básicos
+// ---------------------------------------------------------------------------
 
 function Card({
   children,
   style,
-  title,
 }: {
-  children: React.ReactNode;
-  style?: React.CSSProperties;
-  title?: string;
+  children: ReactNode;
+  style?: CSSProperties;
 }) {
   return (
     <section
-      title={title}
       style={{
         background: S.panel,
         border: `1px solid ${S.border}`,
-        borderRadius: 10,
+        borderRadius: 12,
         padding: 16,
         ...style,
       }}
@@ -473,2783 +399,3650 @@ function Card({
   );
 }
 
-function RegimeBadge({ regime }: { regime: Regime }) {
-  return (
-    <span
-      style={{
-        background: `${S.regime[regime]}22`,
-        color: S.regime[regime],
-        border: `1px solid ${S.regime[regime]}55`,
-        borderRadius: 20,
-        padding: '2px 10px',
-        fontSize: 11,
-        fontWeight: 700,
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
-        whiteSpace: 'nowrap',
-      }}
-    >
-      {regime}
-    </span>
-  );
-}
-
-function SetupStatusBadge({ status }: { status: TrendBreakoutStatus }) {
-  const color = SETUP_STATUS_COLORS[status];
-  const item = TREND_BREAKOUT_STATUS_LABELS[status];
+function Pill({
+  children,
+  tone = 'neutral',
+  title,
+}: {
+  children: ReactNode;
+  tone?: StatusTone;
+  title?: string;
+}) {
+  const color = TONE_COLOR[tone];
 
   return (
     <span
+      title={title}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 7,
-        background: `${color}1f`,
-        color,
+        gap: 5,
         border: `1px solid ${color}66`,
+        background: `${color}14`,
+        color,
         borderRadius: 999,
-        padding: '7px 14px',
-        fontSize: 13,
+        padding: '4px 8px',
+        fontSize: 10,
         fontWeight: 800,
-        textTransform: 'uppercase',
-        letterSpacing: 0.6,
+        lineHeight: 1,
+        whiteSpace: 'nowrap',
       }}
     >
-      <span aria-hidden="true">{SETUP_STATUS_ICONS[status]}</span>
-      {item.label}
+      {children}
     </span>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Binance e cálculos
-// ---------------------------------------------------------------------------
-
-async function fetchKlines(
-  symbol: string,
-  timeframe: Timeframe,
-  visibleDurationMs: number,
-  onProgress: (message: string) => void,
-): Promise<Candle[]> {
-  const config = TIMEFRAMES[timeframe];
-  const requestedEnd = Date.now();
-  const visibleStart = requestedEnd - visibleDurationMs;
-
-  // A janela anterior serve exclusivamente para calcular a volatilidade desde
-  // o primeiro ponto visível. Esses candles não entram nas demais métricas.
-  const indicatorOptions = DAYTRADE_TIMEFRAME_INDICATOR_OPTIONS[timeframe];
-  const requiredIndicatorCandles = getRequiredCandleCount(indicatorOptions);
-  const warmupCandles = Math.max(
-    config.volWindow + 4,
-    requiredIndicatorCandles + 4,
+function SectionTitle({
+  title,
+  subtitle,
+  action,
+}: {
+  title: string;
+  subtitle?: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'flex-start',
+        justifyContent: 'space-between',
+        gap: 12,
+        flexWrap: 'wrap',
+        marginBottom: 12,
+      }}
+    >
+      <div>
+        <h2
+          style={{
+            margin: 0,
+            color: S.textStrong,
+            fontSize: 16,
+            lineHeight: 1.25,
+          }}
+        >
+          {title}
+        </h2>
+        {subtitle && (
+          <div
+            style={{
+              color: S.dim,
+              fontSize: 11,
+              marginTop: 4,
+              lineHeight: 1.45,
+            }}
+          >
+            {subtitle}
+          </div>
+        )}
+      </div>
+      {action}
+    </div>
   );
-  const warmupMs = warmupCandles * config.intervalMs;
-  const requestedStart = visibleStart - warmupMs;
-  const candlesByTime = new Map<number, Candle>();
+}
 
-  let cursor = requestedStart;
-  let pages = 0;
+function MetricCard({
+  label,
+  value,
+  detail,
+  tone = 'neutral',
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  tone?: StatusTone;
+}) {
+  const color = TONE_COLOR[tone];
 
-  while (cursor < requestedEnd && pages < 20) {
-    const params = new URLSearchParams({
-      symbol,
-      interval: timeframe,
-      startTime: String(cursor),
-      endTime: String(requestedEnd),
-      limit: '1000',
-    });
+  return (
+    <div
+      style={{
+        minWidth: 0,
+        border: `1px solid ${S.border}`,
+        background: S.panelRaised,
+        borderRadius: 10,
+        padding: '12px 13px',
+      }}
+    >
+      <div
+        style={{
+          color: S.dim,
+          fontSize: 10,
+          textTransform: 'uppercase',
+          letterSpacing: 0.6,
+          fontWeight: 800,
+        }}
+      >
+        {label}
+      </div>
+      <div
+        style={{
+          color,
+          fontSize: 22,
+          fontWeight: 800,
+          marginTop: 5,
+          lineHeight: 1.05,
+          overflowWrap: 'anywhere',
+        }}
+      >
+        {value}
+      </div>
+      {detail && (
+        <div
+          style={{
+            color: S.dimStrong,
+            fontSize: 10,
+            marginTop: 6,
+            lineHeight: 1.35,
+          }}
+        >
+          {detail}
+        </div>
+      )}
+    </div>
+  );
+}
 
-    const response = await fetch(
-      `https://api.binance.com/api/v3/klines?${params.toString()}`,
-      { cache: 'no-store' },
-    );
+function EmptyState({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <div
+      style={{
+        border: `1px dashed ${S.borderStrong}`,
+        borderRadius: 10,
+        padding: '26px 18px',
+        textAlign: 'center',
+      }}
+    >
+      <div
+        style={{
+          color: S.text,
+          fontSize: 14,
+          fontWeight: 700,
+        }}
+      >
+        {title}
+      </div>
+      <div
+        style={{
+          color: S.dim,
+          fontSize: 12,
+          lineHeight: 1.5,
+          maxWidth: 520,
+          margin: '6px auto 0',
+        }}
+      >
+        {description}
+      </div>
+    </div>
+  );
+}
 
-    if (!response.ok) {
-      throw new Error(`Binance respondeu ${response.status} para ${symbol}.`);
-    }
+// ---------------------------------------------------------------------------
+// Formatação e normalização
+// ---------------------------------------------------------------------------
 
-    const batch: (string | number)[][] = await response.json();
-    if (!batch.length) break;
-
-    for (const item of batch) {
-      const openTime = Number(item[0]);
-      const closeTime = Number(item[6]);
-
-      // Somente candles encerrados entram nas métricas oficiais.
-      if (closeTime > requestedEnd) continue;
-
-      candlesByTime.set(openTime, {
-        openTime,
-        closeTime,
-        open: Number(item[1]),
-        high: Number(item[2]),
-        low: Number(item[3]),
-        close: Number(item[4]),
-        volume: Number(item[5]),
-        quoteVolume: Number(item[7]),
-      });
-    }
-
-    pages += 1;
-    onProgress(`${symbol}: ${candlesByTime.size} candles encerrados...`);
-
-    const lastOpenTime = Number(batch[batch.length - 1][0]);
-    const nextCursor = lastOpenTime + 1;
-    if (nextCursor <= cursor || batch.length < 1000) break;
-    cursor = nextCursor;
+function finiteNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
   }
 
-  return [...candlesByTime.values()]
-    .filter((candle) => candle.openTime >= requestedStart)
-    .sort((left, right) => left.openTime - right.openTime);
-}
-
-function logReturns(candles: Candle[]): number[] {
-  const output: number[] = [];
-
-  for (let index = 1; index < candles.length; index++) {
-    const previous = candles[index - 1].close;
-    const current = candles[index].close;
-
-    if (previous > 0 && current > 0) {
-      output.push(Math.log(current / previous));
-    }
+  if (
+    typeof value === 'string' &&
+    value.trim() !== '' &&
+    Number.isFinite(Number(value))
+  ) {
+    return Number(value);
   }
 
-  return output;
+  return null;
 }
 
-function mean(values: number[]): number {
-  if (!values.length) return 0;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function sampleStandardDeviation(values: number[]): number {
-  if (values.length < 2) return 0;
-  const average = mean(values);
-  const variance = values.reduce(
-    (sum, value) => sum + (value - average) ** 2,
-    0,
-  ) / (values.length - 1);
-
-  return Math.sqrt(Math.max(0, variance));
-}
-
-function rollingVol(
-  returns: number[],
-  window: number,
-  periodsPerYear: number,
-): (number | null)[] {
-  const output: (number | null)[] = new Array(returns.length + 1).fill(null);
-  const annualize = Math.sqrt(periodsPerYear);
-  let sum = 0;
-  let sumSq = 0;
-
-  for (let index = 0; index < returns.length; index++) {
-    sum += returns[index];
-    sumSq += returns[index] ** 2;
-
-    if (index >= window) {
-      sum -= returns[index - window];
-      sumSq -= returns[index - window] ** 2;
-    }
-
-    if (index >= window - 1) {
-      const average = sum / window;
-      const variance = Math.max(0, sumSq / window - average ** 2);
-      output[index + 1] = Math.sqrt(variance) * annualize * 100;
-    }
+function fmtNumber(
+  value: number | null | undefined,
+  maximumFractionDigits = 2,
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return '—';
   }
 
-  return output;
-}
-
-function classifyRegime(values: number[], current: number | null): Regime {
-  if (current === null || values.length < 4) return 'normal';
-  const sorted = [...values].sort((left, right) => left - right);
-  const quantile = (p: number) => sorted[Math.floor(p * (sorted.length - 1))];
-
-  if (current <= quantile(0.25)) return 'calmo';
-  if (current <= quantile(0.75)) return 'normal';
-  if (current <= quantile(0.95)) return 'volátil';
-  return 'extremo';
-}
-
-function correlation(a: Candle[], b: Candle[]): number | null {
-  const mapB = new Map(b.map((candle) => [candle.openTime, candle]));
-  const pairs = a.flatMap((candleA) => {
-    const candleB = mapB.get(candleA.openTime);
-    return candleB ? [{ a: candleA, b: candleB }] : [];
+  return value.toLocaleString('pt-BR', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits,
   });
-
-  if (pairs.length < MIN_VISIBLE_CANDLES + 1) return null;
-
-  const returnsA: number[] = [];
-  const returnsB: number[] = [];
-
-  for (let index = 1; index < pairs.length; index++) {
-    const previous = pairs[index - 1];
-    const current = pairs[index];
-
-    if (
-      previous.a.close > 0 &&
-      previous.b.close > 0 &&
-      current.a.close > 0 &&
-      current.b.close > 0
-    ) {
-      returnsA.push(Math.log(current.a.close / previous.a.close));
-      returnsB.push(Math.log(current.b.close / previous.b.close));
-    }
-  }
-
-  if (returnsA.length < MIN_VISIBLE_CANDLES) return null;
-
-  const averageA = mean(returnsA);
-  const averageB = mean(returnsB);
-  let covariance = 0;
-  let varianceA = 0;
-  let varianceB = 0;
-
-  for (let index = 0; index < returnsA.length; index++) {
-    const deltaA = returnsA[index] - averageA;
-    const deltaB = returnsB[index] - averageB;
-    covariance += deltaA * deltaB;
-    varianceA += deltaA ** 2;
-    varianceB += deltaB ** 2;
-  }
-
-  const denominator = Math.sqrt(varianceA * varianceB);
-  return denominator > 0 ? covariance / denominator : null;
 }
 
-function computeStats(
-  symbol: string,
-  visibleCandles: Candle[],
-  rawCandles: Candle[],
-  volatility: (number | null)[],
-  timeframe: Timeframe,
-): IntradayStats {
-  const config = TIMEFRAMES[timeframe];
-  const first = visibleCandles[0];
-  const last = visibleCandles[visibleCandles.length - 1];
-  const visibleTimes = new Set(visibleCandles.map((candle) => candle.openTime));
-  const volatilityByTime = new Map(
-    rawCandles.map((candle, index) => [candle.openTime, volatility[index]]),
-  );
-
-  const visibleVolatility = rawCandles
-    .filter((candle) => visibleTimes.has(candle.openTime))
-    .map((candle) => volatilityByTime.get(candle.openTime) ?? null)
-    .filter((value): value is number => value !== null);
-
-  let peak = -Infinity;
-  let maxDrawdown = 0;
-  let belowPeak = 0;
-
-  for (const candle of visibleCandles) {
-    peak = Math.max(peak, candle.close);
-    const drawdown = (candle.close - peak) / peak;
-    maxDrawdown = Math.min(maxDrawdown, drawdown);
-    if (drawdown < 0) belowPeak += 1;
+function fmtPrice(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return '—';
   }
 
-  const returns = logReturns(visibleCandles);
-  const simpleReturns = visibleCandles.slice(1).map((candle, index) =>
-    (candle.close / visibleCandles[index].close - 1) * 100,
-  );
-  const positiveCount = returns.filter((value) => value > 0).length;
-  const periodMean = mean(returns);
-  const periodStd = sampleStandardDeviation(returns);
-  const currentVolatility = visibleVolatility[visibleVolatility.length - 1] ?? 0;
+  const decimals =
+    value >= 1_000 ? 2 : value >= 1 ? 4 : 8;
 
-  const periodHigh = Math.max(...visibleCandles.map((candle) => candle.high));
-  const periodLow = Math.min(...visibleCandles.map((candle) => candle.low));
-  const averageQuoteVolume = mean(
-    visibleCandles.map((candle) => candle.quoteVolume),
-  );
-
-  return {
-    symbol,
-    candleCount: visibleCandles.length,
-    lastPrice: last.close,
-    returnPct: (last.close / first.close - 1) * 100,
-    maxDrawdownPct: maxDrawdown * 100,
-    currentDrawdownPct: ((last.close - peak) / peak) * 100,
-    timeInDrawdownPct: (belowPeak / visibleCandles.length) * 100,
-    annualVolPct: mean(visibleVolatility),
-    currentVolPct: currentVolatility,
-    sharpe: periodStd > 0
-      ? (periodMean / periodStd) * Math.sqrt(config.periodsPerYear)
-      : 0,
-    pctPositive: returns.length ? (positiveCount / returns.length) * 100 : 0,
-    regime: classifyRegime(visibleVolatility, currentVolatility),
-    bestCandlePct: simpleReturns.length ? Math.max(...simpleReturns) : 0,
-    worstCandlePct: simpleReturns.length ? Math.min(...simpleReturns) : 0,
-    periodHigh,
-    periodLow,
-    amplitudePct: periodLow > 0 ? (periodHigh / periodLow - 1) * 100 : 0,
-    averageQuoteVolume,
-    lastQuoteVolume: last.quoteVolume,
-  };
+  return `${fmtNumber(value, decimals)} USDT`;
 }
 
-function upsertClosedCandle(
-  current: Candle[],
-  candle: Candle,
-  minimumOpenTime: number,
-): Candle[] {
-  const byTime = new Map(current.map((item) => [item.openTime, item]));
-  byTime.set(candle.openTime, candle);
+function fmtPct(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return '—';
+  }
 
-  return [...byTime.values()]
-    .filter((item) => item.openTime >= minimumOpenTime)
-    .sort((left, right) => left.openTime - right.openTime);
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${fmtNumber(value, 2)}%`;
 }
 
-function chartLabel(timestamp: number, durationMs: number): string {
-  const date = new Date(timestamp);
-
-  if (durationMs <= DAY) {
-    return date.toLocaleTimeString('pt-BR', {
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+function fmtR(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return '—';
   }
 
-  if (durationMs <= 7 * DAY) {
-    return date.toLocaleString('pt-BR', {
-      day: '2-digit',
-      month: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${fmtNumber(value, 2)}R`;
+}
+
+function fmtDate(
+  value: ISODateString | null | undefined,
+  includeYear = false,
+): string {
+  if (!value) {
+    return '—';
   }
 
-  return date.toLocaleDateString('pt-BR', {
+  const date = new Date(value);
+
+  if (!Number.isFinite(date.getTime())) {
+    return '—';
+  }
+
+  return date.toLocaleString('pt-BR', {
     day: '2-digit',
     month: '2-digit',
+    year: includeYear ? '2-digit' : undefined,
+    hour: '2-digit',
+    minute: '2-digit',
   });
 }
 
-function correlationText(value: number | null): string {
-  if (value === null) return 'amostra insuficiente';
-  const absolute = Math.abs(value);
-  if (absolute >= 0.7) return value >= 0 ? 'alta positiva' : 'alta inversa';
-  if (absolute >= 0.4) return value >= 0 ? 'moderada positiva' : 'moderada inversa';
-  return 'baixa';
+function fmtTimeframe(timeframe: string): string {
+  const labels: Readonly<Record<string, string>> = {
+    '5m': '5 minutos',
+    '15m': '15 minutos',
+    '30m': '30 minutos',
+    '1h': '1 hora',
+    '4h': '4 horas',
+    '1d': 'Diário',
+    '1w': 'Semanal',
+  };
+
+  return labels[timeframe] ?? timeframe;
 }
 
-function buildReport(
-  statsA: IntradayStats,
-  statsB: IntradayStats | null,
-  correlationValue: number | null,
-  periodLabel: string,
-  timeframe: Timeframe,
+function displayStrategy(strategy: string): string {
+  if (strategy === 'trend_breakout') {
+    return 'Tendência com rompimento';
+  }
+
+  return strategy
+    .split('_')
+    .filter(Boolean)
+    .map(
+      (part) =>
+        part.charAt(0).toLocaleUpperCase('pt-BR') +
+        part.slice(1),
+    )
+    .join(' ');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value)
+  );
+}
+
+function jsonDisplayValue(value: unknown): string {
+  if (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    return String(value);
+  }
+
+  if (value === null || value === undefined) {
+    return '—';
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '—';
+  }
+}
+
+function normalizeConditions(
+  value: OpportunityConditionSnapshot[] | JsonArray,
+): ConditionView[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const records = (value as unknown[]).filter(isRecord);
+
+  return records.map((condition, index) => ({
+      id:
+        typeof condition.id === 'string'
+          ? condition.id
+          : `condition-${index}`,
+      label:
+        typeof condition.label === 'string'
+          ? condition.label
+          : `Condição ${index + 1}`,
+      passed:
+        typeof condition.passed === 'boolean'
+          ? condition.passed
+          : null,
+      available:
+        typeof condition.available === 'boolean'
+          ? condition.available
+          : true,
+      currentValue: jsonDisplayValue(condition.currentValue),
+      requiredValue:
+        typeof condition.requiredValue === 'string'
+          ? condition.requiredValue
+          : '—',
+      explanation:
+        typeof condition.explanation === 'string'
+          ? condition.explanation
+          : '',
+    }));
+}
+
+function normalizeWarnings(value: string[] | JsonArray): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return (value as unknown[]).filter(
+    (warning): warning is string => typeof warning === 'string',
+  );
+}
+
+function normalizePositionSizingMode(
+  value: unknown,
+): PositionSizingMode {
+  return value === 'anti_martingale' ||
+      value === 'martingale_testnet'
+    ? value
+    : 'fixed';
+}
+
+function normalizePositionSizingScope(
+  value: unknown,
+): PositionSizingScope {
+  return value === 'account' ||
+      value === 'symbol' ||
+      value === 'symbol_timeframe'
+    ? value
+    : 'strategy';
+}
+
+function normalizeJsonObject(value: unknown): JsonObject {
+  return isRecord(value)
+    ? value as JsonObject
+    : {};
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter(
+    (item): item is string =>
+      typeof item === 'string' && item.trim() !== '',
+  );
+}
+
+function normalizePositionSizingDecision(
+  value: unknown,
+): PositionSizingDecision | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id =
+    typeof value.id === 'string'
+      ? value.id
+      : null;
+
+  const opportunityId =
+    typeof value.opportunity_id === 'string'
+      ? value.opportunity_id
+      : null;
+
+  if (
+    !id ||
+    !opportunityId ||
+    !UUID_PATTERN.test(id) ||
+    !UUID_PATTERN.test(opportunityId)
+  ) {
+    return null;
+  }
+
+  const environment =
+    value.execution_environment === 'real'
+      ? 'real'
+      : 'testnet';
+
+  const createdAt =
+    typeof value.created_at === 'string'
+      ? value.created_at
+      : new Date(0).toISOString();
+
+  const updatedAt =
+    typeof value.updated_at === 'string'
+      ? value.updated_at
+      : createdAt;
+
+  return {
+    id: id as UUID,
+    opportunity_id: opportunityId as UUID,
+
+    order_id:
+      typeof value.order_id === 'string' &&
+      UUID_PATTERN.test(value.order_id)
+        ? value.order_id as UUID
+        : null,
+
+    source:
+      typeof value.source === 'string'
+        ? value.source
+        : 'unknown',
+
+    status:
+      typeof value.status === 'string'
+        ? value.status
+        : 'reserved',
+
+    execution_environment: environment,
+
+    sizing_mode:
+      normalizePositionSizingMode(value.sizing_mode),
+
+    sizing_scope:
+      normalizePositionSizingScope(value.sizing_scope),
+
+    policy_version:
+      typeof value.policy_version === 'string'
+        ? value.policy_version
+        : '1.0.0',
+
+    available_balance_usdt:
+      finiteNumber(value.available_balance_usdt),
+
+    balance_usage_limit_pct:
+      finiteNumber(value.balance_usage_limit_pct) ?? 100,
+
+    base_risk_percent:
+      finiteNumber(value.base_risk_percent) ?? 0,
+
+    target_risk_percent:
+      finiteNumber(value.target_risk_percent),
+
+    applied_risk_percent:
+      finiteNumber(value.applied_risk_percent),
+
+    risk_multiplier:
+      finiteNumber(value.risk_multiplier) ?? 1,
+
+    sequence_step:
+      finiteNumber(value.sequence_step) ?? 0,
+
+    consecutive_wins:
+      finiteNumber(value.consecutive_wins) ?? 0,
+
+    consecutive_losses:
+      finiteNumber(value.consecutive_losses) ?? 0,
+
+    account_consecutive_wins:
+      finiteNumber(value.account_consecutive_wins) ?? 0,
+
+    account_consecutive_losses:
+      finiteNumber(value.account_consecutive_losses) ?? 0,
+
+    stop_distance_pct:
+      finiteNumber(value.stop_distance_pct) ?? 0,
+
+    estimated_fee_rate_pct:
+      finiteNumber(value.estimated_fee_rate_pct) ?? 0,
+
+    estimated_slippage_pct:
+      finiteNumber(value.estimated_slippage_pct) ?? 0,
+
+    estimated_total_cost_pct:
+      finiteNumber(value.estimated_total_cost_pct) ?? 0,
+
+    estimated_loss_rate_pct:
+      finiteNumber(value.estimated_loss_rate_pct) ?? 0,
+
+    planned_risk_usdt:
+      finiteNumber(value.planned_risk_usdt),
+
+    actual_risk_usdt:
+      finiteNumber(value.actual_risk_usdt),
+
+    requested_quote_amount:
+      finiteNumber(value.requested_quote_amount),
+
+    effective_quote_amount:
+      finiteNumber(value.effective_quote_amount),
+
+    max_order_usdt:
+      finiteNumber(value.max_order_usdt) ?? 0,
+
+    limiting_rules:
+      normalizeStringArray(value.limiting_rules),
+
+    calculation_input:
+      normalizeJsonObject(value.calculation_input),
+
+    policy_snapshot:
+      normalizeJsonObject(value.policy_snapshot),
+
+    result_snapshot:
+      normalizeJsonObject(value.result_snapshot),
+
+    applied_at:
+      typeof value.applied_at === 'string'
+        ? value.applied_at
+        : null,
+
+    created_at: createdAt,
+    updated_at: updatedAt,
+  };
+}
+
+function marketSnapshotNumber(
+  opportunity: TradeOpportunity,
+  key: 'lastLivePrice' | 'lastClosedPrice',
+): number | null {
+  const snapshot = opportunity.market_snapshot;
+
+  if (!isRecord(snapshot)) {
+    return null;
+  }
+
+  return finiteNumber(snapshot[key]);
+}
+
+function planSnapshotNumber(
+  opportunity: TradeOpportunity,
+  key:
+    | 'latestAcceptableEntry'
+    | 'stopDistancePct'
+    | 'targetDistancePct',
+): number | null {
+  const snapshot = opportunity.plan_snapshot;
+
+  if (!isRecord(snapshot)) {
+    return null;
+  }
+
+  return finiteNumber(snapshot[key]);
+}
+
+function friendlyError(
+  error: unknown,
+  fallback = 'Não foi possível concluir a operação.',
 ): string {
-  const config = TIMEFRAMES[timeframe];
-  const intro =
-    `No período intradiário de ${periodLabel}, usando candles de ${config.label}, ` +
-    `${statsA.symbol} apresentou retorno de ${fmtPct(statsA.returnPct)}, ` +
-    `volatilidade atual anualizada de ${fmt(statsA.currentVolPct, 1)}% e regime ` +
-    `${statsA.regime}, classificação que compara a volatilidade atual com a ` +
-    `distribuição histórica do próprio ativo dentro da amostra.`;
+  let message = fallback;
 
-  const riskA =
-    `Em ${statsA.symbol}, o drawdown máximo foi de ${fmtPct(statsA.maxDrawdownPct)}, ` +
-    `o drawdown atual foi de ${fmtPct(statsA.currentDrawdownPct)} e o preço permaneceu ` +
-    `abaixo de um topo anterior em ${fmt(statsA.timeInDrawdownPct, 0)}% dos candles. ` +
-    `A máxima do período foi ${fmtPrice(statsA.periodHigh)} USDT, a mínima foi ` +
-    `${fmtPrice(statsA.periodLow)} USDT e a amplitude entre elas foi de ` +
-    `${fmt(statsA.amplitudePct, 2)}%.`;
-
-  if (!statsB) {
-    return [
-      intro,
-      riskA,
-      `Em palavras simples: os números descrevem como ${statsA.symbol} oscilou no ` +
-        `intervalo selecionado. A volatilidade mede a intensidade das oscilações, ` +
-        `enquanto o drawdown mede quanto o preço ficou abaixo de um topo anterior. ` +
-        `Essas métricas descrevem o passado recente e não indicam a direção do próximo candle.`,
-      'Este relatório é descritivo e não constitui recomendação de investimento.',
-    ].join('\n\n');
+  if (error instanceof Error && error.message) {
+    message = error.message;
+  } else if (
+    isRecord(error) &&
+    typeof error.message === 'string' &&
+    error.message.trim()
+  ) {
+    message = error.message;
   }
 
-  const comparison =
-    `${statsB.symbol} apresentou retorno de ${fmtPct(statsB.returnPct)}, volatilidade ` +
-    `atual anualizada de ${fmt(statsB.currentVolPct, 1)}%, drawdown máximo de ` +
-    `${fmtPct(statsB.maxDrawdownPct)} e drawdown atual de ` +
-    `${fmtPct(statsB.currentDrawdownPct)}. O Sharpe anualizado da amostra foi ` +
-    `${fmt(statsA.sharpe)} para ${statsA.symbol} e ${fmt(statsB.sharpe)} para ` +
-    `${statsB.symbol}; essa métrica compara retorno médio com volatilidade e não ` +
-    `representa sozinha todo o risco de um ativo. Em janelas intradiárias curtas, a anualização pode produzir valores extremos e deve ser interpretada com cautela.`;
+  const normalized = message.toLocaleLowerCase('pt-BR');
 
-  const correlationParagraph = correlationValue === null
-    ? 'A correlação não foi calculada porque não havia retornos alinhados suficientes.'
-    : `A correlação entre os retornos foi de ${fmt(correlationValue)}, classificada ` +
-      `como ${correlationText(correlationValue)}. Isso descreve o quanto os dois ` +
-      `ativos se moveram juntos dentro do período, sem indicar comportamento futuro.`;
+  if (
+    normalized.includes('jwt') ||
+    normalized.includes('token') ||
+    normalized.includes('sessão')
+  ) {
+    return 'Sua sessão expirou. Entre novamente para continuar.';
+  }
 
-  const plain =
-    `Em palavras simples: ${statsA.symbol} e ${statsB.symbol} foram comparados apenas ` +
-    `pelos candles encerrados do intervalo selecionado. Volatilidade é o tamanho das ` +
-    `oscilações; drawdown é quanto o preço ficou abaixo de um topo anterior; e ` +
-    `correlação é o quanto os dois ativos se moveram de forma parecida. Os resultados ` +
-    `podem mudar rapidamente em períodos intradiários e não antecipam o próximo movimento.`;
+  if (
+    normalized.includes('row-level security') ||
+    normalized.includes('rls') ||
+    normalized.includes('permission')
+  ) {
+    return 'Sua sessão não autorizou esta ação. Entre novamente e repita a operação.';
+  }
 
-  return [
-    intro,
-    riskA,
-    comparison,
-    correlationParagraph,
-    plain,
-    'Este relatório é descritivo e não constitui recomendação de investimento.',
-  ].join('\n\n');
+  if (normalized.includes('expired')) {
+    return 'A oportunidade expirou antes da conclusão da ação.';
+  }
+
+  if (normalized.includes('not found')) {
+    return 'A oportunidade não foi encontrada ou já foi atualizada.';
+  }
+
+  return message;
 }
 
+function createRequestId(): UUID {
+  if (
+    typeof crypto !== 'undefined' &&
+    typeof crypto.randomUUID === 'function'
+  ) {
+    return crypto.randomUUID();
+  }
 
-function nullableNumber(value: unknown): number | null {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
+  return '00000000-0000-4000-8000-000000000000';
 }
 
-function formatDateTime(value: string | number | null | undefined): string {
-  if (value === null || value === undefined || value === '') return '—';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('pt-BR');
+function safeFocusFromLocation(): UUID | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  const focus = new URLSearchParams(window.location.search).get(
+    'focus',
+  );
+
+  return focus && UUID_PATTERN.test(focus) ? focus : null;
 }
 
-function journalStatusLabel(status: string): string {
-  const labels: Record<string, string> = {
-    planejada: 'Planejada',
-    aguardando_entrada: 'Aguardando entrada',
-    ordem_enviada: 'Ordem enviada',
-    aberta: 'Aberta e protegida',
-    alvo_executado: 'Alvo executado',
-    stop_executado: 'Stop executado',
-    encerrada_manual: 'Encerrada manualmente',
-    cancelada: 'Cancelada',
-    erro: 'Erro',
+function magicLinkRedirect(): string | undefined {
+  if (typeof window === 'undefined') {
+    return undefined;
+  }
+
+  const url = new URL('/oportunidades', window.location.origin);
+  const focus = safeFocusFromLocation();
+
+  if (focus) {
+    url.searchParams.set('focus', focus);
+  }
+
+  return url.toString();
+}
+
+function upsertById<T extends { id: string }>(
+  rows: readonly T[],
+  next: T,
+): T[] {
+  const index = rows.findIndex((row) => row.id === next.id);
+
+  if (index < 0) {
+    return [next, ...rows];
+  }
+
+  const copy = [...rows];
+  copy[index] = next;
+  return copy;
+}
+
+function removeById<T extends { id: string }>(
+  rows: readonly T[],
+  id: string,
+): T[] {
+  return rows.filter((row) => row.id !== id);
+}
+
+// ---------------------------------------------------------------------------
+// Cards de oportunidade
+// ---------------------------------------------------------------------------
+
+function OutcomeBadge({
+  outcome,
+}: {
+  outcome: OpportunityOutcome | null;
+}) {
+  if (!outcome) {
+    return null;
+  }
+
+  const presentation = getOutcomeStatusPresentation(outcome.status);
+  const resultTone = getOutcomeTone(outcome);
+
+  return (
+    <Pill
+      tone={resultTone}
+      title={`${getOutcomeModeLabel(outcome.mode)}: ${presentation.description}`}
+    >
+      {outcome.mode === 'theoretical' ? 'Teórico' : 'Executado'}
+      {' · '}
+      {presentation.shortLabel}
+      {outcome.result_r !== null
+        ? ` · ${fmtR(outcome.result_r)}`
+        : ''}
+    </Pill>
+  );
+}
+
+function PositionSizingBadge({
+  decision,
+}: {
+  decision: PositionSizingDecision | null;
+}) {
+  if (!decision) {
+    return null;
+  }
+
+  const effectiveRisk =
+    decision.applied_risk_percent ??
+    decision.target_risk_percent ??
+    decision.base_risk_percent;
+
+  const status =
+    getPositionSizingStatusPresentation(decision.status);
+
+  return (
+    <Pill
+      tone={
+        decision.status === 'failed'
+          ? 'danger'
+          : getPositionSizingModeTone(decision.sizing_mode)
+      }
+      title={[
+        POSITION_SIZING_MODE_LABEL[decision.sizing_mode],
+        `Status: ${status.label}`,
+        `Risco: ${fmtNumber(effectiveRisk, 4)}%`,
+        `Multiplicador: ${fmtNumber(
+          decision.risk_multiplier,
+          4,
+        )}×`,
+      ].join(' · ')}
+    >
+      {POSITION_SIZING_MODE_LABEL[decision.sizing_mode]}
+      {' · '}
+      {fmtNumber(effectiveRisk, 2)}%
+      {' · '}
+      {fmtNumber(decision.risk_multiplier, 2)}×
+    </Pill>
+  );
+}
+
+function OpportunityCard({
+  opportunity,
+  theoreticalOutcome,
+  executedOutcome,
+  sizingDecision,
+  onOpen,
+}: {
+  opportunity: TradeOpportunity;
+  theoreticalOutcome: OpportunityOutcome | null;
+  executedOutcome: OpportunityOutcome | null;
+  sizingDecision: PositionSizingDecision | null;
+  onOpen: (opportunity: TradeOpportunity) => void;
+}) {
+  const state = getOpportunityCardState(opportunity);
+  const lifecycle = getLifecyclePresentation(state.effectiveStatus);
+  const sourceLabel = getOpportunitySourceLabel(
+    opportunity.source_type,
+  );
+
+  const keyboardOpen = (
+    event: KeyboardEvent<HTMLDivElement>,
+  ) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      onOpen(opportunity);
+    }
   };
 
-  return labels[status] ?? status.replaceAll('_', ' ');
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpen(opportunity)}
+      onKeyDown={keyboardOpen}
+      aria-label={`Abrir oportunidade ${opportunity.symbol} ${opportunity.timeframe}`}
+      style={{
+        position: 'relative',
+        minWidth: 0,
+        border: `1px solid ${
+          state.isUnread ? `${TONE_COLOR[state.tone]}99` : S.border
+        }`,
+        background: S.panelRaised,
+        borderRadius: 12,
+        padding: 14,
+        cursor: 'pointer',
+        outline: 'none',
+        boxShadow: state.isUnread
+          ? `0 0 0 1px ${TONE_COLOR[state.tone]}22`
+          : 'none',
+      }}
+    >
+      {state.isUnread && (
+        <span
+          title="Nova oportunidade"
+          style={{
+            position: 'absolute',
+            top: 11,
+            right: 11,
+            width: 8,
+            height: 8,
+            borderRadius: 999,
+            background: TONE_COLOR[state.tone],
+            boxShadow: `0 0 0 4px ${TONE_COLOR[state.tone]}22`,
+          }}
+        />
+      )}
+
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          justifyContent: 'space-between',
+          gap: 10,
+          paddingRight: state.isUnread ? 16 : 0,
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div
+            style={{
+              color: S.textStrong,
+              fontSize: 18,
+              fontWeight: 850,
+              lineHeight: 1.05,
+            }}
+          >
+            {opportunity.symbol}
+          </div>
+          <div
+            style={{
+              color: S.dim,
+              fontSize: 11,
+              marginTop: 4,
+            }}
+          >
+            {fmtTimeframe(opportunity.timeframe)}
+            {' · '}
+            {sourceLabel}
+          </div>
+        </div>
+
+        <Pill tone={state.tone} title={lifecycle.description}>
+          {lifecycle.shortLabel}
+        </Pill>
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns:
+            'repeat(3, minmax(0, 1fr))',
+          gap: 8,
+          marginTop: 14,
+        }}
+      >
+        <div>
+          <div style={{ color: S.dim, fontSize: 9 }}>ENTRADA</div>
+          <div
+            style={{
+              color: S.text,
+              fontSize: 12,
+              fontWeight: 700,
+              marginTop: 3,
+            }}
+          >
+            {fmtPrice(opportunity.entry_reference)}
+          </div>
+        </div>
+        <div>
+          <div style={{ color: S.dim, fontSize: 9 }}>STOP</div>
+          <div
+            style={{
+              color: S.red,
+              fontSize: 12,
+              fontWeight: 700,
+              marginTop: 3,
+            }}
+          >
+            {fmtPrice(opportunity.stop_reference)}
+          </div>
+        </div>
+        <div>
+          <div style={{ color: S.dim, fontSize: 9 }}>ALVO</div>
+          <div
+            style={{
+              color: S.green,
+              fontSize: 12,
+              fontWeight: 700,
+              marginTop: 3,
+            }}
+          >
+            {fmtPrice(opportunity.target_reference)}
+          </div>
+        </div>
+      </div>
+
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          flexWrap: 'wrap',
+          marginTop: 13,
+        }}
+      >
+        <Pill tone="neutral">
+          {opportunity.score ?? 0}/{opportunity.total_conditions ?? 0}
+          {' condições'}
+        </Pill>
+        <Pill
+          tone={
+            opportunity.execution_environment === 'real'
+              ? 'danger'
+              : opportunity.execution_environment === 'testnet'
+                ? 'info'
+                : 'muted'
+          }
+        >
+          {getExecutionEnvironmentLabel(
+            opportunity.execution_environment,
+          )}
+        </Pill>
+        <OutcomeBadge outcome={theoreticalOutcome} />
+        <OutcomeBadge outcome={executedOutcome} />
+        <PositionSizingBadge decision={sizingDecision} />
+      </div>
+
+      <div
+        style={{
+          borderTop: `1px solid ${S.border}`,
+          marginTop: 13,
+          paddingTop: 10,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 10,
+          flexWrap: 'wrap',
+        }}
+      >
+        <span
+          style={{
+            color:
+              state.countdown.state === 'urgent'
+                ? S.red
+                : state.countdown.state === 'expired'
+                  ? S.dim
+                  : S.dimStrong,
+            fontSize: 10,
+            fontWeight:
+              state.countdown.state === 'urgent' ? 800 : 500,
+          }}
+        >
+          {state.countdown.label}
+        </span>
+
+        <span
+          style={{
+            color: S.a,
+            fontSize: 11,
+            fontWeight: 750,
+          }}
+        >
+          Abrir detalhes →
+        </span>
+      </div>
+    </div>
+  );
 }
 
-function journalStatusColor(status: string): string {
-  if (status === 'alvo_executado') return S.green;
-  if (status === 'stop_executado' || status === 'erro') return S.red;
-  if (status === 'aberta') return S.b;
-  if (status === 'cancelada') return S.dim;
-  return S.yellow;
+// ---------------------------------------------------------------------------
+// Detalhamento
+// ---------------------------------------------------------------------------
+
+function PlanGrid({
+  opportunity,
+}: {
+  opportunity: TradeOpportunity;
+}) {
+  const latestAcceptableEntry = planSnapshotNumber(
+    opportunity,
+    'latestAcceptableEntry',
+  );
+
+  const items = [
+    {
+      label: 'Entrada de referência',
+      value: fmtPrice(opportunity.entry_reference),
+      color: S.textStrong,
+    },
+    {
+      label: 'Entrada máxima',
+      value: fmtPrice(
+        opportunity.maximum_entry_price ??
+          latestAcceptableEntry,
+      ),
+      color: S.a,
+    },
+    {
+      label: 'Stop',
+      value: fmtPrice(opportunity.stop_reference),
+      color: S.red,
+    },
+    {
+      label: 'Alvo',
+      value: fmtPrice(opportunity.target_reference),
+      color: S.green,
+    },
+    {
+      label: 'Risco/retorno bruto',
+      value:
+        opportunity.gross_risk_reward === null
+          ? '—'
+          : `${fmtNumber(opportunity.gross_risk_reward, 2)}R`,
+      color: S.blue,
+    },
+    {
+      label: 'Valor definido',
+      value:
+        opportunity.quote_amount === null
+          ? 'Ainda não definido'
+          : fmtPrice(opportunity.quote_amount),
+      color: S.text,
+    },
+  ];
+
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns:
+          'repeat(auto-fit, minmax(145px, 1fr))',
+        gap: 8,
+      }}
+    >
+      {items.map((item) => (
+        <div
+          key={item.label}
+          style={{
+            border: `1px solid ${S.border}`,
+            borderRadius: 9,
+            padding: '10px 11px',
+            background: S.bg,
+            minWidth: 0,
+          }}
+        >
+          <div
+            style={{
+              color: S.dim,
+              fontSize: 9,
+              textTransform: 'uppercase',
+              letterSpacing: 0.5,
+            }}
+          >
+            {item.label}
+          </div>
+          <div
+            style={{
+              color: item.color,
+              fontSize: 13,
+              fontWeight: 750,
+              marginTop: 4,
+              overflowWrap: 'anywhere',
+            }}
+          >
+            {item.value}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
-function backtestExitLabel(reason: TrendBreakoutBacktestTrade['exitReason']): string {
-  const labels: Record<TrendBreakoutBacktestTrade['exitReason'], string> = {
-    stop: 'Stop',
-    target: 'Alvo',
-    maximum_holding: 'Tempo máximo',
-    end_of_data: 'Fim dos dados',
+function PositionSizingPanel({
+  decisions,
+}: {
+  decisions: readonly PositionSizingDecision[];
+}) {
+  if (decisions.length === 0) {
+    return (
+      <div
+        style={{
+          color: S.dim,
+          fontSize: 12,
+          border: `1px dashed ${S.borderStrong}`,
+          borderRadius: 9,
+          padding: 12,
+          lineHeight: 1.5,
+        }}
+      >
+        O valor da posição ainda não foi calculado. A decisão de risco
+        é criada no servidor imediatamente antes da execução, depois
+        da conferência do saldo, stop, custos e limites da conta.
+      </div>
+    );
+  }
+
+  const decision = decisions[0];
+  const status =
+    getPositionSizingStatusPresentation(decision.status);
+
+  const effectiveRisk =
+    decision.applied_risk_percent ??
+    decision.target_risk_percent ??
+    decision.base_risk_percent;
+
+  const quoteAmount =
+    decision.effective_quote_amount ??
+    decision.requested_quote_amount;
+
+  return (
+    <div
+      style={{
+        border: `1px solid ${
+          decision.sizing_mode === 'martingale_testnet'
+            ? `${S.red}66`
+            : `${TONE_COLOR[
+                getPositionSizingModeTone(
+                  decision.sizing_mode,
+                )
+              ]}55`
+        }`,
+        borderRadius: 10,
+        padding: 13,
+        background:
+          decision.sizing_mode === 'martingale_testnet'
+            ? `${S.red}08`
+            : S.bg,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          flexWrap: 'wrap',
+        }}
+      >
+        <div>
+          <div
+            style={{
+              color: S.textStrong,
+              fontSize: 14,
+              fontWeight: 800,
+            }}
+          >
+            {
+              POSITION_SIZING_MODE_LABEL[
+                decision.sizing_mode
+              ]
+            }
+          </div>
+
+          <div
+            style={{
+              color: S.dim,
+              fontSize: 10,
+              marginTop: 3,
+            }}
+          >
+            Sequência por{' '}
+            {
+              POSITION_SIZING_SCOPE_LABEL[
+                decision.sizing_scope
+              ]
+            }
+            {' · '}política v{decision.policy_version}
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: 'flex',
+            gap: 6,
+            flexWrap: 'wrap',
+          }}
+        >
+          <Pill tone={status.tone}>
+            {status.label}
+          </Pill>
+
+          <Pill
+            tone={
+              decision.execution_environment === 'real'
+                ? 'danger'
+                : 'info'
+            }
+          >
+            {decision.execution_environment === 'real'
+              ? 'CONTA REAL'
+              : 'TESTNET'}
+          </Pill>
+        </div>
+      </div>
+
+      {decision.sizing_mode === 'martingale_testnet' && (
+        <div
+          style={{
+            color: S.red,
+            fontSize: 11,
+            fontWeight: 800,
+            lineHeight: 1.5,
+            border: `1px solid ${S.red}55`,
+            borderRadius: 8,
+            padding: 9,
+            marginTop: 11,
+          }}
+        >
+          ⚠️ Martingale experimental. Este método permanece restrito
+          à Testnet e aumenta o risco depois de perdas.
+        </div>
+      )}
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns:
+            'repeat(auto-fit, minmax(130px, 1fr))',
+          gap: 8,
+          marginTop: 12,
+        }}
+      >
+        <MetricCard
+          label="Valor efetivo"
+          value={
+            quoteAmount === null
+              ? '—'
+              : `${fmtNumber(quoteAmount, 4)} USDT`
+          }
+          detail={
+            decision.requested_quote_amount !== null
+              ? `Solicitado: ${fmtNumber(
+                  decision.requested_quote_amount,
+                  4,
+                )} USDT`
+              : undefined
+          }
+          tone="info"
+        />
+
+        <MetricCard
+          label="Risco aplicado"
+          value={`${fmtNumber(effectiveRisk, 4)}%`}
+          detail={`Base: ${fmtNumber(
+            decision.base_risk_percent,
+            4,
+          )}%`}
+          tone={
+            effectiveRisk >
+            decision.base_risk_percent
+              ? 'warning'
+              : 'neutral'
+          }
+        />
+
+        <MetricCard
+          label="Multiplicador"
+          value={`${fmtNumber(
+            decision.risk_multiplier,
+            4,
+          )}×`}
+          detail={`Etapa ${fmtNumber(
+            decision.sequence_step,
+            0,
+          )}`}
+          tone={getPositionSizingModeTone(
+            decision.sizing_mode,
+          )}
+        />
+
+        <MetricCard
+          label="Risco planejado"
+          value={
+            decision.planned_risk_usdt === null
+              ? '—'
+              : `${fmtNumber(
+                  decision.planned_risk_usdt,
+                  4,
+                )} USDT`
+          }
+          detail={
+            decision.actual_risk_usdt !== null
+              ? `Real: ${fmtNumber(
+                  decision.actual_risk_usdt,
+                  4,
+                )} USDT`
+              : 'Aguardando risco real'
+          }
+          tone="danger"
+        />
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns:
+            'repeat(auto-fit, minmax(185px, 1fr))',
+          gap: 8,
+          marginTop: 10,
+        }}
+      >
+        <div
+          style={{
+            border: `1px solid ${S.border}`,
+            borderRadius: 8,
+            padding: 10,
+          }}
+        >
+          <div
+            style={{
+              color: S.dim,
+              fontSize: 9,
+              fontWeight: 800,
+              textTransform: 'uppercase',
+            }}
+          >
+            Sequência do escopo
+          </div>
+
+          <div
+            style={{
+              color: S.text,
+              fontSize: 11,
+              marginTop: 5,
+              lineHeight: 1.5,
+            }}
+          >
+            {fmtNumber(decision.consecutive_wins, 0)} vitória(s)
+            {' · '}
+            {fmtNumber(decision.consecutive_losses, 0)} perda(s)
+          </div>
+        </div>
+
+        <div
+          style={{
+            border: `1px solid ${S.border}`,
+            borderRadius: 8,
+            padding: 10,
+          }}
+        >
+          <div
+            style={{
+              color: S.dim,
+              fontSize: 9,
+              fontWeight: 800,
+              textTransform: 'uppercase',
+            }}
+          >
+            Sequência da conta
+          </div>
+
+          <div
+            style={{
+              color: S.text,
+              fontSize: 11,
+              marginTop: 5,
+              lineHeight: 1.5,
+            }}
+          >
+            {fmtNumber(
+              decision.account_consecutive_wins,
+              0,
+            )}{' '}
+            vitória(s)
+            {' · '}
+            {fmtNumber(
+              decision.account_consecutive_losses,
+              0,
+            )}{' '}
+            perda(s)
+          </div>
+        </div>
+
+        <div
+          style={{
+            border: `1px solid ${S.border}`,
+            borderRadius: 8,
+            padding: 10,
+          }}
+        >
+          <div
+            style={{
+              color: S.dim,
+              fontSize: 9,
+              fontWeight: 800,
+              textTransform: 'uppercase',
+            }}
+          >
+            Saldo considerado
+          </div>
+
+          <div
+            style={{
+              color: S.text,
+              fontSize: 11,
+              marginTop: 5,
+              lineHeight: 1.5,
+            }}
+          >
+            {decision.available_balance_usdt === null
+              ? '—'
+              : `${fmtNumber(
+                  decision.available_balance_usdt,
+                  4,
+                )} USDT`}
+            {' · '}
+            uso máximo{' '}
+            {fmtNumber(
+              decision.balance_usage_limit_pct,
+              2,
+            )}
+            %
+          </div>
+        </div>
+
+        <div
+          style={{
+            border: `1px solid ${S.border}`,
+            borderRadius: 8,
+            padding: 10,
+          }}
+        >
+          <div
+            style={{
+              color: S.dim,
+              fontSize: 9,
+              fontWeight: 800,
+              textTransform: 'uppercase',
+            }}
+          >
+            Perda estimada no stop
+          </div>
+
+          <div
+            style={{
+              color: S.text,
+              fontSize: 11,
+              marginTop: 5,
+              lineHeight: 1.5,
+            }}
+          >
+            {fmtNumber(
+              decision.estimated_loss_rate_pct,
+              4,
+            )}
+            %
+            {' · '}stop{' '}
+            {fmtNumber(
+              decision.stop_distance_pct,
+              4,
+            )}
+            %
+          </div>
+        </div>
+      </div>
+
+      <div
+        style={{
+          color: S.dim,
+          fontSize: 10,
+          lineHeight: 1.55,
+          marginTop: 10,
+        }}
+      >
+        Custos estimados de ida e volta:{' '}
+        {fmtNumber(
+          decision.estimated_total_cost_pct,
+          4,
+        )}
+        %
+        {' · '}taxa por execução{' '}
+        {fmtNumber(
+          decision.estimated_fee_rate_pct,
+          4,
+        )}
+        %
+        {' · '}slippage por execução{' '}
+        {fmtNumber(
+          decision.estimated_slippage_pct,
+          4,
+        )}
+        %
+      </div>
+
+      {decision.limiting_rules.length > 0 && (
+        <div
+          style={{
+            border: `1px solid ${S.a}55`,
+            background: `${S.a}08`,
+            borderRadius: 8,
+            padding: 10,
+            marginTop: 10,
+          }}
+        >
+          <div
+            style={{
+              color: S.a,
+              fontSize: 10,
+              fontWeight: 800,
+            }}
+          >
+            O valor foi limitado por
+          </div>
+
+          <div
+            style={{
+              color: S.dimStrong,
+              fontSize: 10,
+              lineHeight: 1.5,
+              marginTop: 4,
+            }}
+          >
+            {decision.limiting_rules
+              .map(displayLimitingRule)
+              .join(' · ')}
+          </div>
+        </div>
+      )}
+
+      <div
+        style={{
+          color: S.dim,
+          fontSize: 9,
+          marginTop: 10,
+          lineHeight: 1.45,
+        }}
+      >
+        Criado em {fmtDate(decision.created_at, true)}
+        {decision.applied_at
+          ? ` · aplicado em ${fmtDate(
+              decision.applied_at,
+              true,
+            )}`
+          : ''}
+        {' · '}origem {decision.source}
+        {' · '}ID {decision.id.slice(0, 8)}…
+        {decisions.length > 1
+          ? ` · ${decisions.length} versões registradas`
+          : ''}
+      </div>
+    </div>
+  );
+}
+
+function ConditionsList({
+  opportunity,
+}: {
+  opportunity: TradeOpportunity;
+}) {
+  const conditions = normalizeConditions(
+    opportunity.conditions_snapshot,
+  );
+
+  if (conditions.length === 0) {
+    return (
+      <div style={{ color: S.dim, fontSize: 12 }}>
+        Nenhum checklist foi preservado neste snapshot.
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 7,
+      }}
+    >
+      {conditions.map((condition) => {
+        const color =
+          !condition.available || condition.passed === null
+            ? S.dim
+            : condition.passed
+              ? S.green
+              : S.red;
+
+        return (
+          <div
+            key={condition.id}
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '20px minmax(0, 1fr)',
+              gap: 8,
+              border: `1px solid ${S.border}`,
+              borderRadius: 8,
+              padding: '9px 10px',
+              background: S.bg,
+            }}
+          >
+            <div
+              aria-hidden="true"
+              style={{
+                color,
+                fontSize: 14,
+                fontWeight: 900,
+                lineHeight: 1.2,
+              }}
+            >
+              {!condition.available || condition.passed === null
+                ? '○'
+                : condition.passed
+                  ? '✓'
+                  : '×'}
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  color: S.text,
+                  fontSize: 12,
+                  fontWeight: 700,
+                }}
+              >
+                {condition.label}
+              </div>
+              <div
+                style={{
+                  color: S.dimStrong,
+                  fontSize: 10,
+                  marginTop: 3,
+                  lineHeight: 1.4,
+                }}
+              >
+                Atual: {condition.currentValue}
+                {' · '}
+                Exigência: {condition.requiredValue}
+              </div>
+              {condition.explanation && (
+                <div
+                  style={{
+                    color: S.dim,
+                    fontSize: 10,
+                    marginTop: 3,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {condition.explanation}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function OutcomePanel({
+  outcome,
+}: {
+  outcome: OpportunityOutcome | null;
+}) {
+  if (!outcome) {
+    return (
+      <div
+        style={{
+          color: S.dim,
+          fontSize: 12,
+          border: `1px dashed ${S.borderStrong}`,
+          borderRadius: 8,
+          padding: 12,
+        }}
+      >
+        Resultado ainda não registrado.
+      </div>
+    );
+  }
+
+  const presentation = getOutcomeStatusPresentation(outcome.status);
+  const tone = getOutcomeTone(outcome);
+
+  return (
+    <div
+      style={{
+        border: `1px solid ${TONE_COLOR[tone]}55`,
+        borderRadius: 9,
+        padding: 12,
+        background: `${TONE_COLOR[tone]}08`,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          flexWrap: 'wrap',
+        }}
+      >
+        <div>
+          <div
+            style={{
+              color: S.textStrong,
+              fontSize: 13,
+              fontWeight: 800,
+            }}
+          >
+            {getOutcomeModeLabel(outcome.mode)}
+          </div>
+          <div
+            style={{
+              color: S.dim,
+              fontSize: 10,
+              marginTop: 3,
+            }}
+          >
+            {presentation.description}
+          </div>
+        </div>
+        <Pill tone={tone}>{presentation.label}</Pill>
+      </div>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns:
+            'repeat(auto-fit, minmax(115px, 1fr))',
+          gap: 8,
+          marginTop: 11,
+        }}
+      >
+        <div>
+          <div style={{ color: S.dim, fontSize: 9 }}>RESULTADO</div>
+          <div
+            style={{
+              color: TONE_COLOR[tone],
+              fontSize: 14,
+              fontWeight: 800,
+              marginTop: 3,
+            }}
+          >
+            {fmtR(outcome.result_r)}
+          </div>
+        </div>
+        <div>
+          <div style={{ color: S.dim, fontSize: 9 }}>PNL LÍQUIDO</div>
+          <div
+            style={{
+              color:
+                (outcome.net_pnl_usdt ?? 0) >= 0
+                  ? S.green
+                  : S.red,
+              fontSize: 14,
+              fontWeight: 800,
+              marginTop: 3,
+            }}
+          >
+            {outcome.net_pnl_usdt === null
+              ? '—'
+              : `${fmtNumber(outcome.net_pnl_usdt, 4)} USDT`}
+          </div>
+        </div>
+        <div>
+          <div style={{ color: S.dim, fontSize: 9 }}>MFE</div>
+          <div
+            style={{
+              color: S.green,
+              fontSize: 14,
+              fontWeight: 800,
+              marginTop: 3,
+            }}
+          >
+            {fmtR(outcome.maximum_favorable_excursion_r)}
+          </div>
+        </div>
+        <div>
+          <div style={{ color: S.dim, fontSize: 9 }}>MAE</div>
+          <div
+            style={{
+              color: S.red,
+              fontSize: 14,
+              fontWeight: 800,
+              marginTop: 3,
+            }}
+          >
+            {fmtR(outcome.maximum_adverse_excursion_r)}
+          </div>
+        </div>
+      </div>
+
+      <div
+        style={{
+          color: S.dim,
+          fontSize: 10,
+          marginTop: 9,
+          lineHeight: 1.45,
+        }}
+      >
+        Entrada {fmtPrice(outcome.entry_price)}
+        {' · '}
+        Saída {fmtPrice(outcome.exit_price)}
+        {' · '}
+        {outcome.resolved_at
+          ? `resolvido em ${fmtDate(outcome.resolved_at, true)}`
+          : 'em acompanhamento'}
+      </div>
+    </div>
+  );
+}
+
+function OrdersPanel({
+  orders,
+}: {
+  orders: readonly OpportunityOrder[];
+}) {
+  if (orders.length === 0) {
+    return (
+      <div
+        style={{
+          color: S.dim,
+          fontSize: 12,
+          border: `1px dashed ${S.borderStrong}`,
+          borderRadius: 8,
+          padding: 12,
+        }}
+      >
+        Nenhuma ordem Binance vinculada.
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 7,
+      }}
+    >
+      {orders.map((order) => {
+        const presentation = getOrderStatusPresentation(
+          order.status,
+        );
+
+        return (
+          <div
+            key={order.id}
+            style={{
+              border: `1px solid ${S.border}`,
+              borderRadius: 8,
+              padding: '10px 11px',
+              background: S.bg,
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 8,
+                flexWrap: 'wrap',
+              }}
+            >
+              <div
+                style={{
+                  color: S.text,
+                  fontSize: 12,
+                  fontWeight: 700,
+                }}
+              >
+                {order.is_testnet ? 'Testnet' : 'Conta real'}
+                {' · '}
+                {fmtPrice(order.quote_amount)}
+              </div>
+              <Pill
+                tone={presentation.tone}
+                title={presentation.description}
+              >
+                {presentation.label}
+              </Pill>
+            </div>
+
+            <div
+              style={{
+                color: S.dim,
+                fontSize: 10,
+                marginTop: 5,
+                lineHeight: 1.45,
+              }}
+            >
+              Entrada {fmtPrice(order.entry_price)}
+              {' · '}
+              Stop {fmtPrice(order.stop_price)}
+              {' · '}
+              Alvo {fmtPrice(order.target_price)}
+              {order.pnl_usdt !== null
+                ? ` · PnL ${fmtNumber(order.pnl_usdt, 4)} USDT`
+                : ''}
+            </div>
+
+            {order.erro && (
+              <div
+                style={{
+                  color: S.red,
+                  fontSize: 10,
+                  marginTop: 5,
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                {order.erro}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function Timeline({
+  events,
+}: {
+  events: readonly OpportunityEvent[];
+}) {
+  if (events.length === 0) {
+    return (
+      <div style={{ color: S.dim, fontSize: 12 }}>
+        Nenhum evento registrado.
+      </div>
+    );
+  }
+
+  const eventLabels: Readonly<Record<string, string>> = {
+    opportunity_created: 'Oportunidade criada',
+    opportunity_seen: 'Oportunidade visualizada',
+    review_started: 'Revisão iniciada',
+    opportunity_expired: 'Oportunidade expirada',
+    opportunity_invalidated: 'Oportunidade invalidada',
+    entry_accepted: 'Entrada aceita para revalidação',
+    entry_rejected: 'Entrada recusada',
+    entry_revalidation_started: 'Revalidação iniciada',
+    entry_revalidation_passed: 'Revalidação aprovada',
+    entry_revalidation_failed: 'Revalidação bloqueada',
+    order_created: 'Ordem criada',
+    order_sent: 'Ordem enviada',
+    entry_filled: 'Entrada executada',
+    protection_pending: 'Proteção pendente',
+    protection_created: 'Proteção OCO criada',
+    protection_failed: 'Falha ao criar proteção',
+    exit_opportunity_created: 'Saída identificada',
+    exit_accepted: 'Saída aceita',
+    position_kept: 'Posição mantida',
+    exit_started: 'Encerramento iniciado',
+    exit_completed: 'Encerramento concluído',
+    target_hit: 'Alvo atingido',
+    stop_hit: 'Stop atingido',
+    outcome_resolved: 'Resultado apurado',
+    error: 'Erro registrado',
   };
 
-  return labels[reason];
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+      }}
+    >
+      {events.map((event, index) => (
+        <div
+          key={event.id}
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '16px minmax(0, 1fr)',
+            gap: 8,
+            paddingBottom:
+              index === events.length - 1 ? 0 : 12,
+          }}
+        >
+          <div
+            style={{
+              position: 'relative',
+              display: 'flex',
+              justifyContent: 'center',
+            }}
+          >
+            <span
+              style={{
+                width: 7,
+                height: 7,
+                marginTop: 5,
+                borderRadius: 999,
+                background:
+                  event.event_type === 'error'
+                    ? S.red
+                    : event.actor_type === 'user'
+                      ? S.a
+                      : event.actor_type === 'exchange'
+                        ? S.blue
+                        : S.dimStrong,
+                zIndex: 1,
+              }}
+            />
+            {index !== events.length - 1 && (
+              <span
+                style={{
+                  position: 'absolute',
+                  top: 12,
+                  bottom: -5,
+                  width: 1,
+                  background: S.border,
+                }}
+              />
+            )}
+          </div>
+
+          <div>
+            <div
+              style={{
+                color: S.text,
+                fontSize: 11,
+                fontWeight: 700,
+              }}
+            >
+              {eventLabels[event.event_type] ??
+                event.event_type}
+            </div>
+            <div
+              style={{
+                color: S.dim,
+                fontSize: 9,
+                marginTop: 3,
+              }}
+            >
+              {fmtDate(event.created_at, true)}
+              {' · '}
+              {event.actor_type}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
-async function functionErrorMessage(error: unknown): Promise<string> {
-  const fallback =
-    error instanceof Error ? error.message : 'A função retornou um erro.';
-  const context = (error as { context?: { json?: () => Promise<unknown>; text?: () => Promise<string> } } | null)?.context;
+// ---------------------------------------------------------------------------
+// Desempenho
+// ---------------------------------------------------------------------------
 
-  if (context?.json) {
-    try {
-      const body = await context.json() as {
-        error?: string;
-        message?: string;
-        code?: string;
-        details?: { message?: string };
-      };
-      const message = body?.error ?? body?.message ?? body?.details?.message;
-      if (message) return body?.code ? `${message} (${body.code})` : message;
-    } catch {
-      // O corpo pode já ter sido consumido pelo cliente.
-    }
-  }
+function PerformanceModeSection({
+  title,
+  subtitle,
+  metrics,
+}: {
+  title: string;
+  subtitle: string;
+  metrics: OpportunityDashboardMetrics['theoretical'];
+}) {
+  return (
+    <Card>
+      <SectionTitle title={title} subtitle={subtitle} />
 
-  if (context?.text) {
-    try {
-      const body = await context.text();
-      if (body) return body.slice(0, 500);
-    } catch {
-      // Mantém a mensagem original.
-    }
-  }
-
-  return fallback;
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns:
+            'repeat(auto-fit, minmax(135px, 1fr))',
+          gap: 8,
+        }}
+      >
+        <MetricCard
+          label="Encerradas"
+          value={String(metrics.conclusive)}
+          detail={`${metrics.tracking} em acompanhamento`}
+          tone="info"
+        />
+        <MetricCard
+          label="Taxa de acerto"
+          value={
+            metrics.winRatePct === null
+              ? '—'
+              : `${fmtNumber(metrics.winRatePct, 1)}%`
+          }
+          detail={`${metrics.wins} ganhos · ${metrics.losses} perdas`}
+          tone={
+            metrics.winRatePct === null
+              ? 'muted'
+              : metrics.winRatePct >= 50
+                ? 'positive'
+                : 'warning'
+          }
+        />
+        <MetricCard
+          label="Resultado acumulado"
+          value={fmtR(metrics.totalResultR)}
+          detail="Soma dos resultados conclusivos"
+          tone={
+            metrics.totalResultR > 0
+              ? 'positive'
+              : metrics.totalResultR < 0
+                ? 'danger'
+                : 'neutral'
+          }
+        />
+        <MetricCard
+          label="Expectativa"
+          value={fmtR(metrics.expectancyR)}
+          detail="Média por oportunidade conclusiva"
+          tone={
+            (metrics.expectancyR ?? 0) > 0
+              ? 'positive'
+              : (metrics.expectancyR ?? 0) < 0
+                ? 'danger'
+                : 'neutral'
+          }
+        />
+        <MetricCard
+          label="Profit factor"
+          value={fmtNumber(metrics.profitFactor, 2)}
+          detail="Ganhos brutos ÷ perdas brutas"
+          tone={
+            (metrics.profitFactor ?? 0) >= 1
+              ? 'positive'
+              : metrics.profitFactor === null
+                ? 'muted'
+                : 'danger'
+          }
+        />
+        <MetricCard
+          label="Drawdown máximo"
+          value={fmtR(metrics.maximumDrawdownR)}
+          detail="Queda da curva acumulada em R"
+          tone="danger"
+        />
+        <MetricCard
+          label="MFE médio"
+          value={fmtR(metrics.averageMfeR)}
+          detail="Máxima excursão favorável"
+          tone="positive"
+        />
+        <MetricCard
+          label="MAE médio"
+          value={fmtR(metrics.averageMaeR)}
+          detail="Máxima excursão adversa"
+          tone="danger"
+        />
+      </div>
+    </Card>
+  );
 }
+
+function BreakdownTable({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: readonly OpportunityMetricBreakdownItem[];
+}) {
+  return (
+    <Card>
+      <SectionTitle
+        title={title}
+        subtitle="Resultados teóricos separados por contexto."
+      />
+
+      {rows.length === 0 ? (
+        <EmptyState
+          title="Sem dados para comparar"
+          description="Os recortes aparecerão após as primeiras oportunidades serem registradas."
+        />
+      ) : (
+        <div
+          style={{
+            overflowX: 'auto',
+            border: `1px solid ${S.border}`,
+            borderRadius: 9,
+          }}
+        >
+          <table
+            style={{
+              width: '100%',
+              borderCollapse: 'collapse',
+              minWidth: 620,
+              fontSize: 11,
+            }}
+          >
+            <thead>
+              <tr style={{ background: S.bg }}>
+                {[
+                  'Grupo',
+                  'Oportunidades',
+                  'Concluídas',
+                  'Acerto',
+                  'Resultado',
+                  'Expectativa',
+                  'Profit factor',
+                ].map((header) => (
+                  <th
+                    key={header}
+                    style={{
+                      color: S.dimStrong,
+                      textAlign:
+                        header === 'Grupo' ? 'left' : 'right',
+                      padding: '9px 10px',
+                      borderBottom: `1px solid ${S.border}`,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {header}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={`${row.dimension}:${row.key}`}>
+                  <td
+                    style={{
+                      color: S.text,
+                      padding: '9px 10px',
+                      borderBottom: `1px solid ${S.border}`,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {row.label}
+                  </td>
+                  <td style={tableNumberStyle}>
+                    {row.totalOpportunities}
+                  </td>
+                  <td style={tableNumberStyle}>
+                    {row.theoretical.conclusive}
+                  </td>
+                  <td style={tableNumberStyle}>
+                    {row.theoretical.winRatePct === null
+                      ? '—'
+                      : `${fmtNumber(
+                          row.theoretical.winRatePct,
+                          1,
+                        )}%`}
+                  </td>
+                  <td
+                    style={{
+                      ...tableNumberStyle,
+                      color:
+                        row.theoretical.totalResultR > 0
+                          ? S.green
+                          : row.theoretical.totalResultR < 0
+                            ? S.red
+                            : S.text,
+                    }}
+                  >
+                    {fmtR(row.theoretical.totalResultR)}
+                  </td>
+                  <td style={tableNumberStyle}>
+                    {fmtR(row.theoretical.expectancyR)}
+                  </td>
+                  <td style={tableNumberStyle}>
+                    {fmtNumber(
+                      row.theoretical.profitFactor,
+                      2,
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+const tableNumberStyle: CSSProperties = {
+  color: S.text,
+  textAlign: 'right',
+  padding: '9px 10px',
+  borderBottom: `1px solid ${S.border}`,
+  whiteSpace: 'nowrap',
+};
 
 // ---------------------------------------------------------------------------
 // Página
 // ---------------------------------------------------------------------------
 
-export default function DayTradePage() {
-  const supabase = getSupabase();
+export default function OportunidadesPage() {
+  const supabase = useMemo(() => getSupabase(), []);
+
   const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [email, setEmail] = useState('');
+  const [magicSent, setMagicSent] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState('');
 
-  const [symbolA, setSymbolA] = useState('BTCUSDT');
-  const [symbolB, setSymbolB] = useState('ETHUSDT');
-  const [timeframe, setTimeframe] = useState<Timeframe>('15m');
-  const [periodIndex, setPeriodIndex] = useState(1);
+  const [loadState, setLoadState] =
+    useState<LoadState>('idle');
+  const [loadError, setLoadError] = useState('');
 
-  const [usedSymbolA, setUsedSymbolA] = useState('BTCUSDT');
-  const [usedSymbolB, setUsedSymbolB] = useState('ETHUSDT');
-  const [usedTimeframe, setUsedTimeframe] = useState<Timeframe>('15m');
-  const [usedPeriod, setUsedPeriod] = useState<PeriodOption>(
-    TIMEFRAMES['15m'].periods[1],
-  );
+  const [opportunities, setOpportunities] = useState<
+    TradeOpportunity[]
+  >([]);
+  const [outcomes, setOutcomes] = useState<
+    OpportunityOutcome[]
+  >([]);
+  const [decisions, setDecisions] = useState<
+    OpportunityDecision[]
+  >([]);
+  const [events, setEvents] = useState<
+    OpportunityEvent[]
+  >([]);
+  const [orders, setOrders] = useState<
+    OpportunityOrder[]
+  >([]);
 
-  const [rawA, setRawA] = useState<Candle[]>([]);
-  const [rawB, setRawB] = useState<Candle[]>([]);
-  const [status, setStatus] = useState<LoadStatus>('idle');
-  const [progress, setProgress] = useState('');
-  const [error, setError] = useState('');
-  const [report, setReport] = useState('');
-  const [reportAction, setReportAction] = useState<RemoteActionState>({
-    status: 'idle',
-    message: '',
-  });
-  const [copyAction, setCopyAction] = useState<RemoteActionState>({
-    status: 'idle',
-    message: '',
-  });
-  const [history, setHistory] = useState<HistoryRecord[]>([]);
+  const [
+    sizingDecisions,
+    setSizingDecisions,
+  ] = useState<PositionSizingDecision[]>([]);
 
-  // Valores educacionais informados manualmente. Nenhum saldo é movimentado.
-  const [accountBalance, setAccountBalance] = useState('1000');
-  const [availableBalance, setAvailableBalance] = useState('1000');
-  const [riskPercent, setRiskPercent] = useState('1');
+  const [activeTab, setActiveTab] =
+    useState<MainTab>('pending');
+  const [selectedId, setSelectedId] =
+    useState<UUID | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
 
+  const [realtimeState, setRealtimeState] =
+    useState<RealtimeState>('disconnected');
 
-  // Persistência e execução controlada.
-  const [serverSetup, setServerSetup] = useState<ServerSetupRecord | null>(null);
-  const [serverAction, setServerAction] = useState<RemoteActionState>({
-    status: 'idle',
-    message: '',
-  });
-  const [testnetPreview, setTestnetPreview] = useState<TestnetPreviewPayload | null>(null);
-  const [testnetAction, setTestnetAction] = useState<RemoteActionState>({
-    status: 'idle',
-    message: '',
-  });
-  const [confirmTestnet, setConfirmTestnet] = useState(false);
-
-  // Diário sincronizado pelo monitorar-ordens.
-  const [journal, setJournal] = useState<DayTradeJournalRecord[]>([]);
-  const [journalAction, setJournalAction] = useState<RemoteActionState>({
-    status: 'idle',
-    message: '',
-  });
-
-  // Regras automáticas de alerta do playbook.
-  const [alertRule, setAlertRule] = useState<DayTradeAlertRuleRecord | null>(null);
-  const [alertEnabled, setAlertEnabled] = useState(true);
-  const [alertCooldownMinutes, setAlertCooldownMinutes] = useState('30');
-  const [alertNotifyStatuses, setAlertNotifyStatuses] = useState<DayTradeAlertableStatus[]>([
-    'condicoes_atendidas',
-  ]);
-  const [alertAction, setAlertAction] = useState<RemoteActionState>({
-    status: 'idle',
-    message: '',
-  });
-
-  // Backtest server-side com o mesmo playbook.
-  const [backtestCandleCount, setBacktestCandleCount] = useState(
-    String(BACKTEST_DEFAULT_CANDLES),
-  );
-  const [backtestInitialCapital, setBacktestInitialCapital] = useState('1000');
-  const [backtestRiskPercent, setBacktestRiskPercent] = useState('1');
-  const [backtestFeeRate, setBacktestFeeRate] = useState('0.1');
-  const [backtestSlippage, setBacktestSlippage] = useState('0.05');
-  const [backtestPriority, setBacktestPriority] = useState<'stop_first' | 'target_first'>('stop_first');
-  const [backtestMaximumHolding, setBacktestMaximumHolding] = useState('0');
-  const [backtestResponse, setBacktestResponse] = useState<BacktestApiResponse | null>(null);
-  const [backtestAction, setBacktestAction] = useState<RemoteActionState>({
-    status: 'idle',
-    message: '',
-  });
-
-  const [liveA, setLiveA] = useState<LiveCandle | null>(null);
-  const [liveB, setLiveB] = useState<LiveCandle | null>(null);
-  const [webSocketStatus, setWebSocketStatus] = useState<WebSocketStatus>('desconectado');
-  const [lastWebSocketUpdate, setLastWebSocketUpdate] = useState<number | null>(null);
-  const [clockTick, setClockTick] = useState(Date.now());
-
-  const latestHistoryIdRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    supabase.auth.getSession().then(
-      ({ data }: { data: { session: Session | null } }) => setSession(data.session),
-    );
-    const { data: subscription } = supabase.auth.onAuthStateChange(
-      (_event: string, nextSession: Session | null) => setSession(nextSession),
-    );
-
-    return () => subscription.subscription.unsubscribe();
-  }, [supabase]);
-
-  useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(HISTORY_KEY);
-      if (!stored) return;
-      const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed)) setHistory(parsed.slice(0, HISTORY_LIMIT));
-    } catch {
-      window.localStorage.removeItem(HISTORY_KEY);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (status !== 'done') return;
-    const timer = window.setInterval(() => setClockTick(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
-  }, [status]);
-
-  const saveHistory = useCallback((record: HistoryRecord) => {
-    latestHistoryIdRef.current = record.id;
-    setHistory((current) => {
-      const next = [record, ...current.filter((item) => item.id !== record.id)]
-        .slice(0, HISTORY_LIMIT);
-      window.localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
-      return next;
+  const [actionId, setActionId] =
+    useState<UUID | null>(null);
+  const [actionFeedback, setActionFeedback] =
+    useState<ActionFeedback>({
+      state: 'idle',
+      message: '',
     });
-  }, []);
 
-  const updateLatestHistoryReport = useCallback((text: string) => {
-    const id = latestHistoryIdRef.current;
-    if (!id) return;
-
-    setHistory((current) => {
-      const next = current.map((item) => item.id === id
-        ? { ...item, report: text }
-        : item,
-      );
-      window.localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
-      return next;
+  const [syncFeedback, setSyncFeedback] =
+    useState<ActionFeedback>({
+      state: 'idle',
+      message: '',
     });
-  }, []);
 
-  const run = useCallback(async (override?: RunOverride) => {
-    const selectedTimeframe = override?.timeframe ?? timeframe;
-    const config = TIMEFRAMES[selectedTimeframe];
-    const selectedPeriod = override
-      ? config.periods.find((period) => period.label === override.periodLabel)
-        ?? config.periods[0]
-      : config.periods[Math.min(periodIndex, config.periods.length - 1)];
-    const selectedA = override?.symbolA ?? symbolA;
-    const requestedB = override?.symbolB ?? symbolB;
-    const selectedB = requestedB !== 'nenhum' && requestedB !== selectedA
-      ? requestedB
-      : 'nenhum';
+  const [trackingFeedback, setTrackingFeedback] =
+    useState<ActionFeedback>({
+      state: 'idle',
+      message: '',
+    });
 
-    if (override) {
-      setSymbolA(selectedA);
-      setSymbolB(requestedB);
-      setTimeframe(selectedTimeframe);
-      setPeriodIndex(Math.max(
-        0,
-        config.periods.findIndex((period) => period.label === selectedPeriod.label),
-      ));
-    }
+  // Sessão -------------------------------------------------------------------
 
-    setStatus('loading');
-    setProgress('');
-    setError('');
-    setReport('');
-    setReportAction({ status: 'idle', message: '' });
-    setCopyAction({ status: 'idle', message: '' });
-    setLiveA(null);
-    setLiveB(null);
-    setServerSetup(null);
-    setServerAction({ status: 'idle', message: '' });
-    setTestnetPreview(null);
-    setTestnetAction({ status: 'idle', message: '' });
-    setConfirmTestnet(false);
-    setBacktestResponse(null);
-    setBacktestAction({ status: 'idle', message: '' });
-
-    try {
-      const [candlesA, candlesB] = await Promise.all([
-        fetchKlines(
-          selectedA,
-          selectedTimeframe,
-          selectedPeriod.durationMs,
-          setProgress,
-        ),
-        selectedB !== 'nenhum'
-          ? fetchKlines(
-              selectedB,
-              selectedTimeframe,
-              selectedPeriod.durationMs,
-              setProgress,
-            )
-          : Promise.resolve([]),
-      ]);
-
-      const now = Date.now();
-      const visibleStart = now - selectedPeriod.durationMs;
-      const visibleA = candlesA.filter((candle) => candle.closeTime >= visibleStart);
-      const visibleB = candlesB.filter((candle) => candle.closeTime >= visibleStart);
-
-      if (visibleA.length < MIN_VISIBLE_CANDLES) {
-        throw new Error(
-          `${selectedA}: somente ${visibleA.length} candles encerrados no período.`,
-        );
-      }
-
-      if (selectedB !== 'nenhum' && visibleB.length < MIN_VISIBLE_CANDLES) {
-        throw new Error(
-          `${selectedB}: somente ${visibleB.length} candles encerrados no período.`,
-        );
-      }
-
-      const volA = rollingVol(
-        logReturns(candlesA),
-        config.volWindow,
-        config.periodsPerYear,
-      );
-      const statsA = computeStats(
-        selectedA,
-        visibleA,
-        candlesA,
-        volA,
-        selectedTimeframe,
-      );
-
-      let statsB: IntradayStats | null = null;
-      let correlationValue: number | null = null;
-
-      if (visibleB.length) {
-        const volB = rollingVol(
-          logReturns(candlesB),
-          config.volWindow,
-          config.periodsPerYear,
-        );
-        statsB = computeStats(
-          selectedB,
-          visibleB,
-          candlesB,
-          volB,
-          selectedTimeframe,
-        );
-        correlationValue = correlation(visibleA, visibleB);
-      }
-
-      setRawA(candlesA);
-      setRawB(candlesB);
-      setUsedSymbolA(selectedA);
-      setUsedSymbolB(selectedB);
-      setUsedTimeframe(selectedTimeframe);
-      setUsedPeriod(selectedPeriod);
-      setClockTick(now);
-      setStatus('done');
-      setProgress('');
-
-      saveHistory({
-        id: crypto.randomUUID(),
-        createdAt: new Date().toISOString(),
-        symbolA: selectedA,
-        symbolB: selectedB,
-        timeframe: selectedTimeframe,
-        periodLabel: selectedPeriod.label,
-        returnA: statsA.returnPct,
-        returnB: statsB?.returnPct ?? null,
-        correlation: correlationValue,
-      });
-    } catch (runError) {
-      setError(
-        runError instanceof Error
-          ? runError.message
-          : 'Não foi possível carregar os candles.',
-      );
-      setStatus('error');
-      setProgress('');
-    }
-  }, [
-    timeframe,
-    periodIndex,
-    symbolA,
-    symbolB,
-    saveHistory,
-  ]);
-
-  // WebSocket somente para a análise já executada. Trocar os seletores não muda
-  // o stream até que o usuário clique novamente em Analisar.
   useEffect(() => {
-    if (status !== 'done' || !rawA.length) {
-      setWebSocketStatus('desconectado');
-      return;
-    }
+    let mounted = true;
 
-    let disposed = false;
-    let socket: WebSocket | null = null;
-    let reconnectTimer: number | null = null;
-    let attempts = 0;
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!mounted) {
+        return;
+      }
 
-    const streams = [usedSymbolA, usedSymbolB]
-      .filter((symbol) => symbol !== 'nenhum')
-      .map((symbol) => `${symbol.toLowerCase()}@kline_${usedTimeframe}`)
-      .join('/');
+      if (error) {
+        setAuthError(error.message);
+      }
 
-    const connect = () => {
-      if (disposed) return;
-      setWebSocketStatus(attempts === 0 ? 'conectando' : 'reconectando');
+      setSession(data.session);
+      setAuthReady(true);
+    });
 
-      socket = new WebSocket(
-        `wss://stream.binance.com:9443/stream?streams=${streams}`,
-      );
+    const { data: subscription } =
+      supabase.auth.onAuthStateChange(
+        (_event, nextSession) => {
+          setSession(nextSession);
+          setAuthReady(true);
 
-      socket.onopen = () => {
-        attempts = 0;
-        setWebSocketStatus('ao vivo');
-      };
-
-      socket.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          const data = payload.data ?? payload;
-          const kline = data.k;
-          const symbol = String(data.s ?? '').toUpperCase();
-          if (!kline || !symbol) return;
-
-          const live: LiveCandle = {
-            symbol,
-            openTime: Number(kline.t),
-            closeTime: Number(kline.T),
-            open: Number(kline.o),
-            high: Number(kline.h),
-            low: Number(kline.l),
-            close: Number(kline.c),
-            volume: Number(kline.v),
-            quoteVolume: Number(kline.q),
-            isClosed: Boolean(kline.x),
-          };
-
-          setLastWebSocketUpdate(Date.now());
-
-          if (symbol === usedSymbolA) setLiveA(live);
-          if (symbol === usedSymbolB) setLiveB(live);
-
-          if (live.isClosed) {
-            setClockTick(Date.now());
-            const config = TIMEFRAMES[usedTimeframe];
-            const requiredIndicatorCandles = getRequiredCandleCount(
-              DAYTRADE_TIMEFRAME_INDICATOR_OPTIONS[usedTimeframe],
-            );
-            const retainedWarmupCandles = Math.max(
-              config.volWindow + 6,
-              requiredIndicatorCandles + 6,
-            );
-            const minimumOpenTime = Date.now()
-              - usedPeriod.durationMs
-              - retainedWarmupCandles * config.intervalMs;
-            const closed: Candle = {
-              openTime: live.openTime,
-              closeTime: live.closeTime,
-              open: live.open,
-              high: live.high,
-              low: live.low,
-              close: live.close,
-              volume: live.volume,
-              quoteVolume: live.quoteVolume,
-            };
-
-            if (symbol === usedSymbolA) {
-              setRawA((current) =>
-                upsertClosedCandle(current, closed, minimumOpenTime),
-              );
-            }
-
-            if (symbol === usedSymbolB) {
-              setRawB((current) =>
-                upsertClosedCandle(current, closed, minimumOpenTime),
-              );
-            }
+          if (!nextSession) {
+            setOpportunities([]);
+            setOutcomes([]);
+            setDecisions([]);
+            setEvents([]);
+            setOrders([]);
+            setSizingDecisions([]);
+            setSelectedId(null);
+            setLoadState('idle');
+            setRealtimeState('disconnected');
           }
-        } catch {
-          // Uma mensagem inválida não deve interromper o stream.
-        }
-      };
-
-      socket.onerror = () => socket?.close();
-      socket.onclose = () => {
-        if (disposed) return;
-        attempts += 1;
-        setWebSocketStatus('reconectando');
-        const delay = Math.min(15_000, 1_000 * 2 ** Math.min(attempts, 4));
-        reconnectTimer = window.setTimeout(connect, delay);
-      };
-    };
-
-    connect();
+        },
+      );
 
     return () => {
-      disposed = true;
-      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
-      socket?.close();
+      mounted = false;
+      subscription.subscription.unsubscribe();
     };
-  }, [
-    status,
-    usedSymbolA,
-    usedSymbolB,
-    usedTimeframe,
-    usedPeriod.durationMs,
-  ]);
+  }, [supabase]);
 
-  const derived = useMemo(() => {
-    if (!rawA.length) {
-      return {
-        visibleA: [] as Candle[],
-        visibleB: [] as Candle[],
-        volA: [] as (number | null)[],
-        volB: [] as (number | null)[],
-        statsA: null as IntradayStats | null,
-        statsB: null as IntradayStats | null,
-        correlation: null as number | null,
-      };
+  // Carregamento -------------------------------------------------------------
+
+  const load = useCallback(async () => {
+    if (!session) {
+      return;
     }
 
-    const config = TIMEFRAMES[usedTimeframe];
-    const visibleStart = clockTick - usedPeriod.durationMs;
-    const visibleA = rawA.filter((candle) => candle.closeTime >= visibleStart);
-    const visibleB = rawB.filter((candle) => candle.closeTime >= visibleStart);
-    const volA = rollingVol(
-      logReturns(rawA),
-      config.volWindow,
-      config.periodsPerYear,
-    );
-    const volB = rawB.length
-      ? rollingVol(logReturns(rawB), config.volWindow, config.periodsPerYear)
-      : [];
-
-    return {
-      visibleA,
-      visibleB,
-      volA,
-      volB,
-      statsA: visibleA.length >= 2
-        ? computeStats(usedSymbolA, visibleA, rawA, volA, usedTimeframe)
-        : null,
-      statsB: visibleB.length >= 2
-        ? computeStats(usedSymbolB, visibleB, rawB, volB, usedTimeframe)
-        : null,
-      correlation: visibleB.length ? correlation(visibleA, visibleB) : null,
-    };
-  }, [
-    rawA,
-    rawB,
-    usedSymbolA,
-    usedSymbolB,
-    usedTimeframe,
-    usedPeriod.durationMs,
-    clockTick,
-  ]);
-
-  const setupAnalysis = useMemo<{
-    indicators: DayTradeIndicators | null;
-    evaluation: TrendBreakoutEvaluation | null;
-    error: string;
-  }>(() => {
-    if (rawA.length < 2) {
-      return { indicators: null, evaluation: null, error: '' };
-    }
+    setLoadState('loading');
+    setLoadError('');
 
     try {
-      const result = analyzeTrendBreakout({
-        candles: rawA,
-        indicatorOptions:
-          DAYTRADE_TIMEFRAME_INDICATOR_OPTIONS[usedTimeframe],
-        livePrice: liveA?.close ?? null,
-      });
+      const opportunityResult = await supabase
+        .from('trade_opportunities')
+        .select('*')
+        .order('detected_at', { ascending: false })
+        .limit(OPPORTUNITY_LIMIT);
 
-      return {
-        indicators: result.indicators,
-        evaluation: result.evaluation,
-        error: '',
-      };
-    } catch (setupError) {
-      return {
-        indicators: null,
-        evaluation: null,
-        error:
-          setupError instanceof Error
-            ? setupError.message
-            : 'Não foi possível avaliar o playbook.',
-      };
+      if (opportunityResult.error) {
+        throw opportunityResult.error;
+      }
+
+      const loadedOpportunities =
+        (opportunityResult.data as TradeOpportunity[] | null) ??
+        [];
+
+      const ids = loadedOpportunities.map(
+        (opportunity) => opportunity.id,
+      );
+
+      let loadedOutcomes: OpportunityOutcome[] = [];
+      let loadedDecisions: OpportunityDecision[] = [];
+      let loadedEvents: OpportunityEvent[] = [];
+      let loadedOrders: OpportunityOrder[] = [];
+      let loadedSizingDecisions: PositionSizingDecision[] = [];
+
+      if (ids.length > 0) {
+        const [
+          outcomeResult,
+          decisionResult,
+          eventResult,
+          orderResult,
+          positionSizingResult,
+        ] = await Promise.all([
+          supabase
+            .from('opportunity_outcomes')
+            .select('*')
+            .in('opportunity_id', ids)
+            .order('updated_at', { ascending: false })
+            .limit(RELATED_LIMIT),
+          supabase
+            .from('opportunity_decisions')
+            .select('*')
+            .in('opportunity_id', ids)
+            .order('created_at', { ascending: false })
+            .limit(RELATED_LIMIT),
+          supabase
+            .from('opportunity_events')
+            .select('*')
+            .in('opportunity_id', ids)
+            .order('created_at', { ascending: false })
+            .limit(RELATED_LIMIT),
+          supabase
+            .from('orders')
+            .select('*')
+            .in('opportunity_id', ids)
+            .order('criado_em', { ascending: false })
+            .limit(RELATED_LIMIT),
+          supabase
+            .from('position_sizing_decisions')
+            .select('*')
+            .in('opportunity_id', ids)
+            .order('created_at', { ascending: false })
+            .limit(RELATED_LIMIT),
+        ]);
+
+        const relatedError =
+          outcomeResult.error ??
+          decisionResult.error ??
+          eventResult.error ??
+          orderResult.error ??
+          positionSizingResult.error;
+
+        if (relatedError) {
+          throw relatedError;
+        }
+
+        loadedOutcomes =
+          (outcomeResult.data as OpportunityOutcome[] | null) ??
+          [];
+        loadedDecisions =
+          (decisionResult.data as OpportunityDecision[] | null) ??
+          [];
+        loadedEvents =
+          (eventResult.data as OpportunityEvent[] | null) ?? [];
+        loadedOrders =
+          (orderResult.data as OpportunityOrder[] | null) ?? [];
+
+        loadedSizingDecisions = (
+          positionSizingResult.data ?? []
+        )
+          .map(normalizePositionSizingDecision)
+          .filter(
+            (
+              decision,
+            ): decision is PositionSizingDecision =>
+              decision !== null,
+          )
+          .sort(
+            (left, right) =>
+              Date.parse(right.created_at) -
+              Date.parse(left.created_at),
+          );
+      }
+
+      setOpportunities(
+        [...loadedOpportunities].sort(
+          compareOpportunitiesForDashboard,
+        ),
+      );
+      setOutcomes(loadedOutcomes);
+      setDecisions(loadedDecisions);
+      setEvents(loadedEvents);
+      setOrders(loadedOrders);
+      setSizingDecisions(loadedSizingDecisions);
+      setLoadState('ready');
+
+      const focus = safeFocusFromLocation();
+
+      if (
+        focus &&
+        loadedOpportunities.some(
+          (opportunity) => opportunity.id === focus,
+        )
+      ) {
+        setSelectedId(focus);
+
+        const focused = loadedOpportunities.find(
+          (opportunity) => opportunity.id === focus,
+        );
+
+        if (focused) {
+          const section =
+            getOpportunityCardState(focused).section;
+
+          if (section !== 'attention') {
+            setActiveTab(
+              section === 'positions'
+                ? 'positions'
+                : section === 'exits'
+                  ? 'exits'
+                  : section === 'history'
+                    ? 'history'
+                    : 'pending',
+            );
+          }
+        }
+      }
+    } catch (error) {
+      setLoadError(friendlyError(error));
+      setLoadState('error');
     }
-  }, [rawA, usedTimeframe, liveA?.close]);
-
-
-  const loadJournal = useCallback(async () => {
-    if (!session) {
-      setJournal([]);
-      setJournalAction({ status: 'idle', message: '' });
-      return;
-    }
-
-    setJournalAction({ status: 'loading', message: 'Atualizando diário...' });
-
-    const { data, error: journalError } = await supabase
-      .from('daytrade_journal')
-      .select(
-        'id,setup_id,order_id,mode,status,symbol,timeframe,strategy,entry_reference,stop_reference,target_reference,risk_reward_ratio,planned_quantity,planned_notional,risk_usdt,risk_percent,entry_price,exit_price,quantity,fees_usdt,pnl_usdt,result_r,notes,aberto_em,fechado_em,criado_em,atualizado_em',
-      )
-      .order('criado_em', { ascending: false })
-      .limit(JOURNAL_LIMIT);
-
-    if (journalError) {
-      setJournalAction({
-        status: 'error',
-        message: `Não foi possível carregar o diário: ${journalError.message}`,
-      });
-      return;
-    }
-
-    setJournal((data ?? []) as DayTradeJournalRecord[]);
-    setJournalAction({
-      status: 'success',
-      message: `${(data ?? []).length} registro(s) carregado(s).`,
-    });
   }, [session, supabase]);
 
-  const loadAlertRule = useCallback(async () => {
-    if (!session) {
-      setAlertRule(null);
-      setAlertAction({ status: 'idle', message: '' });
-      return;
+  useEffect(() => {
+    if (session) {
+      void load();
     }
-
-    const activeSymbol = status === 'done' ? usedSymbolA : symbolA;
-    const activeTimeframe = status === 'done' ? usedTimeframe : timeframe;
-
-    setAlertAction({ status: 'loading', message: 'Consultando regra de alerta...' });
-
-    const { data, error: alertError } = await supabase
-      .from('daytrade_alert_rules')
-      .select(
-        'id,symbol,timeframe,strategy,notify_statuses,canal,ativo,cooldown_minutes,last_status,last_candle_open_time,last_triggered_at,criado_em,atualizado_em',
-      )
-      .eq('symbol', activeSymbol)
-      .eq('timeframe', activeTimeframe)
-      .eq('strategy', 'trend_breakout')
-      .maybeSingle();
-
-    if (alertError) {
-      setAlertRule(null);
-      setAlertAction({
-        status: 'error',
-        message: `Não foi possível consultar alertas: ${alertError.message}`,
-      });
-      return;
-    }
-
-    const rule = (data ?? null) as DayTradeAlertRuleRecord | null;
-    setAlertRule(rule);
-    setAlertEnabled(rule?.ativo ?? true);
-    setAlertCooldownMinutes(String(rule?.cooldown_minutes ?? 30));
-    setAlertNotifyStatuses(
-      rule?.notify_statuses?.length
-        ? rule.notify_statuses
-        : ['condicoes_atendidas'],
-    );
-    setAlertAction({
-      status: 'success',
-      message: rule ? 'Regra existente carregada.' : 'Nenhuma regra criada para este mercado.',
-    });
-  }, [
-    session,
-    status,
-    usedSymbolA,
-    usedTimeframe,
-    symbolA,
-    timeframe,
-    supabase,
-  ]);
+  }, [session, load]);
 
   useEffect(() => {
-    void loadJournal();
-  }, [loadJournal]);
-
-  useEffect(() => {
-    void loadAlertRule();
-  }, [loadAlertRule]);
-
-  const persistCurrentSetup = useCallback(async (
-    announce = true,
-  ): Promise<ServerSetupRecord> => {
-    if (!session) throw new Error('Entre na sua conta para salvar o setup.');
-    if (status !== 'done' || rawA.length < 2) {
-      throw new Error('Execute primeiro a análise do ativo e timeframe selecionados.');
-    }
-
-    if (announce) {
-      setServerAction({ status: 'loading', message: 'Reavaliando e salvando o setup...' });
-    }
-
-    const { data, error: invokeError } = await supabase.functions.invoke(
-      'avaliar-daytrade',
-      {
-        body: {
-          symbol: usedSymbolA,
-          timeframe: usedTimeframe,
-          persist: true,
-          live_price: liveA?.close ?? undefined,
-        },
-      },
-    );
-
-    if (invokeError) throw new Error(await functionErrorMessage(invokeError));
-    if (!data?.ok || !data?.setup?.id) {
-      throw new Error(data?.error ?? 'A função não retornou o setup persistido.');
-    }
-
-    const saved = data.setup as ServerSetupRecord;
-    setServerSetup(saved);
-
-    if (announce) {
-      setServerAction({
-        status: 'success',
-        message: `Setup salvo como “${TREND_BREAKOUT_STATUS_LABELS[saved.status]?.label ?? saved.status}”.`,
-      });
-    }
-
-    return saved;
-  }, [
-    session,
-    status,
-    rawA.length,
-    supabase,
-    usedSymbolA,
-    usedTimeframe,
-    liveA?.close,
-  ]);
-
-  const handlePersistSetup = useCallback(async () => {
-    try {
-      await persistCurrentSetup(true);
-    } catch (persistError) {
-      setServerAction({
-        status: 'error',
-        message: persistError instanceof Error ? persistError.message : 'Falha ao salvar o setup.',
-      });
-    }
-  }, [persistCurrentSetup]);
-
-  const handlePreviewTestnet = useCallback(async () => {
-    setTestnetAction({ status: 'loading', message: 'Validando conta, mercado e risco na Testnet...' });
-    setTestnetPreview(null);
-    setConfirmTestnet(false);
-
-    try {
-      const setup = await persistCurrentSetup(false);
-      setServerAction({
-        status: 'success',
-        message: `Setup ${setup.symbol}/${setup.timeframe} atualizado antes da prévia.`,
-      });
-
-      const { data, error: invokeError } = await supabase.functions.invoke(
-        'executar-daytrade-testnet',
-        {
-          body: {
-            action: 'preview',
-            setup_id: setup.id,
-            risk_percent: parseUserNumber(riskPercent),
-          },
-        },
-      );
-
-      if (invokeError) throw new Error(await functionErrorMessage(invokeError));
-      if (!data?.ok || !data?.preview) {
-        throw new Error(data?.error ?? 'A Testnet não retornou uma prévia executável.');
-      }
-
-      const response = data as TestnetPreviewResponse;
-      setTestnetPreview(response.preview);
-      setTestnetAction({
-        status: 'success',
-        message: 'Prévia aprovada. Revise os valores antes de confirmar a ordem simulada.',
-      });
-    } catch (previewError) {
-      setTestnetAction({
-        status: 'error',
-        message: previewError instanceof Error ? previewError.message : 'Falha na prévia Testnet.',
-      });
-    }
-  }, [persistCurrentSetup, riskPercent, supabase]);
-
-  const handleExecuteTestnet = useCallback(async () => {
-    if (!testnetPreview) {
-      setTestnetAction({ status: 'error', message: 'Gere uma prévia válida antes da execução.' });
-      return;
-    }
-    if (!confirmTestnet) {
-      setTestnetAction({ status: 'error', message: 'Marque a confirmação explícita da Testnet.' });
-      return;
-    }
-
-    setTestnetAction({ status: 'loading', message: 'Enviando compra e proteção OCO para a Binance Spot Testnet...' });
-
-    try {
-      const { data, error: invokeError } = await supabase.functions.invoke(
-        'executar-daytrade-testnet',
-        {
-          body: {
-            action: 'execute',
-            setup_id: testnetPreview.setup.id,
-            risk_percent: parseUserNumber(riskPercent),
-            confirm_testnet: true,
-          },
-        },
-      );
-
-      if (invokeError) throw new Error(await functionErrorMessage(invokeError));
-      if (!data?.ok) {
-        throw new Error(data?.error ?? 'A ordem Testnet não foi confirmada.');
-      }
-
-      const duplicate = Boolean(data?.duplicate);
-      setTestnetAction({
-        status: 'success',
-        message: duplicate
-          ? 'Este setup já havia sido processado; nenhuma compra duplicada foi criada.'
-          : 'Ordem enviada à Testnet. O monitor acompanhará a OCO e atualizará o diário.',
-      });
-      setConfirmTestnet(false);
-      await loadJournal();
-    } catch (executeError) {
-      setTestnetAction({
-        status: 'error',
-        message: executeError instanceof Error ? executeError.message : 'Falha na execução Testnet.',
-      });
-      await loadJournal();
-    }
-  }, [
-    testnetPreview,
-    confirmTestnet,
-    supabase,
-    riskPercent,
-    loadJournal,
-  ]);
-
-  const toggleAlertStatus = useCallback((value: DayTradeAlertableStatus) => {
-    setAlertNotifyStatuses((current) => {
-      if (current.includes(value)) {
-        return current.length === 1
-          ? current
-          : current.filter((statusValue) => statusValue !== value);
-      }
-      return [...current, value];
-    });
-  }, []);
-
-  const handleSaveAlertRule = useCallback(async () => {
     if (!session) {
-      setAlertAction({ status: 'error', message: 'Entre na sua conta para criar alertas.' });
       return;
     }
 
-    const cooldown = Number(alertCooldownMinutes);
-    if (!Number.isInteger(cooldown) || cooldown < 0 || cooldown > 1440) {
-      setAlertAction({ status: 'error', message: 'O cooldown deve ser um inteiro entre 0 e 1440 minutos.' });
-      return;
-    }
-
-    const activeSymbol = status === 'done' ? usedSymbolA : symbolA;
-    const activeTimeframe = status === 'done' ? usedTimeframe : timeframe;
-    setAlertAction({ status: 'loading', message: 'Salvando regra de alerta...' });
-
-    const payload = {
-      user_id: session.user.id,
-      symbol: activeSymbol,
-      timeframe: activeTimeframe,
-      strategy: 'trend_breakout',
-      notify_statuses: alertNotifyStatuses,
-      canal: 'email',
-      ativo: alertEnabled,
-      cooldown_minutes: cooldown,
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void load();
+      }
     };
 
-    const { data, error: saveError } = await supabase
-      .from('daytrade_alert_rules')
-      .upsert(payload, {
-        onConflict: 'user_id,symbol,timeframe,strategy',
-      })
-      .select(
-        'id,symbol,timeframe,strategy,notify_statuses,canal,ativo,cooldown_minutes,last_status,last_candle_open_time,last_triggered_at,criado_em,atualizado_em',
-      )
-      .single();
+    document.addEventListener(
+      'visibilitychange',
+      onVisibilityChange,
+    );
 
-    if (saveError) {
-      setAlertAction({ status: 'error', message: saveError.message });
-      return;
-    }
+    return () =>
+      document.removeEventListener(
+        'visibilitychange',
+        onVisibilityChange,
+      );
+  }, [session, load]);
 
-    setAlertRule(data as DayTradeAlertRuleRecord);
-    setAlertAction({
-      status: 'success',
-      message: alertEnabled
-        ? 'Regra ativa. O cron avaliará o mercado a cada cinco minutos.'
-        : 'Regra salva, porém pausada.',
-    });
-  }, [
-    session,
-    alertCooldownMinutes,
-    status,
-    usedSymbolA,
-    usedTimeframe,
-    symbolA,
-    timeframe,
-    alertNotifyStatuses,
-    alertEnabled,
-    supabase,
-  ]);
+  // Realtime -----------------------------------------------------------------
 
-  const handleDeleteAlertRule = useCallback(async () => {
-    if (!alertRule) return;
-    setAlertAction({ status: 'loading', message: 'Removendo regra...' });
-
-    const { error: deleteError } = await supabase
-      .from('daytrade_alert_rules')
-      .delete()
-      .eq('id', alertRule.id);
-
-    if (deleteError) {
-      setAlertAction({ status: 'error', message: deleteError.message });
-      return;
-    }
-
-    setAlertRule(null);
-    setAlertEnabled(true);
-    setAlertNotifyStatuses(['condicoes_atendidas']);
-    setAlertCooldownMinutes('30');
-    setAlertAction({ status: 'success', message: 'Regra removida.' });
-  }, [alertRule, supabase]);
-
-  const handleRunBacktest = useCallback(async () => {
+  useEffect(() => {
     if (!session) {
-      setBacktestAction({ status: 'error', message: 'Entre na sua conta para executar o backtest.' });
       return;
     }
 
-    const candleCount = Number(backtestCandleCount);
-    const initialCapital = parseUserNumber(backtestInitialCapital);
-    const testRiskPercent = parseUserNumber(backtestRiskPercent);
-    const feeRate = parseUserNumber(backtestFeeRate);
-    const slippage = parseUserNumber(backtestSlippage);
-    const maximumHolding = Number(backtestMaximumHolding);
+    const userFilter = `user_id=eq.${session.user.id}`;
+    setRealtimeState('connecting');
 
-    if (!Number.isInteger(candleCount) || candleCount < 350 || candleCount > 3000) {
-      setBacktestAction({ status: 'error', message: 'Use entre 350 e 3000 candles.' });
-      return;
-    }
-    if (!(initialCapital > 0)) {
-      setBacktestAction({ status: 'error', message: 'O patrimônio inicial deve ser maior que zero.' });
-      return;
-    }
-    if (!(testRiskPercent > 0) || testRiskPercent > 2) {
-      setBacktestAction({ status: 'error', message: 'O risco do backtest deve estar entre 0 e 2%.' });
-      return;
-    }
-    if (!(feeRate >= 0) || !(slippage >= 0)) {
-      setBacktestAction({ status: 'error', message: 'Taxa e slippage não podem ser negativos.' });
-      return;
-    }
-    if (!Number.isInteger(maximumHolding) || maximumHolding < 0) {
-      setBacktestAction({ status: 'error', message: 'O limite de candles deve ser um inteiro não negativo.' });
-      return;
-    }
-
-    setBacktestAction({ status: 'loading', message: 'Baixando histórico e simulando o playbook...' });
-    setBacktestResponse(null);
-
-    const { data, error: invokeError } = await supabase.functions.invoke(
-      'backtest-daytrade',
-      {
-        body: {
-          symbol: status === 'done' ? usedSymbolA : symbolA,
-          timeframe: status === 'done' ? usedTimeframe : timeframe,
-          candle_count: candleCount,
-          backtest_options: {
-            initialCapitalUsdt: initialCapital,
-            riskPercent: testRiskPercent,
-            feeRatePct: feeRate,
-            slippagePct: slippage,
-            intrabarPriority: backtestPriority,
-            maximumHoldingCandles: maximumHolding,
-          },
+    const channel = supabase
+      .channel(`opportunities:${session.user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'trade_opportunities',
+          filter: userFilter,
         },
-      },
+        (payload) => {
+          const change = payload as unknown as RealtimePayloadLike;
+          const row =
+            change.eventType === 'DELETE'
+              ? change.old
+              : change.new;
+          const id =
+            typeof row.id === 'string' ? row.id : null;
+
+          if (!id) {
+            return;
+          }
+
+          if (change.eventType === 'DELETE') {
+            setOpportunities((current) =>
+              removeById(current, id),
+            );
+            setSelectedId((current) =>
+              current === id ? null : current,
+            );
+            return;
+          }
+
+          setOpportunities((current) =>
+            upsertById(
+              current,
+              row as unknown as TradeOpportunity,
+            ).sort(compareOpportunitiesForDashboard),
+          );
+        },
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'opportunity_outcomes',
+          filter: userFilter,
+        },
+        (payload) => {
+          const change = payload as unknown as RealtimePayloadLike;
+          const row =
+            change.eventType === 'DELETE'
+              ? change.old
+              : change.new;
+          const id =
+            typeof row.id === 'string' ? row.id : null;
+
+          if (!id) {
+            return;
+          }
+
+          if (change.eventType === 'DELETE') {
+            setOutcomes((current) =>
+              removeOutcomeFromCollection(current, id),
+            );
+            return;
+          }
+
+          setOutcomes((current) =>
+            upsertOutcomeCollection(
+              current,
+              row as unknown as OpportunityOutcome,
+            ),
+          );
+        },
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'opportunity_decisions',
+          filter: userFilter,
+        },
+        (payload) => {
+          const change = payload as unknown as RealtimePayloadLike;
+          const row =
+            change.eventType === 'DELETE'
+              ? change.old
+              : change.new;
+          const id =
+            typeof row.id === 'string' ? row.id : null;
+
+          if (!id) {
+            return;
+          }
+
+          setDecisions((current) =>
+            change.eventType === 'DELETE'
+              ? removeById(current, id)
+              : upsertById(
+                  current,
+                  row as unknown as OpportunityDecision,
+                ),
+          );
+        },
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'opportunity_events',
+          filter: userFilter,
+        },
+        (payload) => {
+          const change = payload as unknown as RealtimePayloadLike;
+          const row =
+            change.eventType === 'DELETE'
+              ? change.old
+              : change.new;
+          const id =
+            typeof row.id === 'string' ? row.id : null;
+
+          if (!id) {
+            return;
+          }
+
+          setEvents((current) =>
+            change.eventType === 'DELETE'
+              ? removeById(current, id)
+              : upsertById(
+                  current,
+                  row as unknown as OpportunityEvent,
+                ).sort(
+                  (left, right) =>
+                    Date.parse(right.created_at) -
+                    Date.parse(left.created_at),
+                ),
+          );
+        },
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'orders',
+          filter: userFilter,
+        },
+        (payload) => {
+          const change = payload as unknown as RealtimePayloadLike;
+          const row =
+            change.eventType === 'DELETE'
+              ? change.old
+              : change.new;
+          const id =
+            typeof row.id === 'string' ? row.id : null;
+
+          if (!id) {
+            return;
+          }
+
+          setOrders((current) =>
+            change.eventType === 'DELETE'
+              ? removeById(current, id)
+              : upsertById(
+                  current,
+                  row as unknown as OpportunityOrder,
+                ),
+          );
+        },
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'position_sizing_decisions',
+          filter: userFilter,
+        },
+        (payload) => {
+          const change =
+            payload as unknown as RealtimePayloadLike;
+
+          const row =
+            change.eventType === 'DELETE'
+              ? change.old
+              : change.new;
+
+          const id =
+            typeof row.id === 'string'
+              ? row.id
+              : null;
+
+          if (!id) {
+            return;
+          }
+
+          if (change.eventType === 'DELETE') {
+            setSizingDecisions((current) =>
+              removeById(current, id),
+            );
+            return;
+          }
+
+          const decision =
+            normalizePositionSizingDecision(row);
+
+          if (!decision) {
+            return;
+          }
+
+          setSizingDecisions((current) =>
+            upsertById(current, decision).sort(
+              (left, right) =>
+                Date.parse(right.created_at) -
+                Date.parse(left.created_at),
+            ),
+          );
+        },
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          setRealtimeState('live');
+        } else if (
+          status === 'CHANNEL_ERROR' ||
+          status === 'TIMED_OUT'
+        ) {
+          setRealtimeState('error');
+        } else if (status === 'CLOSED') {
+          setRealtimeState('disconnected');
+        }
+      });
+
+    return () => {
+      setRealtimeState('disconnected');
+      void supabase.removeChannel(channel);
+    };
+  }, [session, supabase]);
+
+  // Derivados ---------------------------------------------------------------
+
+  const outcomeIndex = useMemo(() => {
+    const index = new Map<
+      string,
+      OpportunityOutcome
+    >();
+
+    for (const outcome of outcomes) {
+      index.set(
+        `${outcome.opportunity_id}:${outcome.mode}`,
+        outcome,
+      );
+    }
+
+    return index;
+  }, [outcomes]);
+
+  const latestSizingDecisionByOpportunity = useMemo(() => {
+    const index = new Map<
+      UUID,
+      PositionSizingDecision
+    >();
+
+    const sorted = [...sizingDecisions].sort(
+      (left, right) =>
+        Date.parse(right.created_at) -
+        Date.parse(left.created_at),
     );
 
-    if (invokeError) {
-      setBacktestAction({ status: 'error', message: await functionErrorMessage(invokeError) });
-      return;
-    }
-    if (!data?.ok || !data?.result) {
-      setBacktestAction({ status: 'error', message: data?.error ?? 'Backtest sem resultado.' });
-      return;
-    }
-
-    const response = data as BacktestApiResponse;
-    setBacktestResponse(response);
-    setBacktestAction({
-      status: 'success',
-      message: `Simulação concluída em ${response.execution_ms} ms com ${response.result.metrics.totalTrades} operação(ões).`,
-    });
-  }, [
-    session,
-    backtestCandleCount,
-    backtestInitialCapital,
-    backtestRiskPercent,
-    backtestFeeRate,
-    backtestSlippage,
-    backtestMaximumHolding,
-    supabase,
-    status,
-    usedSymbolA,
-    symbolA,
-    usedTimeframe,
-    timeframe,
-    backtestPriority,
-  ]);
-
-  const setupQuestions = useMemo(() => {
-    const evaluation = setupAnalysis.evaluation;
-    if (!evaluation) return [];
-
-    const byId = new Map(
-      evaluation.conditions.map((condition) => [condition.id, condition]),
-    );
-    const trendOk =
-      Boolean(byId.get('preco_acima_ema_lenta')?.passed) &&
-      Boolean(byId.get('emas_alinhadas')?.passed);
-    const volatilityRegime = evaluation.diagnostics.volatilityRegime;
-
-    return [
-      {
-        question: 'A tendência está favorável?',
-        answer: trendOk ? 'Sim' : 'Ainda não',
-        positive: trendOk,
-        detail: trendOk
-          ? 'Preço acima da EMA 200 e médias de curto prazo alinhadas.'
-          : 'Uma ou mais condições de tendência ainda não foram confirmadas.',
-      },
-      {
-        question: 'Existe rompimento confirmado?',
-        answer: byId.get('rompimento_confirmado')?.passed ? 'Sim' : 'Não',
-        positive: Boolean(byId.get('rompimento_confirmado')?.passed),
-        detail:
-          byId.get('rompimento_confirmado')?.explanation ??
-          'Aguardando dados.',
-      },
-      {
-        question: 'O volume confirmou?',
-        answer: byId.get('volume_confirmado')?.passed ? 'Sim' : 'Não',
-        positive: Boolean(byId.get('volume_confirmado')?.passed),
-        detail:
-          byId.get('volume_confirmado')?.explanation ??
-          'Aguardando dados.',
-      },
-      {
-        question: 'A volatilidade está elevada?',
-        answer:
-          volatilityRegime === 'extremo'
-            ? 'Extrema'
-            : volatilityRegime === 'volátil'
-              ? 'Elevada'
-              : volatilityRegime === 'indisponível'
-                ? 'Indisponível'
-                : 'Não',
-        positive:
-          volatilityRegime !== 'extremo' &&
-          volatilityRegime !== 'indisponível',
-        detail: `Regime atual: ${volatilityRegime}.`,
-      },
-      {
-        question: 'Existe uma entrada válida agora?',
-        answer:
-          evaluation.status === 'condicoes_atendidas'
-            ? 'Condições atendidas'
-            : evaluation.status === 'entrada_atrasada'
-              ? 'Preço atrasado'
-              : evaluation.status === 'invalidado'
-                ? 'Setup invalidado'
-                : 'Não',
-        positive: evaluation.status === 'condicoes_atendidas',
-        detail: TREND_BREAKOUT_STATUS_LABELS[evaluation.status].shortDescription,
-      },
-    ];
-  }, [setupAnalysis.evaluation]);
-
-  const actionablePlan = useMemo(() => {
-    const evaluation = setupAnalysis.evaluation;
-    if (!evaluation?.plan) return null;
-
-    if (
-      evaluation.status === 'condicoes_atendidas' ||
-      evaluation.status === 'entrada_atrasada' ||
-      evaluation.status === 'invalidado'
-    ) {
-      return evaluation.plan;
+    for (const decision of sorted) {
+      if (!index.has(decision.opportunity_id)) {
+        index.set(
+          decision.opportunity_id,
+          decision,
+        );
+      }
     }
 
-    return null;
-  }, [setupAnalysis.evaluation]);
+    return index;
+  }, [sizingDecisions]);
 
-  const positionSizing = useMemo<PositionSizingResult | null>(() => {
-    if (!actionablePlan) return null;
-
-    return calculatePositionSizeFromPlan({
-      accountBalance: parseUserNumber(accountBalance),
-      availableBalance: parseUserNumber(availableBalance),
-      riskPercent: parseUserNumber(riskPercent),
-      plan: actionablePlan,
-      allowLeverage: false,
-      policy: {
-        recommendedRiskPercent: 1,
-        maximumRiskPercent: 2,
-      },
-    });
-  }, [actionablePlan, accountBalance, availableBalance, riskPercent]);
-
-
-  const journalSummary = useMemo(() => {
-    const closed = journal.filter((row) => row.fechado_em !== null);
-    const netPnl = closed.reduce(
-      (sum, row) => sum + (nullableNumber(row.pnl_usdt) ?? 0),
-      0,
-    );
-    const averageRValues = closed
-      .map((row) => nullableNumber(row.result_r))
-      .filter((value): value is number => value !== null);
-    const averageR = averageRValues.length
-      ? averageRValues.reduce((sum, value) => sum + value, 0) / averageRValues.length
-      : null;
-    const open = journal.filter((row) => row.status === 'aberta').length;
-
-    return { closed: closed.length, open, netPnl, averageR };
-  }, [journal]);
-
-  const backtestEquityData = useMemo(() => {
-    const curve = backtestResponse?.result.equityCurve ?? [];
-    if (!curve.length) return [];
-    const step = Math.max(1, Math.floor(curve.length / 500));
-    const sampled = curve.filter((_, index) => index % step === 0);
-    if (sampled[sampled.length - 1] !== curve[curve.length - 1]) {
-      sampled.push(curve[curve.length - 1]);
-    }
-
-    return sampled.map((point) => ({
-      label: new Date(point.time).toLocaleDateString('pt-BR', {
-        day: '2-digit',
-        month: '2-digit',
+  const metrics = useMemo(
+    () =>
+      calculateOpportunityDashboardMetrics({
+        opportunities,
+        outcomes,
       }),
-      Patrimônio: Number(point.equityUsdt.toFixed(2)),
-      Drawdown: Number(point.drawdownPct.toFixed(2)),
-    }));
-  }, [backtestResponse]);
-
-  const charts = useMemo(() => {
-    const { visibleA, visibleB, volA, volB } = derived;
-    if (!visibleA.length) {
-      return { performance: [], volatility: [], volume: [], technical: [] };
-    }
-
-    const volAByTime = new Map(
-      rawA.map((candle, index) => [candle.openTime, volA[index]]),
-    );
-    const volBByTime = new Map(
-      rawB.map((candle, index) => [candle.openTime, volB[index]]),
-    );
-    const bByTime = new Map(visibleB.map((candle) => [candle.openTime, candle]));
-    const firstMatchedB = visibleA
-      .map((candle) => bByTime.get(candle.openTime))
-      .find((candle): candle is Candle => Boolean(candle));
-
-    const baseA = visibleA[0].close;
-    const baseB = firstMatchedB?.close ?? 1;
-    const step = Math.max(1, Math.floor(visibleA.length / 500));
-    const indexes: number[] = [];
-
-    for (let index = 0; index < visibleA.length; index += step) {
-      indexes.push(index);
-    }
-
-    if (indexes[indexes.length - 1] !== visibleA.length - 1) {
-      indexes.push(visibleA.length - 1);
-    }
-
-    const performance: Record<string, number | string>[] = [];
-    const volatility: Record<string, number | string>[] = [];
-    const volume: Record<string, number | string>[] = [];
-
-    for (const index of indexes) {
-      const candleA = visibleA[index];
-      const label = chartLabel(candleA.openTime, usedPeriod.durationMs);
-      const matchedB = bByTime.get(candleA.openTime);
-      const performancePoint: Record<string, number | string> = {
-        label,
-        [usedSymbolA]: Number(((candleA.close / baseA) * 100).toFixed(2)),
-      };
-      const volatilityPoint: Record<string, number | string> = { label };
-      const volumePoint: Record<string, number | string> = {
-        label,
-        [usedSymbolA]: Number((candleA.quoteVolume / 1_000_000).toFixed(3)),
-      };
-
-      const currentVolA = volAByTime.get(candleA.openTime);
-      if (currentVolA !== null && currentVolA !== undefined) {
-        volatilityPoint[usedSymbolA] = Number(currentVolA.toFixed(1));
-      }
-
-      if (matchedB && usedSymbolB !== 'nenhum') {
-        performancePoint[usedSymbolB] = Number(
-          ((matchedB.close / baseB) * 100).toFixed(2),
-        );
-        volumePoint[usedSymbolB] = Number(
-          (matchedB.quoteVolume / 1_000_000).toFixed(3),
-        );
-        const currentVolB = volBByTime.get(matchedB.openTime);
-        if (currentVolB !== null && currentVolB !== undefined) {
-          volatilityPoint[usedSymbolB] = Number(currentVolB.toFixed(1));
-        }
-      }
-
-      performance.push(performancePoint);
-      volatility.push(volatilityPoint);
-      volume.push(volumePoint);
-    }
-
-    const indicatorPointByTime = new Map(
-      (setupAnalysis.indicators?.series ?? []).map((point) => [
-        point.openTime,
-        point,
-      ]),
-    );
-
-    const technical = indexes.map((index) => {
-      const candle = visibleA[index];
-      const point = indicatorPointByTime.get(candle.openTime);
-
-      return {
-        label: chartLabel(candle.openTime, usedPeriod.durationMs),
-        Preço: Number(candle.close.toFixed(8)),
-        'EMA 20': point?.emaFast ?? undefined,
-        'EMA 50': point?.emaMedium ?? undefined,
-        'EMA 200': point?.emaSlow ?? undefined,
-        Rompimento: point?.priorHighestHigh ?? undefined,
-      };
-    });
-
-    return { performance, volatility, volume, technical };
-  }, [
-    derived,
-    rawA,
-    rawB,
-    usedSymbolA,
-    usedSymbolB,
-    usedPeriod.durationMs,
-    setupAnalysis.indicators,
-  ]);
-
-  const generateReport = useCallback(async () => {
-    if (!derived.statsA || reportAction.status === 'loading') return;
-
-    const fallbackText = buildReport(
-      derived.statsA,
-      derived.statsB,
-      derived.correlation,
-      usedPeriod.label,
-      usedTimeframe,
-    );
-
-    const evaluation = setupAnalysis.evaluation;
-    const indicators = setupAnalysis.indicators;
-
-    setReportAction({
-      status: 'loading',
-      message: 'A IA está interpretando as métricas e o checklist deste cenário...',
-    });
-
-    try {
-      const response = await fetch('/api/relatorio-daytrade', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        cache: 'no-store',
-        body: JSON.stringify({
-          periodoLabel: usedPeriod.label,
-          timeframe: usedTimeframe,
-          correlacao: derived.correlation,
-          ativos: [
-            derived.statsA,
-            ...(derived.statsB ? [derived.statsB] : []),
-          ],
-          setup: evaluation
-            ? {
-                strategy: evaluation.strategy,
-                strategyVersion: evaluation.strategyVersion,
-                status: evaluation.status,
-                candleOpenTime: evaluation.candleOpenTime,
-                candleCloseTime: evaluation.candleCloseTime,
-                evaluatedPrice: evaluation.evaluatedPrice,
-                livePrice: evaluation.livePrice,
-                passedConditions: evaluation.passedConditions,
-                totalConditions: evaluation.totalConditions,
-                scorePct: evaluation.scorePct,
-                allConditionsMet: evaluation.allConditionsMet,
-                nextTrigger: evaluation.nextTrigger,
-                summary: evaluation.summary,
-                warnings: evaluation.warnings,
-                diagnostics: evaluation.diagnostics,
-                conditions: evaluation.conditions.map((condition) => ({
-                  id: condition.id,
-                  label: condition.label,
-                  passed: condition.passed,
-                  available: condition.available,
-                  currentValue: condition.currentValue,
-                  requiredValue: condition.requiredValue,
-                  explanation: condition.explanation,
-                })),
-                plan: evaluation.plan,
-              }
-            : null,
-          indicadores: indicators
-            ? {
-                ready: indicators.ready,
-                candleCount: indicators.candleCount,
-                requiredCandles: indicators.requiredCandles,
-                currentPrice: indicators.currentPrice,
-                previousClose: indicators.previousClose,
-                lastCandleReturnPct: indicators.lastCandleReturnPct,
-                currentCandleRangePct: indicators.currentCandleRangePct,
-                emaFast: indicators.emaFast,
-                emaMedium: indicators.emaMedium,
-                emaSlow: indicators.emaSlow,
-                atr: indicators.atr,
-                atrPct: indicators.atrPct,
-                breakoutLevel: indicators.breakoutLevel,
-                supportLevel: indicators.supportLevel,
-                distanceToBreakoutPct: indicators.distanceToBreakoutPct,
-                distanceFromSupportPct: indicators.distanceFromSupportPct,
-                distanceFromSlowEmaPct: indicators.distanceFromSlowEmaPct,
-                currentVolume: indicators.currentVolume,
-                averageVolume: indicators.averageVolume,
-                relativeVolume: indicators.relativeVolume,
-                annualizedVolatilityPct: indicators.annualizedVolatilityPct,
-                volatilityRegime: indicators.volatilityRegime,
-                volatilityPercentile: indicators.volatilityPercentile,
-                periodHigh: indicators.periodHigh,
-                periodLow: indicators.periodLow,
-                amplitudePct: indicators.amplitudePct,
-                maxDrawdownPct: indicators.maxDrawdownPct,
-                currentDrawdownPct: indicators.currentDrawdownPct,
-                timeInDrawdownPct: indicators.timeInDrawdownPct,
-              }
-            : null,
-        }),
-      });
-
-      const payload = await response.json().catch(() => null) as {
-        relatorio?: string;
-        error?: string;
-        requestId?: string;
-      } | null;
-
-      if (!response.ok || !payload?.relatorio?.trim()) {
-        throw new Error(
-          payload?.error ??
-            `O serviço de relatório respondeu ${response.status}.`,
-        );
-      }
-
-      const text = payload.relatorio.trim();
-      setReport(text);
-      updateLatestHistoryReport(text);
-      setReportAction({
-        status: 'success',
-        message:
-          'Análise explicada por IA com base somente nas métricas e regras calculadas pelo VigIA.',
-      });
-    } catch (reportError) {
-      setReport(fallbackText);
-      updateLatestHistoryReport(fallbackText);
-      setReportAction({
-        status: 'fallback',
-        message:
-          `A IA não respondeu; o VigIA exibiu o resumo local de contingência. ${
-            reportError instanceof Error ? reportError.message : ''
-          }`.trim(),
-      });
-    }
-  }, [
-    derived.statsA,
-    derived.statsB,
-    derived.correlation,
-    usedPeriod.label,
-    usedTimeframe,
-    setupAnalysis.evaluation,
-    setupAnalysis.indicators,
-    reportAction.status,
-    updateLatestHistoryReport,
-  ]);
-
-  const copyAnalysisMarkdown = useCallback(async () => {
-    if (!derived.statsA) {
-      setCopyAction({
-        status: 'error',
-        message: 'Execute uma análise antes de copiar o Markdown.',
-      });
-      return;
-    }
-
-    const statsA = derived.statsA;
-    const statsB = derived.statsB;
-    const evaluation = setupAnalysis.evaluation;
-    const indicators = setupAnalysis.indicators;
-    const plan = evaluation?.plan ?? null;
-    const metrics = backtestResponse?.result.metrics ?? null;
-    const backtestTrades =
-      backtestResponse?.result.trades.slice(-15).reverse() ?? [];
-    const generatedAt = new Date();
-    const officialCloseTime =
-      evaluation?.candleCloseTime ??
-      rawA[rawA.length - 1]?.closeTime ??
-      null;
-    const intervalMs = TIMEFRAMES[usedTimeframe].intervalMs;
-    const nextExpectedCloseTime =
-      officialCloseTime === null ? null : officialCloseTime + intervalMs;
-    const visibleReturnCount = Math.max(0, statsA.candleCount - 1);
-    const indicatorCandleCount =
-      indicators?.candleCount ?? rawA.length;
-    const warmupCandleCount = Math.max(
-      0,
-      indicatorCandleCount - statsA.candleCount,
-    );
-    const executableStatuses: TrendBreakoutStatus[] = [
-      'condicoes_atendidas',
-      'entrada_atrasada',
-      'invalidado',
-    ];
-    const planWasConfirmed =
-      evaluation !== null &&
-      executableStatuses.includes(evaluation.status);
-    const planIsCurrentlyExecutable =
-      evaluation?.status === 'condicoes_atendidas';
-    const pendingConditions =
-      evaluation?.conditions.filter(
-        (condition) => condition.available && !condition.passed,
-      ) ?? [];
-
-    const assumedFeeRatePct = 0.1;
-    const assumedSlippagePct = 0.05;
-    const costEstimate = plan
-      ? calculateRiskReward({
-          direction: plan.direction,
-          entryPrice: plan.entryReference,
-          stopPrice: plan.stopReference,
-          targetPrice: plan.targetReference,
-          feeRatePct: assumedFeeRatePct,
-          slippagePct: assumedSlippagePct,
-        })
-      : null;
-
-    const mdNumber = (
-      value: number | null | undefined,
-      digits = 2,
-    ): string =>
-      value === null || value === undefined || !Number.isFinite(value)
-        ? '—'
-        : fmt(value, digits);
-
-    const mdPrice = (
-      value: number | null | undefined,
-    ): string =>
-      value === null || value === undefined || !Number.isFinite(value)
-        ? '—'
-        : fmtPrice(value);
-
-    const mdPct = (
-      value: number | null | undefined,
-      digits = 2,
-    ): string =>
-      value === null || value === undefined || !Number.isFinite(value)
-        ? '—'
-        : fmtPct(value, digits);
-
-    const mdDate = (
-      value: string | number | null | undefined,
-    ): string => {
-      if (value === null || value === undefined || value === '') return '—';
-      const parsed = new Date(value);
-      return Number.isNaN(parsed.getTime())
-        ? '—'
-        : parsed.toLocaleString('pt-BR');
-    };
-
-    const cleanCell = (
-      value: string | number | null | undefined,
-    ): string =>
-      String(value ?? '—')
-        .replaceAll('|', '\\|')
-        .replace(/\r?\n/g, ' ')
-        .trim();
-
-    const countMissingCandles = (candles: Candle[]): number => {
-      let missing = 0;
-
-      for (let index = 1; index < candles.length; index += 1) {
-        const distance =
-          candles[index].openTime - candles[index - 1].openTime;
-        const steps = Math.round(distance / intervalMs);
-        if (steps > 1) missing += steps - 1;
-      }
-
-      return missing;
-    };
-
-    const alignedPairCount = (() => {
-      if (!derived.visibleB.length) return 0;
-      const timesB = new Set(
-        derived.visibleB.map((candle) => candle.openTime),
-      );
-      return derived.visibleA.filter(
-        (candle) => timesB.has(candle.openTime),
-      ).length;
-    })();
-
-    const statusLabel = evaluation
-      ? TREND_BREAKOUT_STATUS_LABELS[evaluation.status]?.label ??
-        evaluation.status
-      : 'Não calculado';
-
-    const shortSampleWarning =
-      usedPeriod.durationMs < 7 * DAY || visibleReturnCount < 500
-        ? 'A amostra é curta para inferência estatística. O Sharpe foi anualizado matematicamente e pode ficar muito elevado ou muito negativo por pequenas variações intradiárias.'
-        : 'O Sharpe continua sendo uma descrição histórica da amostra e não uma previsão.';
-
-    const planHeading =
-      evaluation?.status === 'condicoes_atendidas'
-        ? '## Plano técnico confirmado pelo playbook'
-        : evaluation?.status === 'entrada_atrasada'
-          ? '## Plano técnico confirmado, mas com entrada atrasada'
-          : evaluation?.status === 'invalidado'
-            ? '## Plano técnico invalidado'
-            : '## Simulação matemática prévia — não executável';
-
-    const planExplanation =
-      evaluation?.status === 'condicoes_atendidas'
-        ? 'Todas as condições foram atendidas no candle encerrado. Os valores abaixo continuam sendo referências educacionais, não uma ordem.'
-        : evaluation?.status === 'entrada_atrasada'
-          ? 'O setup foi confirmado anteriormente, mas o preço ao vivo ultrapassou o limite previsto. Uma nova entrada está bloqueada.'
-          : evaluation?.status === 'invalidado'
-            ? 'O setup foi confirmado anteriormente, mas atingiu o nível de invalidação. Uma nova entrada está bloqueada.'
-            : 'As condições ainda não foram todas atendidas. Entrada, stop e alvo abaixo são apenas uma projeção usando o candle atual e serão recalculados após eventual confirmação.';
-
-    const lines: string[] = [
-      '# VigIA Trade — Snapshot completo da análise Day Trade',
-      '',
-      '> Revise este snapshot como uma segunda opinião técnica independente. Verifique a consistência entre métricas, indicadores, checklist, plano matemático, custos, dimensionamento e backtest. Não invente dados externos, não altere números sem demonstrar a fórmula e não trate o status como recomendação de investimento.',
-      '',
-      '## Contexto da análise',
-      '',
-      `- **Gerado em:** ${generatedAt.toLocaleString('pt-BR')}`,
-      `- **Ativo principal:** ${usedSymbolA}`,
-      `- **Ativo de comparação:** ${
-        usedSymbolB === 'nenhum' ? 'não utilizado' : usedSymbolB
-      }`,
-      `- **Timeframe:** ${TIMEFRAMES[usedTimeframe].label} (${usedTimeframe})`,
-      `- **Período visível analisado:** ${usedPeriod.label}`,
-      '- **Candles oficiais:** somente candles encerrados',
-      `- **Candles visíveis do ativo principal:** ${statsA.candleCount}`,
-      `- **Retornos visíveis calculados:** ${visibleReturnCount}`,
-      `- **Candles totais usados pelos indicadores:** ${indicatorCandleCount}`,
-      `- **Candles anteriores usados para aquecimento:** ${warmupCandleCount}`,
-      `- **Candles ausentes dentro da janela visível:** ${countMissingCandles(
-        derived.visibleA,
-      )}`,
-      `- **Fechamento oficial mais recente:** ${mdDate(officialCloseTime)}`,
-      `- **Próximo encerramento esperado:** ${mdDate(nextExpectedCloseTime)}`,
-      '- **Candle atual em formação:** não participa das métricas nem confirma rompimento',
-      `- **Preço do candle encerrado:** ${mdPrice(statsA.lastPrice)} USDT`,
-      `- **Preço ao vivo do candle em formação:** ${
-        liveA ? `${mdPrice(liveA.close)} USDT` : 'indisponível'
-      }`,
-      `- **Status oficial do playbook:** ${statusLabel}`,
-      '',
-      '## Metodologia e limitações',
-      '',
-      '- Retorno, drawdown e Sharpe usam fechamentos de candles encerrados.',
-      '- Drawdown máximo e atual são calculados contra o maior fechamento anterior, não contra a máxima intraperíodo.',
-      '- Volatilidade usa retornos logarítmicos, desvio-padrão populacional na janela móvel e anualização pela raiz quadrada da quantidade de candles por ano.',
-      '- Sharpe usa média dos retornos logarítmicos, desvio-padrão amostral, taxa livre de risco igual a zero e anualização. Em amostras intradiárias curtas, o valor é estatisticamente instável.',
-      '- O volume financeiro médio usa todos os candles do período visível. O volume médio do indicador de rompimento usa a janela anterior configurada pelo playbook.',
-      '- A relação risco-retorno do plano é bruta. Taxas e slippage podem reduzir materialmente o resultado líquido.',
-      `- **Aviso sobre o Sharpe:** ${shortSampleWarning}`,
-      '',
-      '## Métricas do ativo principal',
-      '',
-      '| Métrica | Valor |',
-      '|---|---:|',
-      `| Último fechamento | ${mdPrice(statsA.lastPrice)} USDT |`,
-      `| Retorno no período | ${mdPct(statsA.returnPct)} |`,
-      `| Drawdown máximo por fechamento | ${mdPct(
-        statsA.maxDrawdownPct,
-      )} |`,
-      `| Drawdown atual por fechamento | ${mdPct(
-        statsA.currentDrawdownPct,
-      )} |`,
-      `| Tempo abaixo de um topo anterior | ${mdNumber(
-        statsA.timeInDrawdownPct,
-        0,
-      )}% |`,
-      `| Volatilidade média anualizada | ${mdNumber(
-        statsA.annualVolPct,
-        1,
-      )}% |`,
-      `| Volatilidade atual anualizada | ${mdNumber(
-        statsA.currentVolPct,
-        1,
-      )}% |`,
-      `| Regime | ${statsA.regime} |`,
-      `| Sharpe anualizado da amostra | ${mdNumber(
-        statsA.sharpe,
-      )} |`,
-      `| Retornos positivos | ${mdNumber(statsA.pctPositive, 0)}% |`,
-      `| Melhor candle | ${mdPct(statsA.bestCandlePct)} |`,
-      `| Pior candle | ${mdPct(statsA.worstCandlePct)} |`,
-      `| Máxima intraperíodo | ${mdPrice(statsA.periodHigh)} USDT |`,
-      `| Mínima intraperíodo | ${mdPrice(statsA.periodLow)} USDT |`,
-      `| Amplitude máxima/mínima | ${mdNumber(
-        statsA.amplitudePct,
-      )}% |`,
-      `| Volume financeiro médio no período visível | ${mdNumber(
-        statsA.averageQuoteVolume,
-        2,
-      )} USDT |`,
-      `| Volume financeiro do último candle | ${mdNumber(
-        statsA.lastQuoteVolume,
-        2,
-      )} USDT |`,
-    ];
-
-    if (statsB) {
-      lines.push(
-        '',
-        `## Comparação com ${statsB.symbol}`,
-        '',
-        `- **Candles visíveis:** ${statsB.candleCount}`,
-        `- **Retornos alinhados usados na correlação:** ${Math.max(
-          0,
-          alignedPairCount - 1,
-        )}`,
-        `- **Candles ausentes dentro da janela visível:** ${countMissingCandles(
-          derived.visibleB,
-        )}`,
-        '',
-        '| Métrica | Valor |',
-        '|---|---:|',
-        `| Último fechamento | ${mdPrice(statsB.lastPrice)} USDT |`,
-        `| Retorno no período | ${mdPct(statsB.returnPct)} |`,
-        `| Drawdown máximo por fechamento | ${mdPct(
-          statsB.maxDrawdownPct,
-        )} |`,
-        `| Drawdown atual por fechamento | ${mdPct(
-          statsB.currentDrawdownPct,
-        )} |`,
-        `| Tempo abaixo de um topo anterior | ${mdNumber(
-          statsB.timeInDrawdownPct,
-          0,
-        )}% |`,
-        `| Volatilidade atual anualizada | ${mdNumber(
-          statsB.currentVolPct,
-          1,
-        )}% |`,
-        `| Regime | ${statsB.regime} |`,
-        `| Sharpe anualizado da amostra | ${mdNumber(
-          statsB.sharpe,
-        )} |`,
-        `| Correlação dos retornos | ${
-          derived.correlation === null
-            ? 'indisponível'
-            : `${mdNumber(derived.correlation, 4)} (${correlationText(
-                derived.correlation,
-              )})`
-        } |`,
-      );
-    }
-
-    lines.push('', '## Indicadores determinísticos', '');
-
-    if (indicators) {
-      lines.push(
-        '| Indicador | Valor |',
-        '|---|---:|',
-        `| Candles totais / mínimo necessário | ${indicators.candleCount} / ${indicators.requiredCandles} |`,
-        `| EMA ${indicators.options.emaFastPeriod} | ${mdPrice(
-          indicators.emaFast,
-        )} USDT |`,
-        `| EMA ${indicators.options.emaMediumPeriod} | ${mdPrice(
-          indicators.emaMedium,
-        )} USDT |`,
-        `| EMA ${indicators.options.emaSlowPeriod} | ${mdPrice(
-          indicators.emaSlow,
-        )} USDT |`,
-        `| ATR ${indicators.options.atrPeriod} | ${mdPrice(
-          indicators.atr,
-        )} USDT |`,
-        `| ATR sobre o preço | ${mdNumber(indicators.atrPct, 4)}% |`,
-        `| Nível de rompimento | ${mdPrice(
-          indicators.breakoutLevel,
-        )} USDT |`,
-        `| Suporte de referência | ${mdPrice(
-          indicators.supportLevel,
-        )} USDT |`,
-        `| Distância até o rompimento | ${mdPct(
-          indicators.distanceToBreakoutPct,
-          4,
-        )} |`,
-        `| Distância da EMA lenta | ${mdPct(
-          indicators.distanceFromSlowEmaPct,
-          4,
-        )} |`,
-        `| Volume base do candle atual | ${mdNumber(
-          indicators.currentVolume,
-          4,
-        )} |`,
-        `| Volume base médio da janela anterior | ${mdNumber(
-          indicators.averageVolume,
-          4,
-        )} |`,
-        `| Volume relativo | ${mdNumber(
-          indicators.relativeVolume,
-          4,
-        )}x |`,
-        `| Volatilidade anualizada do indicador | ${mdNumber(
-          indicators.annualizedVolatilityPct,
-          2,
-        )}% |`,
-        `| Regime de volatilidade | ${indicators.volatilityRegime} |`,
-        `| Percentil de volatilidade | ${mdNumber(
-          indicators.volatilityPercentile,
-          2,
-        )}% |`,
-        `| Distância até o rompimento em ATR | ${mdNumber(
-          evaluation?.diagnostics.distanceToBreakoutAtr,
-          4,
-        )} ATR |`,
-      );
-    } else {
-      lines.push('Indicadores indisponíveis para este snapshot.');
-    }
-
-    lines.push('', '## Checklist oficial do playbook', '');
-
-    if (evaluation) {
-      lines.push(
-        `- **Estratégia:** ${evaluation.strategy}`,
-        `- **Versão:** ${evaluation.strategyVersion}`,
-        `- **Status:** ${statusLabel} (\`${evaluation.status}\`)`,
-        `- **Condições atendidas:** ${evaluation.passedConditions} de ${evaluation.totalConditions}`,
-        `- **Pontuação do checklist:** ${mdNumber(
-          evaluation.scorePct,
-          2,
-        )}%`,
-        `- **Resumo determinístico:** ${evaluation.summary}`,
-        `- **Próximo gatilho completo:** ${evaluation.nextTrigger}`,
-        `- **Condições ainda pendentes:** ${
-          pendingConditions.length
-            ? pendingConditions
-                .map(
-                  (condition) =>
-                    `${condition.label} — ${condition.requiredValue}`,
-                )
-                .join('; ')
-            : 'nenhuma'
-        }`,
-        '',
-        '| Resultado | Condição | Valor atual | Exigência | Explicação |',
-        '|:---:|---|---:|---|---|',
-      );
-
-      for (const condition of evaluation.conditions) {
-        lines.push(
-          `| ${
-            condition.available
-              ? condition.passed
-                ? '✅'
-                : '❌'
-              : '⚪'
-          } | ${cleanCell(condition.label)} | ${cleanCell(
-            formatConditionValue(condition.currentValue),
-          )} | ${cleanCell(condition.requiredValue)} | ${cleanCell(
-            condition.explanation,
-          )} |`,
-        );
-      }
-
-      if (evaluation.warnings.length) {
-        lines.push('', '**Avisos do motor determinístico:**');
-        for (const warning of evaluation.warnings) {
-          lines.push(`- ${warning}`);
-        }
-      }
-    } else {
-      lines.push('O checklist ainda não foi calculado.');
-    }
-
-    lines.push('', planHeading, '', planExplanation, '');
-
-    if (plan) {
-      lines.push(
-        '| Parâmetro | Valor |',
-        '|---|---:|',
-        `| Natureza do plano | ${
-          planIsCurrentlyExecutable
-            ? 'confirmado no candle encerrado'
-            : planWasConfirmed
-              ? 'confirmado anteriormente, mas não executável no status atual'
-              : 'simulação prévia não confirmada'
-        } |`,
-        `| Direção modelada | ${plan.direction} |`,
-        `| Entrada de referência | ${mdPrice(
-          plan.entryReference,
-        )} USDT |`,
-        `| Invalidação / stop de referência | ${mdPrice(
-          plan.stopReference,
-        )} USDT |`,
-        `| Alvo matemático | ${mdPrice(
-          plan.targetReference,
-        )} USDT |`,
-        `| Risco por unidade | ${mdPrice(plan.riskPerUnit)} USDT |`,
-        `| Retorno bruto por unidade | ${mdPrice(
-          plan.rewardPerUnit,
-        )} USDT |`,
-        `| Relação risco-retorno bruta | ${mdNumber(
-          plan.riskRewardRatio,
-          2,
-        )}R |`,
-        `| Distância do stop | ${mdNumber(
-          plan.stopDistancePct,
-          4,
-        )}% |`,
-        `| Distância do alvo | ${mdNumber(
-          plan.targetDistancePct,
-          4,
-        )}% |`,
-        `| Stop em múltiplos de ATR | ${mdNumber(
-          plan.stopDistanceAtr,
-          4,
-        )} ATR |`,
-      );
-
-      if (planWasConfirmed) {
-        lines.push(
-          `| Limite de entrada calculado para o setup confirmado | ${mdPrice(
-            plan.latestAcceptableEntry,
-          )} USDT |`,
-        );
-      }
-
-      lines.push(
-        '',
-        '### Estimativa de custos sobre o plano',
-        '',
-        `- **Taxa hipotética por execução:** ${mdNumber(
-          assumedFeeRatePct,
-          4,
-        )}%`,
-        `- **Slippage adversa hipotética por execução:** ${mdNumber(
-          assumedSlippagePct,
-          4,
-        )}%`,
-        '- **Aplicação:** entrada e saída',
-      );
-
-      if (costEstimate?.valid) {
-        lines.push(
-          `- **Relação risco-retorno bruta:** ${mdNumber(
-            costEstimate.grossRiskRewardRatio,
-            4,
-          )}R`,
-          `- **Relação risco-retorno líquida estimada:** ${mdNumber(
-            costEstimate.estimatedNetRiskRewardRatio,
-            4,
-          )}R`,
-          `- **Risco estimado por unidade com custos:** ${mdPrice(
-            costEstimate.estimatedRiskPerUnit,
-          )} USDT`,
-          `- **Retorno líquido estimado por unidade:** ${mdPrice(
-            costEstimate.estimatedNetRewardPerUnit,
-          )} USDT`,
-        );
-      } else {
-        lines.push(
-          '- Não foi possível estimar o risco-retorno líquido com as premissas de custo.',
-        );
-      }
-    } else {
-      lines.push(
-        'Não foi possível construir nem mesmo uma simulação matemática com os dados atuais.',
-      );
-    }
-
-    lines.push('', '## Dimensionamento educacional', '');
-
-    if (!planIsCurrentlyExecutable && evaluation) {
-      lines.push(
-        `O dimensionamento foi bloqueado porque o status atual é **${statusLabel}**. Ele só é liberado quando o candle encerrado está em \`condicoes_atendidas\`.`,
-      );
-    } else if (positionSizing?.ok) {
-      lines.push(
-        '| Parâmetro | Valor |',
-        '|---|---:|',
-        `| Saldo informado | ${mdNumber(
-          positionSizing.accountBalance,
-        )} USDT |`,
-        `| Saldo disponível informado | ${mdNumber(
-          positionSizing.availableBalance,
-        )} USDT |`,
-        `| Risco configurado | ${mdNumber(
-          positionSizing.riskPercent,
-          2,
-        )}% |`,
-        `| Quantidade máxima estimada | ${mdNumber(
-          positionSizing.quantity,
-          8,
-        )} |`,
-        `| Valor da posição | ${mdNumber(
-          positionSizing.notional,
-        )} USDT |`,
-        `| Perda total estimada no stop | ${mdNumber(
-          positionSizing.estimatedTotalRiskUsdt,
-        )} USDT |`,
-        `| Risco efetivo | ${mdNumber(
-          positionSizing.estimatedTotalRiskPct,
-          4,
-        )}% |`,
-        `| Retorno líquido estimado | ${mdNumber(
-          positionSizing.estimatedNetRewardUsdt,
-        )} USDT |`,
-        `| Relação risco-retorno líquida | ${mdNumber(
-          positionSizing.estimatedNetRiskRewardRatio,
-          4,
-        )}R |`,
-        `| Taxa por execução usada | ${mdNumber(
-          positionSizing.feeRatePct,
-          4,
-        )}% |`,
-        `| Slippage por execução usado | ${mdNumber(
-          positionSizing.slippagePct,
-          4,
-        )}% |`,
-      );
-
-      if (positionSizing.warnings.length) {
-        lines.push(
-          '',
-          `- **Avisos:** ${positionSizing.warnings.join(' ')}`,
-        );
-      }
-    } else if (positionSizing) {
-      lines.push(
-        `O dimensionamento não ficou disponível: ${positionSizing.errors.join(
-          ' ',
-        )}`,
-      );
-    } else {
-      lines.push(
-        'O dimensionamento está indisponível porque não existe um setup confirmado e executável.',
-      );
-    }
-
-    lines.push('', '## Persistência e alerta', '');
-
-    lines.push(
-      `- **Setup salvo no servidor:** ${serverSetup ? 'sim' : 'não'}`,
-      `- **Status salvo:** ${
-        serverSetup
-          ? TREND_BREAKOUT_STATUS_LABELS[serverSetup.status]?.label ??
-            serverSetup.status
-          : '—'
-      }`,
-      `- **Regra de alerta:** ${
-        alertRule
-          ? alertRule.ativo
-            ? 'ativa'
-            : 'pausada'
-          : 'não configurada'
-      }`,
-      `- **Status monitorados:** ${
-        alertRule ? alertRule.notify_statuses.join(', ') : '—'
-      }`,
-      `- **Cooldown:** ${
-        alertRule ? `${alertRule.cooldown_minutes} minutos` : '—'
-      }`,
-      `- **Último status observado pelo alerta:** ${
-        alertRule?.last_status ?? '—'
-      }`,
-      `- **Último disparo:** ${mdDate(
-        alertRule?.last_triggered_at,
-      )}`,
-    );
-
-    lines.push('', '## Backtest exibido na página', '');
-
-    if (metrics && backtestResponse) {
-      lines.push(
-        `- **Símbolo:** ${backtestResponse.symbol}`,
-        `- **Timeframe:** ${backtestResponse.timeframe}`,
-        `- **Candles solicitados:** ${backtestResponse.requested_candles}`,
-        `- **Tempo de execução:** ${backtestResponse.execution_ms} ms`,
-        `- **Taxa configurada por execução:** ${mdNumber(
-          parseUserNumber(backtestFeeRate),
-          4,
-        )}%`,
-        `- **Slippage configurada por execução:** ${mdNumber(
-          parseUserNumber(backtestSlippage),
-          4,
-        )}%`,
-        '',
-        '| Métrica | Valor |',
-        '|---|---:|',
-        `| Capital inicial | ${mdNumber(
-          metrics.initialCapitalUsdt,
-        )} USDT |`,
-        `| Capital final | ${mdNumber(
-          metrics.finalCapitalUsdt,
-        )} USDT |`,
-        `| PnL líquido | ${mdNumber(metrics.netPnlUsdt)} USDT |`,
-        `| Retorno líquido | ${mdPct(metrics.netReturnPct)} |`,
-        `| Sinais encontrados | ${metrics.signals} |`,
-        `| Operações realizadas | ${metrics.totalTrades} |`,
-        `| Sinais ignorados | ${metrics.skippedSignals} |`,
-        `| Vitórias / derrotas / empates | ${metrics.wins} / ${metrics.losses} / ${metrics.breakeven} |`,
-        `| Taxa de acerto | ${mdNumber(metrics.winRatePct)}% |`,
-        `| Fator de lucro | ${mdNumber(
-          metrics.profitFactor,
-          4,
-        )} |`,
-        `| Média por operação | ${mdNumber(
-          metrics.averagePnlUsdt,
-        )} USDT |`,
-        `| Média em R | ${mdNumber(metrics.averageR, 4)}R |`,
-        `| Melhor / pior resultado | ${mdNumber(
-          metrics.bestR,
-          4,
-        )}R / ${mdNumber(metrics.worstR, 4)}R |`,
-        `| Drawdown máximo | ${mdPct(
-          metrics.maximumDrawdownPct,
-        )} |`,
-        `| Maior sequência de perdas | ${metrics.maximumConsecutiveLosses} |`,
-        `| Exposição | ${mdNumber(metrics.exposurePct)}% |`,
-      );
-
-      if (backtestTrades.length) {
-        lines.push(
-          '',
-          '### Últimas operações mostradas no backtest',
-          '',
-          '| Entrada | Saída | Resultado | Motivo | PnL líquido | R |',
-          '|---|---|---|---|---:|---:|',
-        );
-
-        for (const trade of backtestTrades) {
-          lines.push(
-            `| ${mdDate(trade.entryTime)} | ${mdDate(
-              trade.exitTime,
-            )} | ${trade.result} | ${backtestExitLabel(
-              trade.exitReason,
-            )} | ${mdNumber(trade.netPnlUsdt)} USDT | ${mdNumber(
-              trade.resultR,
-              4,
-            )}R |`,
-          );
-        }
-      }
-
-      if (backtestResponse.result.warnings.length) {
-        lines.push('', '**Avisos do backtest:**');
-        for (const warning of backtestResponse.result.warnings) {
-          lines.push(`- ${warning}`);
-        }
-      }
-    } else {
-      lines.push(
-        'Nenhum backtest foi executado nesta sessão. Sem backtest, não há evidência histórica da frequência, dos custos, da taxa de acerto ou do drawdown da estratégia.',
-      );
-    }
-
-    lines.push('', '## Diário carregado na página', '');
-
-    if (journal.length) {
-      lines.push(
-        '| Data | Ativo | Modo | Status | Entrada | Saída | PnL | R |',
-        '|---|---|---|---|---:|---:|---:|---:|',
-      );
-
-      for (const item of journal) {
-        lines.push(
-          `| ${mdDate(item.criado_em)} | ${item.symbol}/${
-            item.timeframe
-          } | ${item.mode} | ${cleanCell(
-            journalStatusLabel(item.status),
-          )} | ${mdPrice(
-            nullableNumber(item.entry_price),
-          )} | ${mdPrice(
-            nullableNumber(item.exit_price),
-          )} | ${mdNumber(
-            nullableNumber(item.pnl_usdt),
-          )} USDT | ${mdNumber(
-            nullableNumber(item.result_r),
-            4,
-          )}R |`,
-        );
-      }
-    } else {
-      lines.push('Nenhum registro de diário foi carregado.');
-    }
-
-    lines.push(
-      '',
-      '## Relatório explicativo do VigIA',
-      '',
-      report
-        ? report
-        : 'O relatório interno com IA não foi gerado. Use as métricas, as condições pendentes e as limitações acima para fazer uma revisão independente.',
-      '',
-      '## Perguntas sugeridas para a IA revisora',
-      '',
-      '1. O status oficial é coerente com todas as condições aprovadas e reprovadas?',
-      '2. O próximo gatilho inclui rompimento, volume e manutenção das demais condições?',
-      '3. O plano está corretamente classificado como confirmado, atrasado, invalidado ou apenas simulado?',
-      '4. Entrada, stop, alvo, ATR e relação risco-retorno bruta são matematicamente consistentes?',
-      '5. As taxas e a slippage tornam a relação risco-retorno líquida aceitável apenas para continuar em teste?',
-      '6. O Sharpe foi interpretado como uma anualização instável de amostra curta, e não como qualidade comprovada?',
-      '7. O backtest possui amostra, custos e drawdown suficientes para continuar sendo avaliado?',
-      '',
-      '> Os números deste snapshot descrevem dados históricos e regras do sistema. Eles não antecipam o próximo movimento e não constituem recomendação de investimento.',
-    );
-
-    const markdown = lines.join('\n');
-
-    setCopyAction({
-      status: 'loading',
-      message: 'Preparando o Markdown...',
-    });
-
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(markdown);
-      } else {
-        const textarea = document.createElement('textarea');
-        textarea.value = markdown;
-        textarea.setAttribute('readonly', '');
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
-
-        const copied = document.execCommand('copy');
-        document.body.removeChild(textarea);
-
-        if (!copied) {
-          throw new Error(
-            'O navegador recusou o acesso à área de transferência.',
-          );
-        }
-      }
-
-      setCopyAction({
-        status: 'success',
-        message:
-          `Markdown completo copiado (${markdown.length.toLocaleString(
-            'pt-BR',
-          )} caracteres). Cole na IA de sua preferência.`,
-      });
-    } catch (copyError) {
-      setCopyAction({
-        status: 'error',
-        message:
-          copyError instanceof Error
-            ? `Não foi possível copiar: ${copyError.message}`
-            : 'Não foi possível copiar o Markdown.',
-      });
-    }
-  }, [
-    derived.statsA,
-    derived.statsB,
-    derived.visibleA,
-    derived.visibleB,
-    derived.correlation,
-    setupAnalysis.evaluation,
-    setupAnalysis.indicators,
-    backtestResponse,
-    rawA,
-    usedSymbolA,
-    usedSymbolB,
-    usedTimeframe,
-    usedPeriod.label,
-    usedPeriod.durationMs,
-    liveA,
-    positionSizing,
-    serverSetup,
-    alertRule,
-    journal,
-    report,
-    backtestFeeRate,
-    backtestSlippage,
-  ]);
-
-  const clearHistory = () => {
-    setHistory([]);
-    latestHistoryIdRef.current = null;
-    window.localStorage.removeItem(HISTORY_KEY);
-  };
-
-  const onTimeframeChange = (value: string) => {
-    const next = value as Timeframe;
-    setTimeframe(next);
-    setPeriodIndex(Math.min(1, TIMEFRAMES[next].periods.length - 1));
-  };
-
-  const select = (
-    value: string,
-    onChange: (value: string) => void,
-    options: { value: string; label: string }[],
-  ) => (
-    <select
-      value={value}
-      onChange={(event: React.ChangeEvent<HTMLSelectElement>) =>
-        onChange(event.target.value)
-      }
-      style={{
-        background: S.bg,
-        border: `1px solid ${S.border}`,
-        borderRadius: 6,
-        color: S.text,
-        padding: '8px 10px',
-        fontSize: 14,
-        textAlign: 'center',
-      }}
-    >
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
+    [opportunities, outcomes],
   );
 
-  const currentPeriods = TIMEFRAMES[timeframe].periods;
-  const statsA = derived.statsA;
-  const statsB = derived.statsB;
-  const correlationValue = derived.correlation;
+  const symbolBreakdown = useMemo(
+    () =>
+      calculateMetricBreakdown(
+        { opportunities, outcomes },
+        'symbol',
+      ),
+    [opportunities, outcomes],
+  );
 
-  const metricRows: {
-    label: string;
-    tip: string;
-    get: (stats: IntradayStats) => string;
-    color?: (stats: IntradayStats) => string;
-  }[] = [
-    {
-      label: 'Último fechamento (USDT)',
-      tip: 'Fechamento do candle encerrado mais recente.',
-      get: (stats) => fmtPrice(stats.lastPrice),
-    },
-    {
-      label: 'Retorno no período',
-      tip: 'Variação entre o primeiro e o último fechamento visível.',
-      get: (stats) => fmtPct(stats.returnPct),
-      color: (stats) => stats.returnPct >= 0 ? S.green : S.red,
-    },
-    {
-      label: 'Drawdown máximo',
-      tip: 'Maior queda de um topo até um fechamento posterior dentro do período.',
-      get: (stats) => fmtPct(stats.maxDrawdownPct),
-      color: () => S.red,
-    },
-    {
-      label: 'Drawdown atual',
-      tip: 'Distância do último fechamento para o maior topo anterior.',
-      get: (stats) => fmtPct(stats.currentDrawdownPct),
-      color: (stats) => stats.currentDrawdownPct < -0.5 ? S.red : S.dim,
-    },
-    {
-      label: 'Tempo abaixo de um topo',
-      tip: 'Percentual dos candles em drawdown, não significa queda contínua.',
-      get: (stats) => `${fmt(stats.timeInDrawdownPct, 0)}%`,
-    },
-    {
-      label: 'Volatilidade média anualizada',
-      tip: `Média histórica da ${TIMEFRAMES[usedTimeframe].volWindowLabel}.`,
-      get: (stats) => `${fmt(stats.annualVolPct, 0)}%`,
-    },
-    {
-      label: 'Volatilidade atual anualizada',
-      tip: `Última ${TIMEFRAMES[usedTimeframe].volWindowLabel} encerrada.`,
-      get: (stats) => `${fmt(stats.currentVolPct, 0)}%`,
-    },
-    {
-      label: 'Sharpe anualizado da amostra (rf = 0)',
-      tip: 'Retorno médio por unidade de volatilidade, anualizado. Em amostras intradiárias curtas é estatisticamente instável e não mede todo o risco.',
-      get: (stats) => fmt(stats.sharpe),
-      color: (stats) => stats.sharpe >= 0 ? S.green : S.red,
-    },
-    {
-      label: 'Candles positivos',
-      tip: 'Percentual de retornos entre fechamentos consecutivos acima de zero.',
-      get: (stats) => `${fmt(stats.pctPositive, 0)}%`,
-    },
-    {
-      label: 'Melhor candle',
-      tip: 'Maior retorno entre dois fechamentos consecutivos.',
-      get: (stats) => fmtPct(stats.bestCandlePct),
-      color: () => S.green,
-    },
-    {
-      label: 'Pior candle',
-      tip: 'Menor retorno entre dois fechamentos consecutivos.',
-      get: (stats) => fmtPct(stats.worstCandlePct),
-      color: () => S.red,
-    },
-    {
-      label: 'Máxima do período',
-      tip: 'Maior máxima registrada nos candles visíveis.',
-      get: (stats) => `${fmtPrice(stats.periodHigh)} USDT`,
-    },
-    {
-      label: 'Mínima do período',
-      tip: 'Menor mínima registrada nos candles visíveis.',
-      get: (stats) => `${fmtPrice(stats.periodLow)} USDT`,
-    },
-    {
-      label: 'Amplitude máxima × mínima',
-      tip: 'Distância percentual entre a mínima e a máxima do período.',
-      get: (stats) => `${fmt(stats.amplitudePct)}%`,
-    },
-    {
-      label: 'Volume médio por candle',
-      tip: 'Volume financeiro médio cotado em USDT.',
-      get: (stats) => `${fmtCompactUsdt(stats.averageQuoteVolume)} USDT`,
-    },
-  ];
+  const versionBreakdown = useMemo(
+    () =>
+      calculateMetricBreakdown(
+        { opportunities, outcomes },
+        'strategy_version',
+      ),
+    [opportunities, outcomes],
+  );
 
-  const tooltipStyle = {
-    background: S.panel,
-    border: `1px solid ${S.border}`,
-    borderRadius: 8,
-    color: S.text,
-    fontSize: 12,
+  const sectioned = useMemo(() => {
+    const result: Record<
+      OpportunitySection,
+      TradeOpportunity[]
+    > = {
+      pending: [],
+      positions: [],
+      exits: [],
+      history: [],
+      attention: [],
+    };
+
+    for (const opportunity of opportunities) {
+      const section =
+        getOpportunityCardState(opportunity).section;
+
+      result[section].push(opportunity);
+    }
+
+    for (const section of Object.keys(
+      result,
+    ) as OpportunitySection[]) {
+      result[section].sort(
+        compareOpportunitiesForDashboard,
+      );
+    }
+
+    return result;
+  }, [opportunities]);
+
+  const selectedOpportunity = useMemo(
+    () =>
+      selectedId
+        ? opportunities.find(
+            (opportunity) =>
+              opportunity.id === selectedId,
+          ) ?? null
+        : null,
+    [opportunities, selectedId],
+  );
+
+  const selectedTheoreticalOutcome =
+    selectedOpportunity
+      ? outcomeIndex.get(
+          `${selectedOpportunity.id}:theoretical`,
+        ) ?? null
+      : null;
+
+  const selectedExecutedOutcome =
+    selectedOpportunity
+      ? outcomeIndex.get(
+          `${selectedOpportunity.id}:executed`,
+        ) ?? null
+      : null;
+
+  const selectedOrders = useMemo(
+    () =>
+      selectedOpportunity
+        ? orders.filter(
+            (order) =>
+              order.opportunity_id ===
+              selectedOpportunity.id,
+          )
+        : [],
+    [orders, selectedOpportunity],
+  );
+
+  const selectedEvents = useMemo(
+    () =>
+      selectedOpportunity
+        ? events.filter(
+            (event) =>
+              event.opportunity_id ===
+              selectedOpportunity.id,
+          )
+        : [],
+    [events, selectedOpportunity],
+  );
+
+  const selectedDecisions = useMemo(
+    () =>
+      selectedOpportunity
+        ? decisions.filter(
+            (decision) =>
+              decision.opportunity_id ===
+              selectedOpportunity.id,
+          )
+        : [],
+    [decisions, selectedOpportunity],
+  );
+
+  const selectedSizingDecisions = useMemo(
+    () =>
+      selectedOpportunity
+        ? sizingDecisions
+            .filter(
+              (decision) =>
+                decision.opportunity_id ===
+                selectedOpportunity.id,
+            )
+            .sort(
+              (left, right) =>
+                Date.parse(right.created_at) -
+                Date.parse(left.created_at),
+            )
+        : [],
+    [selectedOpportunity, sizingDecisions],
+  );
+
+  // Autenticação ------------------------------------------------------------
+
+  const sendMagicLink = useCallback(async () => {
+    const normalizedEmail = email
+      .trim()
+      .toLocaleLowerCase('pt-BR');
+
+    setAuthError('');
+
+    if (!/^\S+@\S+\.\S+$/.test(normalizedEmail)) {
+      setAuthError('Informe um email válido.');
+      return;
+    }
+
+    setAuthBusy(true);
+
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email: normalizedEmail,
+        options: {
+          emailRedirectTo: magicLinkRedirect(),
+        },
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      setEmail(normalizedEmail);
+      setMagicSent(true);
+    } catch (error) {
+      setAuthError(
+        friendlyError(
+          error,
+          'Não foi possível enviar o link de acesso.',
+        ),
+      );
+    } finally {
+      setAuthBusy(false);
+    }
+  }, [email, supabase]);
+
+  const signOut = useCallback(async () => {
+    setAuthError('');
+    const { error } = await supabase.auth.signOut();
+
+    if (error) {
+      setAuthError(error.message);
+    }
+  }, [supabase]);
+
+  // Abertura e RPCs ---------------------------------------------------------
+
+  const patchLifecycle = useCallback(
+    (
+      opportunityId: UUID,
+      lifecycleStatus: OpportunityLifecycleStatus,
+      extras: Partial<TradeOpportunity> = {},
+    ) => {
+      setOpportunities((current) =>
+        current
+          .map((opportunity) =>
+            opportunity.id === opportunityId
+              ? {
+                  ...opportunity,
+                  ...extras,
+                  lifecycle_status: lifecycleStatus,
+                  updated_at: new Date().toISOString(),
+                }
+              : opportunity,
+          )
+          .sort(compareOpportunitiesForDashboard),
+      );
+    },
+    [],
+  );
+
+  const updateFocusInUrl = useCallback(
+    (id: UUID | null) => {
+      if (typeof window === 'undefined') {
+        return;
+      }
+
+      const url = new URL(window.location.href);
+
+      if (id) {
+        url.searchParams.set('focus', id);
+      } else {
+        url.searchParams.delete('focus');
+      }
+
+      window.history.replaceState(
+        null,
+        '',
+        `${url.pathname}${url.search}${url.hash}`,
+      );
+    },
+    [],
+  );
+
+  const openOpportunity = useCallback(
+    async (opportunity: TradeOpportunity) => {
+      setSelectedId(opportunity.id);
+      setRejectReason('');
+      setActionFeedback({
+        state: 'idle',
+        message: '',
+      });
+      updateFocusInUrl(opportunity.id);
+
+      const cardState =
+        getOpportunityCardState(opportunity);
+
+      try {
+        if (cardState.actions.canBeginReview) {
+          const { data, error } = await supabase.rpc(
+            'begin_opportunity_review',
+            {
+              p_opportunity_id: opportunity.id,
+            },
+          );
+
+          if (error) {
+            throw error;
+          }
+
+          if (typeof data === 'string') {
+            patchLifecycle(
+              opportunity.id,
+              data as OpportunityLifecycleStatus,
+              {
+                seen_at:
+                  opportunity.seen_at ??
+                  new Date().toISOString(),
+                review_started_at:
+                  opportunity.review_started_at ??
+                  new Date().toISOString(),
+              },
+            );
+          }
+        } else if (cardState.actions.canMarkSeen) {
+          const { error } = await supabase.rpc(
+            'mark_opportunity_seen',
+            {
+              p_opportunity_id: opportunity.id,
+            },
+          );
+
+          if (error) {
+            throw error;
+          }
+
+          setOpportunities((current) =>
+            current.map((item) =>
+              item.id === opportunity.id
+                ? {
+                    ...item,
+                    seen_at: new Date().toISOString(),
+                  }
+                : item,
+            ),
+          );
+        }
+      } catch (error) {
+        setActionFeedback({
+          state: 'error',
+          message: friendlyError(
+            error,
+            'Os detalhes foram abertos, mas o status de leitura não pôde ser atualizado.',
+          ),
+        });
+      }
+    },
+    [
+      patchLifecycle,
+      supabase,
+      updateFocusInUrl,
+    ],
+  );
+
+  const closeDetails = useCallback(() => {
+    setSelectedId(null);
+    setRejectReason('');
+    setActionFeedback({
+      state: 'idle',
+      message: '',
+    });
+    updateFocusInUrl(null);
+  }, [updateFocusInUrl]);
+
+  const acceptOpportunity = useCallback(async () => {
+    if (!selectedOpportunity || actionId) {
+      return;
+    }
+
+    const cardState =
+      getOpportunityCardState(selectedOpportunity);
+
+    if (!cardState.actions.canAcceptEntry) {
+      setActionFeedback({
+        state: 'error',
+        message:
+          cardState.actions.reason ??
+          'Esta entrada não pode mais ser aceita.',
+      });
+      return;
+    }
+
+    setActionId(selectedOpportunity.id);
+    setActionFeedback({
+      state: 'loading',
+      message:
+        'Registrando a decisão e enviando para revalidação...',
+    });
+
+    try {
+      const marketPrice =
+        marketSnapshotNumber(
+          selectedOpportunity,
+          'lastLivePrice',
+        ) ??
+        marketSnapshotNumber(
+          selectedOpportunity,
+          'lastClosedPrice',
+        );
+
+      const { data, error } = await supabase.rpc(
+        'accept_opportunity',
+        {
+          p_opportunity_id: selectedOpportunity.id,
+          p_market_price: marketPrice,
+          p_request_id: createRequestId(),
+        },
+      );
+
+      if (error) {
+        throw error;
+      }
+
+      const nextStatus =
+        typeof data === 'string'
+          ? (data as OpportunityLifecycleStatus)
+          : 'revalidating';
+
+      patchLifecycle(
+        selectedOpportunity.id,
+        nextStatus,
+        {
+          entry_decision: 'accepted',
+          accepted_at: new Date().toISOString(),
+          seen_at:
+            selectedOpportunity.seen_at ??
+            new Date().toISOString(),
+        },
+      );
+
+      setActionFeedback({
+        state: 'success',
+        message:
+          nextStatus === 'revalidating'
+            ? 'Entrada aceita. O servidor marcou a oportunidade para revalidação. Nenhuma ordem foi executada por esta página.'
+            : `A oportunidade agora está em “${getLifecyclePresentation(nextStatus).label}”.`,
+      });
+
+      await load();
+    } catch (error) {
+      setActionFeedback({
+        state: 'error',
+        message: friendlyError(
+          error,
+          'Não foi possível aceitar a oportunidade.',
+        ),
+      });
+    } finally {
+      setActionId(null);
+    }
+  }, [
+    actionId,
+    load,
+    patchLifecycle,
+    selectedOpportunity,
+    supabase,
+  ]);
+
+  const rejectOpportunity = useCallback(async () => {
+    if (!selectedOpportunity || actionId) {
+      return;
+    }
+
+    const cardState =
+      getOpportunityCardState(selectedOpportunity);
+
+    if (!cardState.actions.canRejectEntry) {
+      setActionFeedback({
+        state: 'error',
+        message:
+          cardState.actions.reason ??
+          'Esta entrada não pode mais ser recusada.',
+      });
+      return;
+    }
+
+    setActionId(selectedOpportunity.id);
+    setActionFeedback({
+      state: 'loading',
+      message: 'Registrando a recusa...',
+    });
+
+    try {
+      const marketPrice =
+        marketSnapshotNumber(
+          selectedOpportunity,
+          'lastLivePrice',
+        ) ??
+        marketSnapshotNumber(
+          selectedOpportunity,
+          'lastClosedPrice',
+        );
+
+      const { data, error } = await supabase.rpc(
+        'reject_opportunity',
+        {
+          p_opportunity_id: selectedOpportunity.id,
+          p_reason: rejectReason.trim() || null,
+          p_market_price: marketPrice,
+          p_request_id: createRequestId(),
+        },
+      );
+
+      if (error) {
+        throw error;
+      }
+
+      const nextStatus =
+        typeof data === 'string'
+          ? (data as OpportunityLifecycleStatus)
+          : 'rejected';
+
+      patchLifecycle(
+        selectedOpportunity.id,
+        nextStatus,
+        {
+          entry_decision: 'rejected',
+          rejected_at: new Date().toISOString(),
+          seen_at:
+            selectedOpportunity.seen_at ??
+            new Date().toISOString(),
+        },
+      );
+
+      setActionFeedback({
+        state: 'success',
+        message:
+          'Entrada recusada. O resultado teórico continuará sendo acompanhado para medir a qualidade da decisão.',
+      });
+      setRejectReason('');
+
+      await load();
+    } catch (error) {
+      setActionFeedback({
+        state: 'error',
+        message: friendlyError(
+          error,
+          'Não foi possível recusar a oportunidade.',
+        ),
+      });
+    } finally {
+      setActionId(null);
+    }
+  }, [
+    actionId,
+    load,
+    patchLifecycle,
+    rejectReason,
+    selectedOpportunity,
+    supabase,
+  ]);
+
+  // Edge Functions ----------------------------------------------------------
+
+  const synchronizeSetups = useCallback(async () => {
+    if (!session || syncFeedback.state === 'loading') {
+      return;
+    }
+
+    setSyncFeedback({
+      state: 'loading',
+      message: 'Procurando novos setups confirmados...',
+    });
+
+    try {
+      const { data, error } = await supabase.functions.invoke(
+        'sincronizar-oportunidades',
+        {
+          body: {
+            limit: 100,
+            include_expired: true,
+          },
+        },
+      );
+
+      if (error) {
+        throw error;
+      }
+
+      const summary = isRecord(data)
+        ? data.summary
+        : null;
+
+      const created = isRecord(summary)
+        ? finiteNumber(summary.created) ?? 0
+        : 0;
+
+      const existing = isRecord(summary)
+        ? finiteNumber(summary.existing) ?? 0
+        : 0;
+
+      setSyncFeedback({
+        state: 'success',
+        message:
+          created > 0
+            ? `${created} nova(s) oportunidade(s) criada(s). ${existing} já existia(m).`
+            : `Nenhuma oportunidade nova. ${existing} setup(s) já estava(m) sincronizado(s).`,
+      });
+
+      await load();
+    } catch (error) {
+      setSyncFeedback({
+        state: 'error',
+        message: friendlyError(
+          error,
+          'Não foi possível sincronizar os setups.',
+        ),
+      });
+    }
+  }, [
+    load,
+    session,
+    supabase,
+    syncFeedback.state,
+  ]);
+
+  const updateTheoreticalResults =
+    useCallback(async () => {
+      if (
+        !session ||
+        trackingFeedback.state === 'loading'
+      ) {
+        return;
+      }
+
+      setTrackingFeedback({
+        state: 'loading',
+        message:
+          'Consultando candles encerrados e atualizando resultados...',
+      });
+
+      try {
+        const { data, error } =
+          await supabase.functions.invoke(
+            'acompanhar-resultados-teoricos',
+            {
+              body: {
+                limit: 50,
+                max_candles_per_outcome: 1_000,
+              },
+            },
+          );
+
+        if (error) {
+          throw error;
+        }
+
+        const summary = isRecord(data)
+          ? data.summary
+          : null;
+
+        const processed = isRecord(summary)
+          ? finiteNumber(summary.processed) ?? 0
+          : 0;
+        const targetHit = isRecord(summary)
+          ? finiteNumber(summary.target_hit) ?? 0
+          : 0;
+        const stopHit = isRecord(summary)
+          ? finiteNumber(summary.stop_hit) ?? 0
+          : 0;
+        const horizonExit = isRecord(summary)
+          ? finiteNumber(summary.horizon_exit) ?? 0
+          : 0;
+
+        setTrackingFeedback({
+          state: 'success',
+          message: `${processed} resultado(s) verificado(s): ${targetHit} alvo(s), ${stopHit} stop(s) e ${horizonExit} encerramento(s) por horizonte.`,
+        });
+
+        await load();
+      } catch (error) {
+        setTrackingFeedback({
+          state: 'error',
+          message: friendlyError(
+            error,
+            'Não foi possível atualizar os resultados teóricos.',
+          ),
+        });
+      }
+    }, [
+      load,
+      session,
+      supabase,
+      trackingFeedback.state,
+    ]);
+
+  // Renderizadores ----------------------------------------------------------
+
+  const renderOpportunityGrid = (
+    rows: readonly TradeOpportunity[],
+    emptyTitle: string,
+    emptyDescription: string,
+  ) => {
+    if (rows.length === 0) {
+      return (
+        <EmptyState
+          title={emptyTitle}
+          description={emptyDescription}
+        />
+      );
+    }
+
+    return (
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns:
+            'repeat(auto-fit, minmax(min(100%, 310px), 1fr))',
+          gap: 10,
+        }}
+      >
+        {rows.map((opportunity) => (
+          <OpportunityCard
+            key={opportunity.id}
+            opportunity={opportunity}
+            theoreticalOutcome={
+              outcomeIndex.get(
+                `${opportunity.id}:theoretical`,
+              ) ?? null
+            }
+            executedOutcome={
+              outcomeIndex.get(
+                `${opportunity.id}:executed`,
+              ) ?? null
+            }
+            sizingDecision={
+              latestSizingDecisionByOpportunity.get(
+                opportunity.id,
+              ) ?? null
+            }
+            onOpen={openOpportunity}
+          />
+        ))}
+      </div>
+    );
   };
+
+  const activeRows =
+    activeTab === 'pending'
+      ? sectioned.pending
+      : activeTab === 'positions'
+        ? sectioned.positions
+        : activeTab === 'exits'
+          ? sectioned.exits
+          : activeTab === 'history'
+            ? sectioned.history
+            : [];
+
+  const realtimePresentation =
+    realtimeState === 'live'
+      ? {
+          label: '● AO VIVO',
+          color: S.green,
+          detail: 'Atualizações do Supabase Realtime',
+        }
+      : realtimeState === 'connecting'
+        ? {
+            label: 'CONECTANDO',
+            color: S.a,
+            detail: 'Abrindo canal em tempo real',
+          }
+        : realtimeState === 'error'
+          ? {
+              label: 'REALTIME COM ERRO',
+              color: S.red,
+              detail:
+                'Use Atualizar enquanto o canal reconecta',
+            }
+          : {
+              label: 'OFFLINE',
+              color: S.dim,
+              detail: 'Canal em tempo real desconectado',
+            };
+
+  // Render ------------------------------------------------------------------
 
   return (
     <main
@@ -3257,7 +4050,8 @@ export default function DayTradePage() {
         minHeight: '100vh',
         background: S.bg,
         color: S.text,
-        fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+        fontFamily:
+          'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
       }}
     >
       <header
@@ -3275,52 +4069,107 @@ export default function DayTradePage() {
             gap: 12,
           }}
         >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/logo.png"
-            alt="VigIA Trade"
-            style={{ height: 32, width: 'auto', display: 'block' }}
-          />
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>
-              Day Trade
+          <a
+            href="/"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              textDecoration: 'none',
+              color: S.text,
+            }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/logo.png"
+              alt="VigIA Trade"
+              style={{
+                height: 32,
+                width: 'auto',
+                display: 'block',
+              }}
+            />
+            <div style={{ textAlign: 'center' }}>
+              <div
+                style={{
+                  fontSize: 16,
+                  fontWeight: 750,
+                  lineHeight: 1.1,
+                }}
+              >
+                Central de Oportunidades
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: S.dim,
+                }}
+              >
+                setups identificados · decisão sua · acompanhamento auditável
+              </div>
             </div>
-            <div style={{ fontSize: 11, color: S.dim }}>
-              candles encerrados · atualização ao vivo · decisão sua
-            </div>
-          </div>
+          </a>
         </div>
 
         <nav
           style={{
             display: 'flex',
             justifyContent: 'center',
-            gap: 20,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 18,
             marginTop: 8,
             fontSize: 13,
-            flexWrap: 'wrap',
           }}
         >
-          <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
+          <a
+            href="/"
+            style={{
+              color: S.dim,
+              textDecoration: 'none',
+            }}
+          >
             Análise
           </a>
-          <span style={{ color: S.b, fontWeight: 700 }}>Day Trade</span>
-          <a href="/oportunidades" style={{ color: S.dim, textDecoration: 'none' }}>
-            Oportunidades
+          <a
+            href="/daytrade"
+            style={{
+              color: S.dim,
+              textDecoration: 'none',
+            }}
+          >
+            Day Trade
           </a>
-          <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
+          <span
+            style={{
+              color: S.a,
+              fontWeight: 700,
+            }}
+          >
+            Oportunidades
+          </span>
+          <a
+            href="/alertas"
+            style={{
+              color: S.dim,
+              textDecoration: 'none',
+            }}
+          >
             Alertas
           </a>
-          <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
+          <a
+            href="/conta"
+            style={{
+              color: S.dim,
+              textDecoration: 'none',
+            }}
+          >
             Conta Binance
           </a>
-          {!session ? (
-            <a href="/alertas" style={{ color: S.green, textDecoration: 'none' }}>
-              Entrar
-            </a>
-          ) : (
+          {session && (
             <button
-              onClick={() => supabase.auth.signOut()}
+              type="button"
+              onClick={signOut}
               style={{
                 background: 'transparent',
                 border: 'none',
@@ -3341,1782 +4190,1081 @@ export default function DayTradePage() {
         style={{
           maxWidth: 1180,
           margin: '0 auto',
-          padding: '24px 20px',
+          padding: '22px 16px 42px',
           display: 'flex',
           flexDirection: 'column',
-          gap: 16,
+          gap: 14,
         }}
       >
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
-            gap: 12,
-          }}
-        >
-          <Card style={{ textAlign: 'center', padding: '12px 16px' }}>
-            <div style={{ fontSize: 11, color: S.dim, textTransform: 'uppercase' }}>
-              Conexão de mercado
+        {!authReady ? (
+          <Card
+            style={{
+              minHeight: 160,
+              display: 'grid',
+              placeItems: 'center',
+            }}
+          >
+            <div
+              style={{
+                color: S.dim,
+                fontSize: 13,
+              }}
+            >
+              Verificando sua sessão...
+            </div>
+          </Card>
+        ) : !session ? (
+          <Card
+            style={{
+              maxWidth: 620,
+              width: '100%',
+              alignSelf: 'center',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 12,
+              textAlign: 'center',
+              padding: '24px 18px',
+            }}
+          >
+            <div
+              style={{
+                color: S.textStrong,
+                fontSize: 17,
+                fontWeight: 800,
+              }}
+            >
+              Entre para acessar suas oportunidades
             </div>
             <div
               style={{
-                marginTop: 5,
-                fontSize: 15,
-                fontWeight: 700,
-                color: webSocketStatus === 'ao vivo' ? S.green : S.yellow,
+                color: S.dim,
+                fontSize: 12,
+                lineHeight: 1.55,
+                maxWidth: 480,
               }}
             >
-              {webSocketStatus === 'ao vivo' ? '● AO VIVO' : webSocketStatus}
+              Enviaremos um link de acesso para o seu email. A
+              página mostra somente os seus registros protegidos
+              por RLS e continua recebendo atualizações em tempo
+              real enquanto estiver aberta.
             </div>
-            {lastWebSocketUpdate && (
-              <div style={{ color: S.dim, fontSize: 10, marginTop: 3 }}>
-                última atualização{' '}
-                {new Date(lastWebSocketUpdate).toLocaleTimeString('pt-BR')}
-              </div>
-            )}
-          </Card>
 
-          <Card style={{ textAlign: 'center', padding: '12px 16px' }}>
-            <div style={{ fontSize: 11, color: S.dim, textTransform: 'uppercase' }}>
-              {usedSymbolA} agora
-            </div>
-            <div style={{ marginTop: 5, fontSize: 18, fontWeight: 700, color: S.a }}>
-              {liveA ? `${fmtPrice(liveA.close)} USDT` : statsA ? `${fmtPrice(statsA.lastPrice)} USDT` : '—'}
-            </div>
-            <div style={{ color: S.dim, fontSize: 10, marginTop: 3 }}>
-              {liveA ? 'candle em formação' : 'último candle encerrado'}
-            </div>
-          </Card>
-
-          {usedSymbolB !== 'nenhum' && (
-            <Card style={{ textAlign: 'center', padding: '12px 16px' }}>
-              <div style={{ fontSize: 11, color: S.dim, textTransform: 'uppercase' }}>
-                {usedSymbolB} agora
-              </div>
-              <div style={{ marginTop: 5, fontSize: 18, fontWeight: 700, color: S.b }}>
-                {liveB ? `${fmtPrice(liveB.close)} USDT` : statsB ? `${fmtPrice(statsB.lastPrice)} USDT` : '—'}
-              </div>
-              <div style={{ color: S.dim, fontSize: 10, marginTop: 3 }}>
-                {liveB ? 'candle em formação' : 'último candle encerrado'}
-              </div>
-            </Card>
-          )}
-
-          <Card style={{ textAlign: 'center', padding: '12px 16px' }}>
-            <div style={{ fontSize: 11, color: S.dim, textTransform: 'uppercase' }}>
-              Histórico separado
-            </div>
-            <div style={{ marginTop: 5, fontSize: 18, fontWeight: 700 }}>
-              {history.length}
-            </div>
-            <div style={{ color: S.dim, fontSize: 10, marginTop: 3 }}>
-              salvo neste navegador
-            </div>
-          </Card>
-        </div>
-
-        <p
-          style={{
-            color: S.dim,
-            fontSize: 13,
-            margin: '0 auto',
-            maxWidth: 850,
-            textAlign: 'center',
-            lineHeight: 1.5,
-          }}
-        >
-          As métricas usam somente candles encerrados. O WebSocket mostra o preço
-          do candle em formação, mas ele só entra oficialmente nos cálculos após o
-          fechamento. A volatilidade usa uma janela de 24 horas e é anualizada para
-          facilitar comparações; ela mede amplitude, não direção.
-        </p>
-
-        <Card
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 16,
-            alignItems: 'flex-end',
-            justifyContent: 'center',
-          }}
-        >
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim, textAlign: 'center' }}>
-            Ativo A
-            {select(
-              symbolA,
-              setSymbolA,
-              SYMBOLS
-                .filter((symbol) => symbol !== 'nenhum')
-                .map((symbol) => ({ value: symbol, label: symbol })),
-            )}
-          </label>
-
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim, textAlign: 'center' }}>
-            Ativo B (comparação)
-            {select(
-              symbolB,
-              setSymbolB,
-              SYMBOLS.map((symbol) => ({ value: symbol, label: symbol })),
-            )}
-          </label>
-
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim, textAlign: 'center' }}>
-            Timeframe
-            {select(
-              timeframe,
-              onTimeframeChange,
-              (Object.keys(TIMEFRAMES) as Timeframe[]).map((key) => ({
-                value: key,
-                label: TIMEFRAMES[key].label,
-              })),
-            )}
-          </label>
-
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: S.dim, textAlign: 'center' }}>
-            Período
-            {select(
-              String(Math.min(periodIndex, currentPeriods.length - 1)),
-              (value) => setPeriodIndex(Number(value)),
-              currentPeriods.map((period, index) => ({
-                value: String(index),
-                label: period.label,
-              })),
-            )}
-          </label>
-
-          <button
-            onClick={() => run()}
-            disabled={status === 'loading'}
-            style={{
-              background: S.b,
-              color: '#07111d',
-              border: 'none',
-              borderRadius: 8,
-              padding: '10px 22px',
-              fontSize: 14,
-              fontWeight: 700,
-              cursor: status === 'loading' ? 'wait' : 'pointer',
-              opacity: status === 'loading' ? 0.65 : 1,
-            }}
-          >
-            {status === 'loading' ? progress || 'Carregando...' : 'Analisar Day Trade'}
-          </button>
-
-          {status === 'error' && (
-            <span style={{ color: S.red, fontSize: 13, flexBasis: '100%', textAlign: 'center' }}>
-              {error}
-            </span>
-          )}
-        </Card>
-
-        {status === 'done' && setupAnalysis.evaluation && (
-          <>
-            <Card
-              style={{
-                borderColor: `${SETUP_STATUS_COLORS[setupAnalysis.evaluation.status]}88`,
-              }}
-            >
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-                  gap: 16,
-                  alignItems: 'center',
-                }}
-              >
-                <div style={{ textAlign: 'center' }}>
-                  <div
-                    style={{
-                      color: S.dim,
-                      fontSize: 11,
-                      textTransform: 'uppercase',
-                      letterSpacing: 0.7,
-                      marginBottom: 8,
-                    }}
-                  >
-                    Playbook: tendência com rompimento
-                  </div>
-                  <SetupStatusBadge status={setupAnalysis.evaluation.status} />
-                  <div
-                    style={{
-                      color: S.text,
-                      fontSize: 14,
-                      lineHeight: 1.5,
-                      marginTop: 10,
-                    }}
-                  >
-                    {setupAnalysis.evaluation.summary}
-                  </div>
-                </div>
-
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ color: S.dim, fontSize: 11, textTransform: 'uppercase' }}>
-                    Condições atendidas
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 30,
-                      fontWeight: 800,
-                      marginTop: 4,
-                      color: SETUP_STATUS_COLORS[setupAnalysis.evaluation.status],
-                    }}
-                  >
-                    {setupAnalysis.evaluation.passedConditions}/{setupAnalysis.evaluation.totalConditions}
-                  </div>
-                  <div
-                    style={{
-                      height: 8,
-                      maxWidth: 220,
-                      margin: '9px auto 0',
-                      borderRadius: 999,
-                      overflow: 'hidden',
-                      background: S.bg,
-                      border: `1px solid ${S.border}`,
-                    }}
-                  >
-                    <div
-                      style={{
-                        height: '100%',
-                        width: `${Math.max(0, Math.min(100, setupAnalysis.evaluation.scorePct))}%`,
-                        background: SETUP_STATUS_COLORS[setupAnalysis.evaluation.status],
-                      }}
-                    />
-                  </div>
-                  <div style={{ color: S.dim, fontSize: 11, marginTop: 5 }}>
-                    {fmt(setupAnalysis.evaluation.scorePct, 0)}% do checklist
-                  </div>
-                </div>
-
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ color: S.dim, fontSize: 11, textTransform: 'uppercase' }}>
-                    Próxima condição
-                  </div>
-                  <div
-                    style={{
-                      color: S.text,
-                      fontSize: 13,
-                      lineHeight: 1.5,
-                      marginTop: 7,
-                    }}
-                  >
-                    {setupAnalysis.evaluation.nextTrigger}
-                  </div>
-                  <div style={{ color: S.dim, fontSize: 10, marginTop: 8 }}>
-                    Candle avaliado:{' '}
-                    {new Date(setupAnalysis.evaluation.candleCloseTime).toLocaleString('pt-BR')}
-                  </div>
-                </div>
-              </div>
-
-              {setupAnalysis.evaluation.warnings.length > 0 && (
+            {magicSent ? (
+              <>
                 <div
                   style={{
-                    marginTop: 14,
-                    padding: '10px 12px',
-                    background: `${S.yellow}12`,
-                    border: `1px solid ${S.yellow}44`,
-                    borderRadius: 8,
-                    color: S.yellow,
-                    fontSize: 12,
+                    color: S.green,
+                    fontSize: 13,
                     lineHeight: 1.5,
                   }}
                 >
-                  {setupAnalysis.evaluation.warnings.map((warning) => (
-                    <div key={warning}>• {warning}</div>
-                  ))}
+                  Link enviado para <strong>{email}</strong>.
+                  Abra o email e toque no link para continuar.
                 </div>
-              )}
-            </Card>
-
-            <Card>
-              <div
-                style={{
-                  fontSize: 13,
-                  fontWeight: 700,
-                  textAlign: 'center',
-                  marginBottom: 12,
-                }}
-              >
-                Respostas diretas para quem está começando
-              </div>
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
-                  gap: 10,
-                }}
-              >
-                {setupQuestions.map((item) => (
-                  <div
-                    key={item.question}
-                    style={{
-                      background: S.panelSoft,
-                      border: `1px solid ${S.border}`,
-                      borderRadius: 8,
-                      padding: 12,
-                      textAlign: 'center',
+                <button
+                  type="button"
+                  onClick={() => setMagicSent(false)}
+                  disabled={authBusy}
+                  style={{
+                    ...subtleButtonStyle,
+                    color: S.a,
+                    borderColor: `${S.a}88`,
+                  }}
+                >
+                  Enviar novamente
+                </button>
+              </>
+            ) : (
+              <>
+                <div
+                  style={{
+                    width: 'min(100%, 320px)',
+                  }}
+                >
+                  <input
+                    type="email"
+                    value={email}
+                    placeholder="seu@email.com"
+                    autoComplete="email"
+                    disabled={authBusy}
+                    onChange={(event) =>
+                      setEmail(event.target.value)
+                    }
+                    onKeyDown={(event) => {
+                      if (
+                        event.key === 'Enter' &&
+                        !authBusy
+                      ) {
+                        void sendMagicLink();
+                      }
                     }}
-                  >
-                    <div style={{ color: S.dim, fontSize: 11 }}>
-                      {item.question}
-                    </div>
-                    <div
-                      style={{
-                        color: item.positive ? S.green : S.yellow,
-                        fontSize: 16,
-                        fontWeight: 800,
-                        marginTop: 5,
-                      }}
-                    >
-                      {item.answer}
-                    </div>
-                    <div
-                      style={{
-                        color: S.dim,
-                        fontSize: 10,
-                        lineHeight: 1.4,
-                        marginTop: 5,
-                      }}
-                    >
-                      {item.detail}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Card>
+                    style={inputStyle}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void sendMagicLink()}
+                  disabled={authBusy}
+                  style={{
+                    ...primaryButtonStyle,
+                    opacity: authBusy ? 0.6 : 1,
+                  }}
+                >
+                  {authBusy
+                    ? 'Enviando...'
+                    : 'Enviar link de acesso'}
+                </button>
+              </>
+            )}
 
-            <Card style={{ overflowX: 'auto' }}>
+            {authError && (
               <div
                 style={{
-                  fontSize: 13,
-                  fontWeight: 700,
-                  textAlign: 'center',
-                  marginBottom: 10,
-                }}
-              >
-                Checklist objetivo do playbook
-              </div>
-              <table
-                style={{
-                  width: '100%',
-                  minWidth: 760,
-                  borderCollapse: 'collapse',
+                  color: S.red,
                   fontSize: 12,
                 }}
               >
-                <thead>
-                  <tr>
-                    <th style={{ padding: 9, color: S.dim, borderBottom: `1px solid ${S.border}` }}>Status</th>
-                    <th style={{ padding: 9, color: S.dim, borderBottom: `1px solid ${S.border}` }}>Condição</th>
-                    <th style={{ padding: 9, color: S.dim, borderBottom: `1px solid ${S.border}` }}>Valor atual</th>
-                    <th style={{ padding: 9, color: S.dim, borderBottom: `1px solid ${S.border}` }}>Necessário</th>
-                    <th style={{ padding: 9, color: S.dim, borderBottom: `1px solid ${S.border}` }}>Explicação</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {setupAnalysis.evaluation.conditions.map((condition) => (
-                    <tr key={condition.id}>
-                      <td
-                        style={{
-                          padding: 9,
-                          textAlign: 'center',
-                          borderBottom: `1px solid ${S.border}`,
-                          color: !condition.available
-                            ? S.dim
-                            : condition.passed
-                              ? S.green
-                              : S.red,
-                          fontWeight: 800,
-                        }}
-                      >
-                        {!condition.available ? '○' : condition.passed ? '✓' : '×'}
-                      </td>
-                      <td style={{ padding: 9, borderBottom: `1px solid ${S.border}`, color: S.text }}>
-                        {condition.label}
-                      </td>
-                      <td style={{ padding: 9, textAlign: 'center', borderBottom: `1px solid ${S.border}`, color: S.text }}>
-                        {formatConditionValue(condition.currentValue)}
-                      </td>
-                      <td style={{ padding: 9, textAlign: 'center', borderBottom: `1px solid ${S.border}`, color: S.dim }}>
-                        {condition.requiredValue}
-                      </td>
-                      <td style={{ padding: 9, borderBottom: `1px solid ${S.border}`, color: S.dim, lineHeight: 1.4 }}>
-                        {condition.explanation}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </Card>
-
-            {actionablePlan ? (
-              <Card
-                style={{
-                  borderColor:
-                    setupAnalysis.evaluation.status === 'condicoes_atendidas'
-                      ? `${S.green}77`
-                      : `${SETUP_STATUS_COLORS[setupAnalysis.evaluation.status]}66`,
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    gap: 12,
-                    alignItems: 'center',
-                    flexWrap: 'wrap',
-                    marginBottom: 14,
-                  }}
-                >
-                  <div>
-                    <div style={{ fontSize: 15, fontWeight: 800 }}>
-                      Plano técnico de referência
-                    </div>
-                    <div style={{ color: S.dim, fontSize: 11, marginTop: 3 }}>
-                      Calculado pelo último candle encerrado. Não é uma ordem automática.
-                    </div>
-                  </div>
-                  <SetupStatusBadge status={setupAnalysis.evaluation.status} />
-                </div>
-
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))',
-                    gap: 10,
-                  }}
-                >
-                  {[
-                    ['Entrada de referência', `${fmtPrice(actionablePlan.entryReference)} USDT`, S.a],
-                    ['Invalidação / stop', `${fmtPrice(actionablePlan.stopReference)} USDT`, S.red],
-                    ['Alvo matemático', `${fmtPrice(actionablePlan.targetReference)} USDT`, S.green],
-                    ['Relação alvo/risco', `${fmt(actionablePlan.riskRewardRatio)}R`, S.text],
-                    ['Risco por unidade', `${fmtPrice(actionablePlan.riskPerUnit)} USDT`, S.text],
-                    ['Entrada aceitável até', `${fmtPrice(actionablePlan.latestAcceptableEntry)} USDT`, S.yellow],
-                  ].map(([label, value, color]) => (
-                    <div
-                      key={String(label)}
-                      style={{
-                        background: S.panelSoft,
-                        border: `1px solid ${S.border}`,
-                        borderRadius: 8,
-                        padding: 12,
-                        textAlign: 'center',
-                      }}
-                    >
-                      <div style={{ color: S.dim, fontSize: 10, textTransform: 'uppercase' }}>
-                        {label}
-                      </div>
-                      <div style={{ color, fontSize: 15, fontWeight: 800, marginTop: 5 }}>
-                        {value}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {setupAnalysis.evaluation.status !== 'condicoes_atendidas' && (
-                  <div
-                    style={{
-                      marginTop: 12,
-                      color: SETUP_STATUS_COLORS[setupAnalysis.evaluation.status],
-                      background: `${SETUP_STATUS_COLORS[setupAnalysis.evaluation.status]}12`,
-                      border: `1px solid ${SETUP_STATUS_COLORS[setupAnalysis.evaluation.status]}44`,
-                      borderRadius: 8,
-                      padding: 11,
-                      textAlign: 'center',
-                      fontSize: 12,
-                    }}
-                  >
-                    O plano está visível para explicar a formação, mas uma nova entrada está bloqueada no status atual.
-                  </div>
-                )}
-
-                <div
-                  style={{
-                    marginTop: 16,
-                    paddingTop: 16,
-                    borderTop: `1px solid ${S.border}`,
-                  }}
-                >
-                  <div style={{ fontSize: 13, fontWeight: 700, textAlign: 'center', marginBottom: 12 }}>
-                    Calculadora educacional de tamanho da posição
-                  </div>
-                  <div
-                    style={{
-                      display: 'flex',
-                      flexWrap: 'wrap',
-                      alignItems: 'flex-end',
-                      justifyContent: 'center',
-                      gap: 12,
-                    }}
-                  >
-                    {[
-                      {
-                        label: 'Saldo total (USDT)',
-                        value: accountBalance,
-                        setter: setAccountBalance,
-                        step: '0.01',
-                      },
-                      {
-                        label: 'Saldo disponível (USDT)',
-                        value: availableBalance,
-                        setter: setAvailableBalance,
-                        step: '0.01',
-                      },
-                      {
-                        label: 'Risco máximo (%)',
-                        value: riskPercent,
-                        setter: setRiskPercent,
-                        step: '0.1',
-                      },
-                    ].map((input) => (
-                      <label
-                        key={input.label}
-                        style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: 5,
-                          color: S.dim,
-                          fontSize: 11,
-                          textAlign: 'center',
-                        }}
-                      >
-                        {input.label}
-                        <input
-                          type="number"
-                          min="0"
-                          step={input.step}
-                          value={input.value}
-                          onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-                            input.setter(event.target.value)
-                          }
-                          style={{
-                            width: 170,
-                            maxWidth: '100%',
-                            background: S.bg,
-                            color: S.text,
-                            border: `1px solid ${S.border}`,
-                            borderRadius: 7,
-                            padding: '9px 10px',
-                            fontSize: 14,
-                            textAlign: 'center',
-                          }}
-                        />
-                      </label>
-                    ))}
-                  </div>
-
-                  {positionSizing && (
-                    <div style={{ marginTop: 14 }}>
-                      {positionSizing.ok ? (
-                        <>
-                          <div
-                            style={{
-                              display: 'grid',
-                              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-                              gap: 10,
-                            }}
-                          >
-                            {[
-                              ['Quantidade máxima', fmt(positionSizing.quantity, 8)],
-                              ['Valor da posição', `${fmt(positionSizing.notional)} USDT`],
-                              ['Perda máxima estimada', `${fmt(positionSizing.estimatedTotalRiskUsdt)} USDT`],
-                              ['Risco efetivo', `${fmt(positionSizing.estimatedTotalRiskPct, 2)}%`],
-                              ['Alvo líquido estimado', positionSizing.estimatedNetRewardUsdt === null ? '—' : `${fmt(positionSizing.estimatedNetRewardUsdt)} USDT`],
-                              ['Risco/retorno líquido', positionSizing.estimatedNetRiskRewardRatio === null ? '—' : `${fmt(positionSizing.estimatedNetRiskRewardRatio)}R`],
-                            ].map(([label, value]) => (
-                              <div
-                                key={label}
-                                style={{
-                                  background: S.panelSoft,
-                                  border: `1px solid ${S.border}`,
-                                  borderRadius: 8,
-                                  padding: 10,
-                                  textAlign: 'center',
-                                }}
-                              >
-                                <div style={{ color: S.dim, fontSize: 10 }}>{label}</div>
-                                <div style={{ color: S.text, fontSize: 14, fontWeight: 800, marginTop: 4 }}>
-                                  {value}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                          {positionSizing.warnings.length > 0 && (
-                            <div style={{ color: S.yellow, fontSize: 11, lineHeight: 1.5, marginTop: 10, textAlign: 'center' }}>
-                              {positionSizing.warnings.join(' ')}
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        <div
-                          style={{
-                            color: S.red,
-                            background: `${S.red}12`,
-                            border: `1px solid ${S.red}44`,
-                            borderRadius: 8,
-                            padding: 11,
-                            fontSize: 12,
-                            lineHeight: 1.5,
-                            textAlign: 'center',
-                          }}
-                        >
-                          {positionSizing.errors.join(' ')}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  <div style={{ color: S.dim, fontSize: 10, textAlign: 'center', marginTop: 10, lineHeight: 1.4 }}>
-                    Estimativa sem alavancagem. Taxas e slippage são considerados pelo motor de risco, mas os filtros exatos do ativo serão confirmados apenas na futura integração com a Testnet.
-                  </div>
-                </div>
-              </Card>
-            ) : (
-              <Card style={{ textAlign: 'center' }}>
-                <div style={{ color: S.dim, fontSize: 11, textTransform: 'uppercase' }}>
-                  Plano de operação
-                </div>
-                <div style={{ color: S.text, fontSize: 14, marginTop: 7 }}>
-                  Ainda não existe um plano válido de entrada, invalidação e alvo.
-                </div>
-                <div style={{ color: S.dim, fontSize: 11, marginTop: 5 }}>
-                  {setupAnalysis.evaluation.nextTrigger}
-                </div>
-              </Card>
+                {authError}
+              </div>
             )}
-          </>
-        )}
-
-        {status === 'done' && setupAnalysis.error && (
-          <Card style={{ borderColor: `${S.red}66`, color: S.red, textAlign: 'center' }}>
-            Erro no playbook: {setupAnalysis.error}
           </Card>
-        )}
-
-
-        <Card>
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              gap: 12,
-              flexWrap: 'wrap',
-              marginBottom: 14,
-            }}
-          >
-            <div>
-              <div style={{ fontSize: 15, fontWeight: 800 }}>
-                Setup persistido e Binance Testnet
-              </div>
-              <div style={{ color: S.dim, fontSize: 11, marginTop: 3 }}>
-                O servidor reavalia o candle encerrado antes de liberar qualquer prévia.
-              </div>
-            </div>
-            {!session && (
-              <a href="/alertas" style={{ color: S.green, fontSize: 12 }}>
-                Entre para usar os recursos conectados
-              </a>
-            )}
-          </div>
-
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
-              gap: 12,
-            }}
-          >
-            <div
-              style={{
-                background: S.panelSoft,
-                border: `1px solid ${S.border}`,
-                borderRadius: 9,
-                padding: 14,
-              }}
-            >
-              <div style={{ fontSize: 13, fontWeight: 700 }}>1. Setup no servidor</div>
-              <div style={{ color: S.dim, fontSize: 11, lineHeight: 1.5, marginTop: 5 }}>
-                Salva uma fotografia auditável do checklist, indicadores, entrada, stop e alvo.
-              </div>
-              <button
-                onClick={handlePersistSetup}
-                disabled={!session || status !== 'done' || serverAction.status === 'loading'}
-                style={{
-                  width: '100%',
-                  marginTop: 12,
-                  background: S.b,
-                  color: '#08131e',
-                  border: 'none',
-                  borderRadius: 7,
-                  padding: '10px 12px',
-                  fontWeight: 800,
-                  cursor: !session || status !== 'done' ? 'not-allowed' : 'pointer',
-                  opacity: !session || status !== 'done' ? 0.5 : 1,
-                }}
-              >
-                {serverAction.status === 'loading' ? 'Salvando...' : 'Salvar ou atualizar setup'}
-              </button>
-
-              {serverSetup && (
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                    gap: 8,
-                    marginTop: 12,
-                  }}
-                >
-                  {[
-                    ['Mercado', `${serverSetup.symbol} · ${serverSetup.timeframe}`],
-                    ['Status', TREND_BREAKOUT_STATUS_LABELS[serverSetup.status]?.label ?? serverSetup.status],
-                    ['Checklist', `${serverSetup.score}/${serverSetup.total_conditions}`],
-                    ['Candle', formatDateTime(serverSetup.candle_close_time)],
-                  ].map(([label, value]) => (
-                    <div key={label} style={{ textAlign: 'center' }}>
-                      <div style={{ color: S.dim, fontSize: 10 }}>{label}</div>
-                      <div style={{ fontSize: 12, fontWeight: 700, marginTop: 3 }}>{value}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {serverAction.message && (
-                <div
-                  style={{
-                    marginTop: 10,
-                    color: serverAction.status === 'error' ? S.red : serverAction.status === 'success' ? S.green : S.dim,
-                    fontSize: 11,
-                    lineHeight: 1.45,
-                    textAlign: 'center',
-                  }}
-                >
-                  {serverAction.message}
-                </div>
-              )}
-            </div>
-
-            <div
-              style={{
-                background: S.panelSoft,
-                border: `1px solid ${S.border}`,
-                borderRadius: 9,
-                padding: 14,
-              }}
-            >
-              <div style={{ fontSize: 13, fontWeight: 700 }}>2. Ordem simulada na Testnet</div>
-              <div style={{ color: S.dim, fontSize: 11, lineHeight: 1.5, marginTop: 5 }}>
-                A prévia valida saldo, limite por ordem, filtros do ativo, atraso da entrada e risco máximo.
-              </div>
-
-              <button
-                onClick={handlePreviewTestnet}
-                disabled={!session || status !== 'done' || testnetAction.status === 'loading'}
-                style={{
-                  width: '100%',
-                  marginTop: 12,
-                  background: S.a,
-                  color: '#1a1206',
-                  border: 'none',
-                  borderRadius: 7,
-                  padding: '10px 12px',
-                  fontWeight: 800,
-                  cursor: !session || status !== 'done' ? 'not-allowed' : 'pointer',
-                  opacity: !session || status !== 'done' ? 0.5 : 1,
-                }}
-              >
-                {testnetAction.status === 'loading' ? 'Validando...' : 'Gerar prévia Testnet'}
-              </button>
-
-              {testnetPreview && (
-                <>
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                      gap: 8,
-                      marginTop: 12,
-                    }}
-                  >
-                    {[
-                      ['Preço Testnet', `${fmtPrice(testnetPreview.market.testnet_price)} USDT`],
-                      ['Valor da ordem', `${fmt(testnetPreview.execution.quote_amount)} USDT`],
-                      ['Stop', `${fmtPrice(testnetPreview.plan.stop_reference)} USDT`],
-                      ['Alvo', `${fmtPrice(testnetPreview.plan.target_reference)} USDT`],
-                      ['Risco estimado', `${fmt(nullableNumber(testnetPreview.sizing.estimatedTotalRiskUsdt) ?? 0)} USDT`],
-                      ['Expira em', formatDateTime(testnetPreview.setup.expires_at)],
-                    ].map(([label, value]) => (
-                      <div
-                        key={label}
-                        style={{
-                          border: `1px solid ${S.border}`,
-                          borderRadius: 7,
-                          padding: 8,
-                          textAlign: 'center',
-                        }}
-                      >
-                        <div style={{ color: S.dim, fontSize: 9 }}>{label}</div>
-                        <div style={{ fontSize: 12, fontWeight: 750, marginTop: 3 }}>{value}</div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: 8,
-                      marginTop: 12,
-                      color: S.text,
-                      fontSize: 11,
-                      lineHeight: 1.45,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={confirmTestnet}
-                      onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-                        setConfirmTestnet(event.target.checked)
-                      }
-                      style={{ marginTop: 2 }}
-                    />
-                    Confirmo que esta ordem será enviada exclusivamente à Binance Spot Testnet e poderá gerar saldo e resultados simulados.
-                  </label>
-
-                  <button
-                    onClick={handleExecuteTestnet}
-                    disabled={!confirmTestnet || testnetAction.status === 'loading'}
-                    style={{
-                      width: '100%',
-                      marginTop: 10,
-                      background: confirmTestnet ? S.green : S.border,
-                      color: confirmTestnet ? '#07140c' : S.dim,
-                      border: 'none',
-                      borderRadius: 7,
-                      padding: '10px 12px',
-                      fontWeight: 800,
-                      cursor: confirmTestnet ? 'pointer' : 'not-allowed',
-                    }}
-                  >
-                    Confirmar ordem na Testnet
-                  </button>
-                </>
-              )}
-
-              {testnetAction.message && (
-                <div
-                  style={{
-                    marginTop: 10,
-                    color: testnetAction.status === 'error' ? S.red : testnetAction.status === 'success' ? S.green : S.dim,
-                    fontSize: 11,
-                    lineHeight: 1.45,
-                    textAlign: 'center',
-                  }}
-                >
-                  {testnetAction.message}
-                </div>
-              )}
-            </div>
-          </div>
-        </Card>
-
-        <Card>
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              gap: 12,
-              flexWrap: 'wrap',
-              marginBottom: 12,
-            }}
-          >
-            <div>
-              <div style={{ fontSize: 15, fontWeight: 800 }}>Alertas automáticos do playbook</div>
-              <div style={{ color: S.dim, fontSize: 11, marginTop: 3 }}>
-                Mercado atual: {status === 'done' ? usedSymbolA : symbolA} · {status === 'done' ? usedTimeframe : timeframe}
-              </div>
-            </div>
-            {alertRule && (
-              <div style={{ color: alertRule.ativo ? S.green : S.dim, fontSize: 11, fontWeight: 700 }}>
-                {alertRule.ativo ? '● REGRA ATIVA' : '○ REGRA PAUSADA'}
-              </div>
-            )}
-          </div>
-
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-              gap: 12,
-              alignItems: 'start',
-            }}
-          >
-            <label
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                color: S.text,
-                fontSize: 12,
-                paddingTop: 8,
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={alertEnabled}
-                onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-                  setAlertEnabled(event.target.checked)
-                }
-              />
-              Monitoramento ativo
-            </label>
-
-            <label style={{ color: S.dim, fontSize: 11, textAlign: 'center' }}>
-              Cooldown em minutos
-              <input
-                type="number"
-                min="0"
-                max="1440"
-                step="1"
-                value={alertCooldownMinutes}
-                onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-                  setAlertCooldownMinutes(event.target.value)
-                }
-                style={{
-                  width: '100%',
-                  boxSizing: 'border-box',
-                  marginTop: 5,
-                  background: S.bg,
-                  color: S.text,
-                  border: `1px solid ${S.border}`,
-                  borderRadius: 7,
-                  padding: '8px 10px',
-                  textAlign: 'center',
-                }}
-              />
-            </label>
-
-            <div style={{ gridColumn: '1 / -1' }}>
-              <div style={{ color: S.dim, fontSize: 11, textAlign: 'center', marginBottom: 7 }}>
-                Avisar quando o setup entrar em:
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'center', flexWrap: 'wrap', gap: 10 }}>
-                {([
-                  ['observar', 'Observar'],
-                  ['condicoes_atendidas', 'Condições atendidas'],
-                  ['entrada_atrasada', 'Entrada atrasada'],
-                  ['invalidado', 'Invalidado'],
-                ] as Array<[DayTradeAlertableStatus, string]>).map(([value, label]) => (
-                  <label
-                    key={value}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      border: `1px solid ${S.border}`,
-                      borderRadius: 7,
-                      padding: '7px 9px',
-                      color: S.text,
-                      fontSize: 11,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={alertNotifyStatuses.includes(value)}
-                      onChange={() => toggleAlertStatus(value)}
-                    />
-                    {label}
-                  </label>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'center', gap: 10, flexWrap: 'wrap', marginTop: 13 }}>
-            <button
-              onClick={handleSaveAlertRule}
-              disabled={!session || alertAction.status === 'loading'}
-              style={{
-                background: S.green,
-                color: '#07140c',
-                border: 'none',
-                borderRadius: 7,
-                padding: '9px 15px',
-                fontWeight: 800,
-                cursor: session ? 'pointer' : 'not-allowed',
-                opacity: session ? 1 : 0.5,
-              }}
-            >
-              {alertRule ? 'Atualizar alerta' : 'Criar alerta'}
-            </button>
-            {alertRule && (
-              <button
-                onClick={handleDeleteAlertRule}
-                disabled={alertAction.status === 'loading'}
-                style={{
-                  background: 'transparent',
-                  color: S.red,
-                  border: `1px solid ${S.red}66`,
-                  borderRadius: 7,
-                  padding: '9px 15px',
-                  cursor: 'pointer',
-                }}
-              >
-                Remover regra
-              </button>
-            )}
-          </div>
-
-          {alertRule?.last_status && (
-            <div style={{ color: S.dim, fontSize: 10, textAlign: 'center', marginTop: 9 }}>
-              Último status: {TREND_BREAKOUT_STATUS_LABELS[alertRule.last_status]?.label ?? alertRule.last_status}
-              {' · '}último disparo: {formatDateTime(alertRule.last_triggered_at)}
-            </div>
-          )}
-
-          {alertAction.message && (
-            <div
-              style={{
-                color: alertAction.status === 'error' ? S.red : alertAction.status === 'success' ? S.green : S.dim,
-                fontSize: 11,
-                textAlign: 'center',
-                marginTop: 10,
-              }}
-            >
-              {alertAction.message}
-            </div>
-          )}
-        </Card>
-
-        <Card>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 12,
-              flexWrap: 'wrap',
-              marginBottom: 12,
-            }}
-          >
-            <div>
-              <div style={{ fontSize: 15, fontWeight: 800 }}>Diário de operações</div>
-              <div style={{ color: S.dim, fontSize: 11, marginTop: 3 }}>
-                Atualizado pelo monitor de ordens após entrada, alvo, stop ou erro de proteção.
-              </div>
-            </div>
-            <button
-              onClick={() => void loadJournal()}
-              disabled={!session || journalAction.status === 'loading'}
-              style={{
-                background: 'transparent',
-                color: S.b,
-                border: `1px solid ${S.border}`,
-                borderRadius: 7,
-                padding: '7px 11px',
-                cursor: session ? 'pointer' : 'not-allowed',
-              }}
-            >
-              Atualizar diário
-            </button>
-          </div>
-
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-              gap: 9,
-              marginBottom: 12,
-            }}
-          >
-            {[
-              ['Registros', String(journal.length)],
-              ['Abertas', String(journalSummary.open)],
-              ['Encerradas', String(journalSummary.closed)],
-              ['PnL líquido', `${fmt(journalSummary.netPnl)} USDT`],
-              ['Média em R', journalSummary.averageR === null ? '—' : `${fmt(journalSummary.averageR)}R`],
-            ].map(([label, value]) => (
-              <div
-                key={label}
-                style={{
-                  background: S.panelSoft,
-                  border: `1px solid ${S.border}`,
-                  borderRadius: 8,
-                  padding: 10,
-                  textAlign: 'center',
-                }}
-              >
-                <div style={{ color: S.dim, fontSize: 10 }}>{label}</div>
-                <div style={{ fontSize: 14, fontWeight: 800, marginTop: 3 }}>{value}</div>
-              </div>
-            ))}
-          </div>
-
-          {journal.length > 0 ? (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11, minWidth: 880 }}>
-                <thead>
-                  <tr>
-                    {['Data', 'Mercado', 'Modo', 'Status', 'Entrada', 'Saída', 'PnL', 'Resultado'].map((label) => (
-                      <th
-                        key={label}
-                        style={{
-                          color: S.dim,
-                          borderBottom: `1px solid ${S.border}`,
-                          padding: '8px 7px',
-                          textAlign: 'center',
-                        }}
-                      >
-                        {label}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {journal.map((row) => {
-                    const pnl = nullableNumber(row.pnl_usdt);
-                    const resultR = nullableNumber(row.result_r);
-                    return (
-                      <tr key={row.id}>
-                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}` }}>
-                          {formatDateTime(row.criado_em)}
-                        </td>
-                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}`, fontWeight: 700 }}>
-                          {row.symbol} · {row.timeframe}
-                        </td>
-                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}` }}>
-                          {row.mode}
-                        </td>
-                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}`, color: journalStatusColor(row.status), fontWeight: 700 }}>
-                          {journalStatusLabel(row.status)}
-                        </td>
-                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}` }}>
-                          {fmtPrice(nullableNumber(row.entry_price) ?? nullableNumber(row.entry_reference) ?? 0)}
-                        </td>
-                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}` }}>
-                          {row.exit_price === null ? '—' : fmtPrice(nullableNumber(row.exit_price) ?? 0)}
-                        </td>
-                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}`, color: pnl === null ? S.dim : pnl >= 0 ? S.green : S.red }}>
-                          {pnl === null ? '—' : `${fmt(pnl)} USDT`}
-                        </td>
-                        <td style={{ padding: '8px 7px', textAlign: 'center', borderBottom: `1px solid ${S.border}`, color: resultR === null ? S.dim : resultR >= 0 ? S.green : S.red }}>
-                          {resultR === null ? '—' : `${fmt(resultR)}R`}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div style={{ color: S.dim, fontSize: 11, textAlign: 'center', padding: 10 }}>
-              {session ? 'Nenhuma operação registrada.' : 'Entre para consultar o diário.'}
-            </div>
-          )}
-
-          {journalAction.status === 'error' && (
-            <div style={{ color: S.red, fontSize: 11, textAlign: 'center', marginTop: 9 }}>
-              {journalAction.message}
-            </div>
-          )}
-        </Card>
-
-        <Card>
-          <div style={{ textAlign: 'center', marginBottom: 13 }}>
-            <div style={{ fontSize: 15, fontWeight: 800 }}>Backtest do playbook</div>
-            <div style={{ color: S.dim, fontSize: 11, lineHeight: 1.5, marginTop: 4 }}>
-              Sinal no fechamento, entrada na abertura seguinte, uma posição por vez e custos incluídos.
-            </div>
-          </div>
-
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-              gap: 10,
-              alignItems: 'end',
-            }}
-          >
-            {([
-              ['Candles', backtestCandleCount, setBacktestCandleCount, '1'],
-              ['Capital inicial', backtestInitialCapital, setBacktestInitialCapital, '0.01'],
-              ['Risco (%)', backtestRiskPercent, setBacktestRiskPercent, '0.1'],
-              ['Taxa por execução (%)', backtestFeeRate, setBacktestFeeRate, '0.01'],
-              ['Slippage (%)', backtestSlippage, setBacktestSlippage, '0.01'],
-              ['Máx. candles na posição', backtestMaximumHolding, setBacktestMaximumHolding, '1'],
-            ] as Array<[string, string, (next: string) => void, string]>).map(
-              ([label, value, setter, step]) => (
-              <label key={label} style={{ color: S.dim, fontSize: 10, textAlign: 'center' }}>
-                {label}
-                <input
-                  type="number"
-                  min="0"
-                  step={step}
-                  value={value}
-                  onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-                    setter(event.target.value)
-                  }
-                  style={{
-                    width: '100%',
-                    boxSizing: 'border-box',
-                    marginTop: 5,
-                    background: S.bg,
-                    color: S.text,
-                    border: `1px solid ${S.border}`,
-                    borderRadius: 7,
-                    padding: '8px 9px',
-                    textAlign: 'center',
-                  }}
-                />
-              </label>
-            ))}
-
-            <label style={{ color: S.dim, fontSize: 10, textAlign: 'center' }}>
-              Mesmo candle toca stop e alvo
-              <select
-                value={backtestPriority}
-                onChange={(event: React.ChangeEvent<HTMLSelectElement>) =>
-                  setBacktestPriority(event.target.value as 'stop_first' | 'target_first')
-                }
-                style={{
-                  width: '100%',
-                  marginTop: 5,
-                  background: S.bg,
-                  color: S.text,
-                  border: `1px solid ${S.border}`,
-                  borderRadius: 7,
-                  padding: '8px 9px',
-                  textAlign: 'center',
-                }}
-              >
-                <option value="stop_first">Stop primeiro — conservador</option>
-                <option value="target_first">Alvo primeiro</option>
-              </select>
-            </label>
-          </div>
-
-          <div style={{ display: 'flex', justifyContent: 'center', marginTop: 13 }}>
-            <button
-              onClick={handleRunBacktest}
-              disabled={!session || backtestAction.status === 'loading'}
-              style={{
-                background: S.b,
-                color: '#08131e',
-                border: 'none',
-                borderRadius: 7,
-                padding: '10px 22px',
-                fontWeight: 800,
-                cursor: session ? 'pointer' : 'not-allowed',
-                opacity: session ? 1 : 0.5,
-              }}
-            >
-              {backtestAction.status === 'loading' ? 'Simulando...' : `Executar backtest de ${status === 'done' ? usedSymbolA : symbolA}`}
-            </button>
-          </div>
-
-          {backtestAction.message && (
-            <div
-              style={{
-                color: backtestAction.status === 'error' ? S.red : backtestAction.status === 'success' ? S.green : S.dim,
-                fontSize: 11,
-                textAlign: 'center',
-                marginTop: 10,
-              }}
-            >
-              {backtestAction.message}
-            </div>
-          )}
-
-          {backtestResponse && (
-            <>
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(145px, 1fr))',
-                  gap: 9,
-                  marginTop: 15,
-                }}
-              >
-                {[
-                  ['Capital final', `${fmt(backtestResponse.result.metrics.finalCapitalUsdt)} USDT`],
-                  ['Retorno líquido', `${fmt(backtestResponse.result.metrics.netReturnPct)}%`],
-                  ['Operações', String(backtestResponse.result.metrics.totalTrades)],
-                  ['Taxa de acerto', `${fmt(backtestResponse.result.metrics.winRatePct)}%`],
-                  ['Fator de lucro', backtestResponse.result.metrics.profitFactor === null ? '—' : fmt(backtestResponse.result.metrics.profitFactor)],
-                  ['Média', `${fmt(backtestResponse.result.metrics.averageR)}R`],
-                  ['Drawdown máximo', `${fmt(backtestResponse.result.metrics.maximumDrawdownPct)}%`],
-                  ['Sequência de perdas', String(backtestResponse.result.metrics.maximumConsecutiveLosses)],
-                  ['Exposição', `${fmt(backtestResponse.result.metrics.exposurePct)}%`],
-                ].map(([label, value]) => (
-                  <div
-                    key={label}
-                    style={{
-                      background: S.panelSoft,
-                      border: `1px solid ${S.border}`,
-                      borderRadius: 8,
-                      padding: 10,
-                      textAlign: 'center',
-                    }}
-                  >
-                    <div style={{ color: S.dim, fontSize: 9 }}>{label}</div>
-                    <div style={{ fontSize: 14, fontWeight: 800, marginTop: 3 }}>{value}</div>
-                  </div>
-                ))}
-              </div>
-
-              {backtestEquityData.length > 0 && (
-                <div style={{ height: 330, marginTop: 16 }}>
-                  <div style={{ color: S.dim, fontSize: 11, textAlign: 'center', marginBottom: 6 }}>
-                    Curva de patrimônio — {backtestResponse.symbol} · {backtestResponse.timeframe}
-                  </div>
-                  <ResponsiveContainer width="100%" height="92%">
-                    <LineChart data={backtestEquityData} margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
-                      <CartesianGrid stroke={S.border} strokeDasharray="3 3" />
-                      <XAxis dataKey="label" stroke={S.dim} tick={{ fontSize: 10 }} minTickGap={28} />
-                      <YAxis stroke={S.dim} tick={{ fontSize: 10 }} domain={['auto', 'auto']} />
-                      <Tooltip contentStyle={tooltipStyle} />
-                      <Legend />
-                      <Line type="monotone" dataKey="Patrimônio" stroke={S.green} strokeWidth={2.2} dot={false} isAnimationActive={false} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-
-              {backtestResponse.result.trades.length > 0 && (
-                <div style={{ overflowX: 'auto', marginTop: 12 }}>
-                  <div style={{ color: S.dim, fontSize: 11, textAlign: 'center', marginBottom: 5 }}>
-                    Últimas operações simuladas
-                  </div>
-                  <table style={{ width: '100%', minWidth: 850, borderCollapse: 'collapse', fontSize: 10 }}>
-                    <thead>
-                      <tr>
-                        {['Entrada', 'Saída', 'Motivo', 'Qtd.', 'PnL líquido', 'R', 'Patrimônio'].map((label) => (
-                          <th key={label} style={{ color: S.dim, borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center' }}>
-                            {label}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {backtestResponse.result.trades.slice(-15).reverse().map((trade) => (
-                        <tr key={trade.id}>
-                          <td style={{ borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center' }}>
-                            {formatDateTime(trade.entryTime)}<br />{fmtPrice(trade.entryPrice)}
-                          </td>
-                          <td style={{ borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center' }}>
-                            {formatDateTime(trade.exitTime)}<br />{fmtPrice(trade.exitPrice)}
-                          </td>
-                          <td style={{ borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center' }}>
-                            {backtestExitLabel(trade.exitReason)}
-                          </td>
-                          <td style={{ borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center' }}>
-                            {fmt(trade.quantity, 8)}
-                          </td>
-                          <td style={{ borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center', color: trade.netPnlUsdt >= 0 ? S.green : S.red }}>
-                            {fmt(trade.netPnlUsdt)} USDT
-                          </td>
-                          <td style={{ borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center', color: trade.resultR >= 0 ? S.green : S.red }}>
-                            {fmt(trade.resultR)}R
-                          </td>
-                          <td style={{ borderBottom: `1px solid ${S.border}`, padding: 7, textAlign: 'center' }}>
-                            {fmt(trade.equityAfter)} USDT
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {backtestResponse.result.warnings.length > 0 && (
-                <div style={{ color: S.yellow, fontSize: 10, lineHeight: 1.5, textAlign: 'center', marginTop: 10 }}>
-                  {backtestResponse.result.warnings.join(' ')}
-                </div>
-              )}
-            </>
-          )}
-        </Card>
-
-        {history.length > 0 && (
-          <Card>
-            <div
+        ) : (
+          <>
+            <Card
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 gap: 12,
-                marginBottom: 10,
                 flexWrap: 'wrap',
               }}
             >
-              <div style={{ fontSize: 13, fontWeight: 700 }}>
-                Últimas análises de Day Trade
-              </div>
-              <button
-                onClick={clearHistory}
-                style={{
-                  background: 'transparent',
-                  border: `1px solid ${S.border}`,
-                  borderRadius: 6,
-                  color: S.dim,
-                  padding: '5px 9px',
-                  fontSize: 11,
-                  cursor: 'pointer',
-                }}
-              >
-                Limpar histórico
-              </button>
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {history.slice(0, 8).map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => run({
-                    symbolA: item.symbolA,
-                    symbolB: item.symbolB,
-                    timeframe: item.timeframe,
-                    periodLabel: item.periodLabel,
-                  })}
+              <div>
+                <div
                   style={{
-                    background: 'transparent',
-                    border: `1px solid ${S.border}`,
-                    borderRadius: 8,
-                    padding: '8px 12px',
-                    color: S.text,
-                    fontSize: 12,
-                    cursor: 'pointer',
-                    textAlign: 'center',
+                    color: S.textStrong,
+                    fontSize: 15,
+                    fontWeight: 800,
                   }}
                 >
-                  {item.symbolA}
-                  {item.symbolB !== 'nenhum' ? ` × ${item.symbolB}` : ''}
-                  {' '}· {TIMEFRAMES[item.timeframe].label}
-                  {' '}· {item.periodLabel}
-                  <span style={{ color: item.returnA >= 0 ? S.green : S.red }}>
-                    {' '}· {fmtPct(item.returnA)}
-                  </span>
-                  {item.correlation !== null && (
-                    <span style={{ color: S.dim }}>
-                      {' '}· corr {fmt(item.correlation)}
-                    </span>
-                  )}
-                  <span style={{ color: S.dim }}>
-                    {' '}· {fmtDateTime(item.createdAt)}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </Card>
-        )}
+                  Suas oportunidades monitoradas
+                </div>
+                <div
+                  style={{
+                    color: S.dim,
+                    fontSize: 11,
+                    marginTop: 4,
+                    lineHeight: 1.45,
+                  }}
+                >
+                  O VigIA identifica e acompanha cenários. Você
+                  revisa cada entrada antes de qualquer etapa de
+                  execução.
+                </div>
+              </div>
 
-        {status === 'done' && statsA && (
-          <>
-            <Card style={{ overflowX: 'auto' }}>
-              <table
+              <div
                 style={{
-                  width: '100%',
-                  borderCollapse: 'collapse',
-                  minWidth: statsB ? 680 : 500,
-                  fontSize: 14,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'flex-end',
+                  gap: 8,
+                  flexWrap: 'wrap',
                 }}
               >
-                <thead>
-                  <tr>
-                    <th style={{ padding: '10px 12px', color: S.dim, borderBottom: `1px solid ${S.border}`, textAlign: 'center' }}>
-                      Métrica ({usedPeriod.label} · {TIMEFRAMES[usedTimeframe].shortLabel})
-                    </th>
-                    <th style={{ padding: '10px 12px', color: S.a, borderBottom: `1px solid ${S.border}`, textAlign: 'center' }}>
-                      {usedSymbolA}
-                    </th>
-                    {statsB && (
-                      <th style={{ padding: '10px 12px', color: S.b, borderBottom: `1px solid ${S.border}`, textAlign: 'center' }}>
-                        {usedSymbolB}
-                      </th>
-                    )}
-                  </tr>
-                </thead>
-                <tbody>
-                  {metricRows.map((row) => (
-                    <tr key={row.label} title={row.tip}>
-                      <td style={{ padding: '9px 12px', color: S.dim, borderBottom: `1px solid ${S.border}`, textAlign: 'center' }}>
-                        {row.label}
-                      </td>
-                      <td style={{ padding: '9px 12px', borderBottom: `1px solid ${S.border}`, textAlign: 'center', color: row.color?.(statsA) ?? S.text }}>
-                        {row.get(statsA)}
-                      </td>
-                      {statsB && (
-                        <td style={{ padding: '9px 12px', borderBottom: `1px solid ${S.border}`, textAlign: 'center', color: row.color?.(statsB) ?? S.text }}>
-                          {row.get(statsB)}
-                        </td>
-                      )}
-                    </tr>
-                  ))}
-                  <tr>
-                    <td style={{ padding: '10px 12px', color: S.dim, textAlign: 'center' }}>
-                      Regime atual
-                    </td>
-                    <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-                      <RegimeBadge regime={statsA.regime} />
-                    </td>
-                    {statsB && (
-                      <td style={{ padding: '10px 12px', textAlign: 'center' }}>
-                        <RegimeBadge regime={statsB.regime} />
-                      </td>
-                    )}
-                  </tr>
-                </tbody>
-              </table>
+                <span
+                  title={realtimePresentation.detail}
+                  style={{
+                    color: realtimePresentation.color,
+                    fontSize: 10,
+                    fontWeight: 850,
+                    letterSpacing: 0.4,
+                  }}
+                >
+                  {realtimePresentation.label}
+                </span>
+
+                <button
+                  type="button"
+                  onClick={() => void load()}
+                  disabled={loadState === 'loading'}
+                  style={{
+                    ...subtleButtonStyle,
+                    opacity:
+                      loadState === 'loading' ? 0.6 : 1,
+                  }}
+                >
+                  {loadState === 'loading'
+                    ? 'Atualizando...'
+                    : 'Atualizar'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    void synchronizeSetups()
+                  }
+                  disabled={
+                    syncFeedback.state === 'loading'
+                  }
+                  style={{
+                    ...subtleButtonStyle,
+                    color: S.blue,
+                    borderColor: `${S.blue}77`,
+                    opacity:
+                      syncFeedback.state === 'loading'
+                        ? 0.6
+                        : 1,
+                  }}
+                >
+                  {syncFeedback.state === 'loading'
+                    ? 'Sincronizando...'
+                    : 'Sincronizar setups'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    void updateTheoreticalResults()
+                  }
+                  disabled={
+                    trackingFeedback.state === 'loading'
+                  }
+                  style={{
+                    ...subtleButtonStyle,
+                    color: S.green,
+                    borderColor: `${S.green}77`,
+                    opacity:
+                      trackingFeedback.state === 'loading'
+                        ? 0.6
+                        : 1,
+                  }}
+                >
+                  {trackingFeedback.state === 'loading'
+                    ? 'Calculando...'
+                    : 'Atualizar resultados'}
+                </button>
+              </div>
             </Card>
 
-            {statsB && (
-              <Card style={{ textAlign: 'center' }}>
-                <div style={{ color: S.dim, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.6 }}>
-                  Correlação dos retornos intradiários
-                </div>
-                <div style={{ fontSize: 28, fontWeight: 700, marginTop: 4, color: correlationValue === null ? S.dim : S.text }}>
-                  {correlationValue === null ? '—' : fmt(correlationValue)}
-                </div>
-                <div style={{ color: S.dim, fontSize: 12, marginTop: 3 }}>
-                  {correlationText(correlationValue)} · apenas o histórico do período selecionado
+            {loadError && (
+              <Card
+                style={{
+                  borderColor: `${S.red}88`,
+                  background: `${S.red}08`,
+                }}
+              >
+                <div
+                  style={{
+                    color: S.red,
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {loadError}
                 </div>
               </Card>
             )}
 
-            <Card style={{ height: 410 }}>
-              <div style={{ textAlign: 'center', color: S.dim, fontSize: 13, marginBottom: 8 }}>
-                Preço, médias e nível de rompimento — {usedSymbolA}
-              </div>
-              <ResponsiveContainer width="100%" height="92%">
-                <LineChart data={charts.technical} margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
-                  <CartesianGrid stroke={S.border} strokeDasharray="3 3" />
-                  <XAxis dataKey="label" stroke={S.dim} tick={{ fontSize: 11 }} minTickGap={30} />
-                  <YAxis stroke={S.dim} tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
-                  <Tooltip contentStyle={tooltipStyle} />
-                  <Legend />
-                  <Line type="monotone" dataKey="Preço" stroke={S.text} strokeWidth={2.2} dot={false} isAnimationActive={false} />
-                  <Line type="monotone" dataKey="EMA 20" stroke={S.green} strokeWidth={1.5} dot={false} connectNulls isAnimationActive={false} />
-                  <Line type="monotone" dataKey="EMA 50" stroke={S.a} strokeWidth={1.5} dot={false} connectNulls isAnimationActive={false} />
-                  <Line type="monotone" dataKey="EMA 200" stroke={S.b} strokeWidth={1.7} dot={false} connectNulls isAnimationActive={false} />
-                  <Line type="stepAfter" dataKey="Rompimento" stroke={S.yellow} strokeWidth={1.4} strokeDasharray="5 4" dot={false} connectNulls isAnimationActive={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </Card>
+            {syncFeedback.message && (
+              <Card
+                style={{
+                  padding: '10px 13px',
+                  borderColor:
+                    syncFeedback.state === 'error'
+                      ? `${S.red}88`
+                      : `${S.blue}66`,
+                }}
+              >
+                <div
+                  style={{
+                    color:
+                      syncFeedback.state === 'error'
+                        ? S.red
+                        : S.blue,
+                    fontSize: 11,
+                  }}
+                >
+                  {syncFeedback.message}
+                </div>
+              </Card>
+            )}
 
-            <Card style={{ height: 390 }}>
-              <div style={{ textAlign: 'center', color: S.dim, fontSize: 13, marginBottom: 8 }}>
-                Performance (base 100 no primeiro candle alinhado) — {TIMEFRAMES[usedTimeframe].label} · {usedPeriod.label}
-              </div>
-              <ResponsiveContainer width="100%" height="92%">
-                <LineChart data={charts.performance} margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
-                  <CartesianGrid stroke={S.border} strokeDasharray="3 3" />
-                  <XAxis dataKey="label" stroke={S.dim} tick={{ fontSize: 11 }} minTickGap={30} />
-                  <YAxis stroke={S.dim} tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
-                  <Tooltip contentStyle={tooltipStyle} />
-                  <Legend />
-                  <ReferenceLine y={100} stroke={S.dim} strokeDasharray="5 5" />
-                  <Line type="monotone" dataKey={usedSymbolA} stroke={S.a} strokeWidth={2.2} dot={false} isAnimationActive={false} />
-                  {statsB && (
-                    <Line type="monotone" dataKey={usedSymbolB} stroke={S.b} strokeWidth={2.2} dot={false} isAnimationActive={false} />
-                  )}
-                </LineChart>
-              </ResponsiveContainer>
-            </Card>
+            {trackingFeedback.message && (
+              <Card
+                style={{
+                  padding: '10px 13px',
+                  borderColor:
+                    trackingFeedback.state === 'error'
+                      ? `${S.red}88`
+                      : `${S.green}66`,
+                }}
+              >
+                <div
+                  style={{
+                    color:
+                      trackingFeedback.state === 'error'
+                        ? S.red
+                        : S.green,
+                    fontSize: 11,
+                  }}
+                >
+                  {trackingFeedback.message}
+                </div>
+              </Card>
+            )}
 
-            <Card style={{ height: 390 }}>
-              <div style={{ textAlign: 'center', color: S.dim, fontSize: 13, marginBottom: 8 }}>
-                Volatilidade realizada anualizada (%) — {TIMEFRAMES[usedTimeframe].volWindowLabel}
-              </div>
-              <ResponsiveContainer width="100%" height="92%">
-                <LineChart data={charts.volatility} margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
-                  <CartesianGrid stroke={S.border} strokeDasharray="3 3" />
-                  <XAxis dataKey="label" stroke={S.dim} tick={{ fontSize: 11 }} minTickGap={30} />
-                  <YAxis stroke={S.dim} tick={{ fontSize: 11 }} domain={[0, 'auto']} />
-                  <Tooltip contentStyle={tooltipStyle} />
-                  <Legend />
-                  <Line type="monotone" dataKey={usedSymbolA} stroke={S.a} strokeWidth={2.2} dot={false} connectNulls isAnimationActive={false} />
-                  {statsB && (
-                    <Line type="monotone" dataKey={usedSymbolB} stroke={S.b} strokeWidth={2.2} dot={false} connectNulls isAnimationActive={false} />
-                  )}
-                </LineChart>
-              </ResponsiveContainer>
-            </Card>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns:
+                  'repeat(auto-fit, minmax(130px, 1fr))',
+                gap: 8,
+              }}
+            >
+              <MetricCard
+                label="Novas"
+                value={String(metrics.unreadOpportunities)}
+                detail="Ainda não visualizadas"
+                tone={
+                  metrics.unreadOpportunities > 0
+                    ? 'warning'
+                    : 'muted'
+                }
+              />
+              <MetricCard
+                label="Pendentes"
+                value={String(metrics.pendingOpportunities)}
+                detail="Análise ou revalidação"
+                tone="info"
+              />
+              <MetricCard
+                label="Posições"
+                value={String(metrics.openPositions)}
+                detail="Abrindo ou abertas"
+                tone="positive"
+              />
+              <MetricCard
+                label="Saídas"
+                value={String(metrics.pendingExits)}
+                detail="Aguardando tratamento"
+                tone={
+                  metrics.pendingExits > 0
+                    ? 'danger'
+                    : 'muted'
+                }
+              />
+              <MetricCard
+                label="Atenção"
+                value={String(metrics.attentionRequired)}
+                detail="Erros ou prioridade crítica"
+                tone={
+                  metrics.attentionRequired > 0
+                    ? 'critical'
+                    : 'muted'
+                }
+              />
+              <MetricCard
+                label="Teórico"
+                value={fmtR(metrics.theoreticalResultR)}
+                detail={`${metrics.theoreticalWins} ganhos · ${metrics.theoreticalLosses} perdas`}
+                tone={
+                  metrics.theoreticalResultR > 0
+                    ? 'positive'
+                    : metrics.theoreticalResultR < 0
+                      ? 'danger'
+                      : 'neutral'
+                }
+              />
+            </div>
 
-            <Card style={{ height: 390 }}>
-              <div style={{ textAlign: 'center', color: S.dim, fontSize: 13, marginBottom: 8 }}>
-                Volume financeiro por candle — milhões de USDT
-              </div>
-              <ResponsiveContainer width="100%" height="92%">
-                <BarChart data={charts.volume} margin={{ top: 8, right: 12, left: 0, bottom: 8 }}>
-                  <CartesianGrid stroke={S.border} strokeDasharray="3 3" />
-                  <XAxis dataKey="label" stroke={S.dim} tick={{ fontSize: 11 }} minTickGap={30} />
-                  <YAxis stroke={S.dim} tick={{ fontSize: 11 }} domain={[0, 'auto']} />
-                  <Tooltip contentStyle={tooltipStyle} />
-                  <Legend />
-                  <Bar dataKey={usedSymbolA} fill={S.a} isAnimationActive={false} />
-                  {statsB && (
-                    <Bar dataKey={usedSymbolB} fill={S.b} isAnimationActive={false} />
-                  )}
-                </BarChart>
-              </ResponsiveContainer>
-            </Card>
+            {sectioned.attention.length > 0 && (
+              <Card
+                style={{
+                  borderColor: `${S.red}88`,
+                  background: `${S.red}06`,
+                }}
+              >
+                <SectionTitle
+                  title="Requer atenção"
+                  subtitle="Falhas, estados críticos ou situações que não devem ficar escondidas no histórico."
+                />
+                {renderOpportunityGrid(
+                  sectioned.attention,
+                  'Nenhum alerta crítico',
+                  'As situações críticas aparecerão aqui.',
+                )}
+              </Card>
+            )}
 
-            <Card>
+            <Card style={{ padding: 8 }}>
               <div
                 style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  gap: 8,
-                  marginBottom: 12,
+                  display: 'grid',
+                  gridTemplateColumns:
+                    'repeat(5, minmax(120px, 1fr))',
+                  gap: 5,
+                  overflowX: 'auto',
+                }}
+              >
+                {(
+                  Object.keys(
+                    TAB_LABELS,
+                  ) as MainTab[]
+                ).map((tab) => {
+                  const count =
+                    tab === 'pending'
+                      ? sectioned.pending.length
+                      : tab === 'positions'
+                        ? sectioned.positions.length
+                        : tab === 'exits'
+                          ? sectioned.exits.length
+                          : tab === 'history'
+                            ? sectioned.history.length
+                            : metrics.resolvedOpportunities;
+
+                  const active = activeTab === tab;
+
+                  return (
+                    <button
+                      key={tab}
+                      type="button"
+                      onClick={() => setActiveTab(tab)}
+                      style={{
+                        minWidth: 118,
+                        background: active
+                          ? `${S.a}18`
+                          : 'transparent',
+                        color: active ? S.a : S.dimStrong,
+                        border: `1px solid ${
+                          active
+                            ? `${S.a}88`
+                            : 'transparent'
+                        }`,
+                        borderRadius: 8,
+                        padding: '9px 10px',
+                        fontSize: 11,
+                        fontWeight: active ? 800 : 650,
+                        cursor: 'pointer',
+                        fontFamily: 'inherit',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {TAB_LABELS[tab]}
+                      {' · '}
+                      {count}
+                    </button>
+                  );
+                })}
+              </div>
+            </Card>
+
+            {selectedOpportunity && (
+              <Card
+                style={{
+                  borderColor: `${S.a}77`,
+                  background: S.panelRaised,
                 }}
               >
                 <div
                   style={{
                     display: 'flex',
+                    alignItems: 'flex-start',
+                    justifyContent: 'space-between',
+                    gap: 12,
                     flexWrap: 'wrap',
-                    justifyContent: 'center',
-                    gap: 10,
+                    marginBottom: 14,
                   }}
                 >
-                  <button
-                    onClick={generateReport}
-                    disabled={reportAction.status === 'loading'}
-                    style={{
-                      background:
-                        reportAction.status === 'loading' ? S.border : S.a,
-                      color:
-                        reportAction.status === 'loading' ? S.dim : '#1a1206',
-                      border: 'none',
-                      borderRadius: 8,
-                      padding: '10px 20px',
-                      fontSize: 13,
-                      fontWeight: 700,
-                      cursor:
-                        reportAction.status === 'loading'
-                          ? 'not-allowed'
-                          : 'pointer',
-                      opacity: reportAction.status === 'loading' ? 0.75 : 1,
-                    }}
-                  >
-                    {reportAction.status === 'loading'
-                      ? 'Analisando com IA...'
-                      : report
-                        ? 'Gerar nova análise com IA'
-                        : 'Gerar análise intradiária com IA'}
-                  </button>
+                  <div>
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 7,
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      <h2
+                        style={{
+                          color: S.textStrong,
+                          fontSize: 20,
+                          margin: 0,
+                        }}
+                      >
+                        {selectedOpportunity.symbol}
+                        {' · '}
+                        {fmtTimeframe(
+                          selectedOpportunity.timeframe,
+                        )}
+                      </h2>
+                      <Pill
+                        tone={
+                          getOpportunityCardState(
+                            selectedOpportunity,
+                          ).tone
+                        }
+                      >
+                        {
+                          getLifecyclePresentation(
+                            getOpportunityCardState(
+                              selectedOpportunity,
+                            ).effectiveStatus,
+                          ).label
+                        }
+                      </Pill>
+                      <Pill tone="neutral">
+                        {displayStrategy(
+                          selectedOpportunity.strategy,
+                        )}
+                        {' v'}
+                        {
+                          selectedOpportunity.strategy_version
+                        }
+                      </Pill>
+                    </div>
+
+                    <div
+                      style={{
+                        color: S.dim,
+                        fontSize: 11,
+                        marginTop: 6,
+                        lineHeight: 1.45,
+                      }}
+                    >
+                      Detectada em{' '}
+                      {fmtDate(
+                        selectedOpportunity.detected_at,
+                        true,
+                      )}
+                      {' · '}
+                      {getOpportunitySourceLabel(
+                        selectedOpportunity.source_type,
+                      )}
+                      {' · '}
+                      {getExecutionEnvironmentLabel(
+                        selectedOpportunity.execution_environment,
+                      )}
+                    </div>
+                  </div>
 
                   <button
-                    onClick={copyAnalysisMarkdown}
-                    disabled={copyAction.status === 'loading'}
-                    style={{
-                      background:
-                        copyAction.status === 'success'
-                          ? `${S.green}22`
-                          : S.panelSoft,
-                      color:
-                        copyAction.status === 'success' ? S.green : S.text,
-                      border: `1px solid ${
-                        copyAction.status === 'success' ? `${S.green}88` : S.border
-                      }`,
-                      borderRadius: 8,
-                      padding: '10px 20px',
-                      fontSize: 13,
-                      fontWeight: 700,
-                      cursor:
-                        copyAction.status === 'loading'
-                          ? 'not-allowed'
-                          : 'pointer',
-                      opacity: copyAction.status === 'loading' ? 0.75 : 1,
-                    }}
+                    type="button"
+                    onClick={closeDetails}
+                    style={subtleButtonStyle}
                   >
-                    {copyAction.status === 'loading'
-                      ? 'Copiando...'
-                      : copyAction.status === 'success'
-                        ? '✓ Markdown copiado'
-                        : 'Copiar Markdown'}
+                    Fechar detalhes
                   </button>
                 </div>
 
-                {reportAction.message && (
-                  <div
-                    style={{
-                      color:
-                        reportAction.status === 'success'
-                          ? S.green
-                          : reportAction.status === 'fallback'
-                            ? S.yellow
-                            : reportAction.status === 'error'
-                              ? S.red
-                              : S.dim,
-                      fontSize: 11,
-                      lineHeight: 1.45,
-                      textAlign: 'center',
-                      maxWidth: 760,
-                    }}
-                  >
-                    {reportAction.message}
-                  </div>
-                )}
+                <PlanGrid
+                  opportunity={selectedOpportunity}
+                />
 
-                {copyAction.message && (
-                  <div
-                    style={{
-                      color:
-                        copyAction.status === 'success'
-                          ? S.green
-                          : copyAction.status === 'error'
-                            ? S.red
-                            : S.dim,
-                      fontSize: 11,
-                      lineHeight: 1.45,
-                      textAlign: 'center',
-                      maxWidth: 760,
-                    }}
-                  >
-                    {copyAction.message}
-                  </div>
-                )}
-              </div>
+                <div style={{ marginTop: 14 }}>
+                  <SectionTitle
+                    title="Gerenciamento da posição"
+                    subtitle="Valor calculado pelo servidor com base no saldo, stop, custos, sequência de resultados e limites configurados."
+                  />
 
-              {report ? (
+                  <PositionSizingPanel
+                    decisions={selectedSizingDecisions}
+                  />
+                </div>
+
                 <div
                   style={{
-                    whiteSpace: 'pre-wrap',
-                    lineHeight: 1.65,
-                    fontSize: 14,
-                    color: S.text,
-                    background: S.panelSoft,
-                    border: `1px solid ${
-                      reportAction.status === 'success'
-                        ? `${S.green}66`
-                        : reportAction.status === 'fallback'
-                          ? `${S.yellow}66`
-                          : S.border
-                    }`,
-                    borderRadius: 8,
-                    padding: 16,
+                    display: 'grid',
+                    gridTemplateColumns:
+                      'repeat(auto-fit, minmax(min(100%, 310px), 1fr))',
+                    gap: 12,
+                    marginTop: 14,
                   }}
                 >
-                  {report}
+                  <div>
+                    <SectionTitle
+                      title="Checklist preservado"
+                      subtitle={`${selectedOpportunity.score ?? 0} de ${selectedOpportunity.total_conditions ?? 0} condições atendidas.`}
+                    />
+                    <ConditionsList
+                      opportunity={selectedOpportunity}
+                    />
+                  </div>
+
+                  <div>
+                    <SectionTitle
+                      title="Resultados"
+                      subtitle="A qualidade teórica permanece separada da execução real."
+                    />
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 8,
+                      }}
+                    >
+                      <OutcomePanel
+                        outcome={
+                          selectedTheoreticalOutcome
+                        }
+                      />
+                      <OutcomePanel
+                        outcome={selectedExecutedOutcome}
+                      />
+                    </div>
+                  </div>
                 </div>
-              ) : (
-                <div style={{ textAlign: 'center', color: S.dim, fontSize: 12, lineHeight: 1.55 }}>
-                  Gere a explicação pelo VigIA ou copie o snapshot completo em Markdown para revisar na IA de sua preferência. O Markdown funciona mesmo sem gerar o relatório interno e não inclui chaves, tokens ou segredos.
+
+                {normalizeWarnings(
+                  selectedOpportunity.warnings,
+                ).length > 0 && (
+                  <div
+                    style={{
+                      marginTop: 14,
+                      border: `1px solid ${S.a}55`,
+                      background: `${S.a}08`,
+                      borderRadius: 9,
+                      padding: 12,
+                    }}
+                  >
+                    <div
+                      style={{
+                        color: S.a,
+                        fontSize: 11,
+                        fontWeight: 800,
+                      }}
+                    >
+                      Avisos do setup
+                    </div>
+                    <ul
+                      style={{
+                        color: S.dimStrong,
+                        fontSize: 11,
+                        lineHeight: 1.5,
+                        margin: '7px 0 0',
+                        paddingLeft: 18,
+                      }}
+                    >
+                      {normalizeWarnings(
+                        selectedOpportunity.warnings,
+                      ).map((warning) => (
+                        <li key={warning}>{warning}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns:
+                      'repeat(auto-fit, minmax(min(100%, 300px), 1fr))',
+                    gap: 12,
+                    marginTop: 14,
+                  }}
+                >
+                  <div>
+                    <SectionTitle
+                      title="Ordens vinculadas"
+                      subtitle="Status confirmado pelo monitor da Binance."
+                    />
+                    <OrdersPanel orders={selectedOrders} />
+                  </div>
+
+                  <div>
+                    <SectionTitle
+                      title="Linha do tempo"
+                      subtitle={[
+                        `${selectedEvents.length} evento(s)`,
+                        `${selectedDecisions.length} decisão(ões) do usuário`,
+                        `${selectedSizingDecisions.length} cálculo(s) de risco`,
+                      ].join(' · ')}
+                    />
+                    <Timeline events={selectedEvents} />
+                  </div>
                 </div>
-              )}
-            </Card>
+
+                {selectedOpportunity.opportunity_type ===
+                  'entry' && (
+                  <div
+                    style={{
+                      marginTop: 16,
+                      borderTop: `1px solid ${S.border}`,
+                      paddingTop: 14,
+                    }}
+                  >
+                    <SectionTitle
+                      title="Sua decisão"
+                      subtitle="Abrir o card foi o primeiro passo. Aceitar abaixo apenas registra a decisão e solicita revalidação ao servidor."
+                    />
+
+                    {getOpportunityCardState(
+                      selectedOpportunity,
+                    ).actions.canAcceptEntry ? (
+                      <>
+                        <label
+                          style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 5,
+                            color: S.dim,
+                            fontSize: 10,
+                            marginBottom: 10,
+                          }}
+                        >
+                          Motivo da recusa, opcional
+                          <textarea
+                            value={rejectReason}
+                            maxLength={1_000}
+                            placeholder="Ex.: já estou exposto ao ativo, horário inadequado ou risco acima do que desejo."
+                            onChange={(event) =>
+                              setRejectReason(
+                                event.target.value,
+                              )
+                            }
+                            style={{
+                              ...inputStyle,
+                              minHeight: 72,
+                              resize: 'vertical',
+                              textAlign: 'left',
+                            }}
+                          />
+                        </label>
+
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void acceptOpportunity()
+                            }
+                            disabled={
+                              actionId ===
+                              selectedOpportunity.id
+                            }
+                            style={{
+                              ...primaryButtonStyle,
+                              opacity:
+                                actionId ===
+                                selectedOpportunity.id
+                                  ? 0.6
+                                  : 1,
+                            }}
+                          >
+                            {actionId ===
+                            selectedOpportunity.id
+                              ? 'Processando...'
+                              : 'Aceitar e revalidar'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void rejectOpportunity()
+                            }
+                            disabled={
+                              actionId ===
+                              selectedOpportunity.id
+                            }
+                            style={{
+                              ...dangerButtonStyle,
+                              opacity:
+                                actionId ===
+                                selectedOpportunity.id
+                                  ? 0.6
+                                  : 1,
+                            }}
+                          >
+                            Recusar entrada
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <div
+                        style={{
+                          border: `1px solid ${S.border}`,
+                          background: S.bg,
+                          borderRadius: 9,
+                          padding: 12,
+                        }}
+                      >
+                        <div
+                          style={{
+                            color: S.text,
+                            fontSize: 12,
+                            fontWeight: 700,
+                          }}
+                        >
+                          {
+                            getEntryDecisionPresentation(
+                              selectedOpportunity.entry_decision,
+                            ).label
+                          }
+                        </div>
+                        <div
+                          style={{
+                            color: S.dim,
+                            fontSize: 10,
+                            marginTop: 4,
+                            lineHeight: 1.45,
+                          }}
+                        >
+                          {getOpportunityCardState(
+                            selectedOpportunity,
+                          ).actions.reason ??
+                            getLifecyclePresentation(
+                              getOpportunityCardState(
+                                selectedOpportunity,
+                              ).effectiveStatus,
+                            ).description}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {selectedOpportunity.opportunity_type ===
+                  'exit' && (
+                  <div
+                    style={{
+                      marginTop: 16,
+                      borderTop: `1px solid ${S.border}`,
+                      paddingTop: 14,
+                    }}
+                  >
+                    <SectionTitle
+                      title="Tratamento da saída"
+                      subtitle="A saída segura exige consultar a Binance, cancelar a OCO, confirmar o cancelamento e vender somente o saldo remanescente."
+                    />
+                    <div
+                      style={{
+                        color: S.a,
+                        fontSize: 11,
+                        lineHeight: 1.5,
+                        border: `1px solid ${S.a}55`,
+                        background: `${S.a}08`,
+                        borderRadius: 9,
+                        padding: 12,
+                      }}
+                    >
+                      Os botões de saída permanecem bloqueados nesta
+                      etapa. Eles serão liberados somente quando o
+                      motor transacional idempotente estiver
+                      conectado.
+                    </div>
+                  </div>
+                )}
+
+                {actionFeedback.message && (
+                  <div
+                    style={{
+                      marginTop: 12,
+                      color:
+                        actionFeedback.state === 'error'
+                          ? S.red
+                          : actionFeedback.state ===
+                              'success'
+                            ? S.green
+                            : S.a,
+                      fontSize: 11,
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    {actionFeedback.message}
+                  </div>
+                )}
+              </Card>
+            )}
+
+            {loadState === 'loading' &&
+            opportunities.length === 0 ? (
+              <Card
+                style={{
+                  minHeight: 180,
+                  display: 'grid',
+                  placeItems: 'center',
+                }}
+              >
+                <div
+                  style={{
+                    color: S.dim,
+                    fontSize: 13,
+                  }}
+                >
+                  Carregando oportunidades...
+                </div>
+              </Card>
+            ) : activeTab === 'performance' ? (
+              <>
+                <Card
+                  style={{
+                    borderColor:
+                      metrics.resolvedOpportunities < 30
+                        ? `${S.a}66`
+                        : S.border,
+                  }}
+                >
+                  <SectionTitle
+                    title="Amostra e decisões"
+                    subtitle="A estratégia deve ser avaliada por versão, sem misturar resultados de regras diferentes."
+                  />
+
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns:
+                        'repeat(auto-fit, minmax(135px, 1fr))',
+                      gap: 8,
+                    }}
+                  >
+                    <MetricCard
+                      label="Oportunidades"
+                      value={String(
+                        metrics.totalOpportunities,
+                      )}
+                      detail={`${metrics.resolvedOpportunities} com resultado final`}
+                      tone="info"
+                    />
+                    <MetricCard
+                      label="Aceitação"
+                      value={
+                        metrics.acceptanceRatePct === null
+                          ? '—'
+                          : `${fmtNumber(
+                              metrics.acceptanceRatePct,
+                              1,
+                            )}%`
+                      }
+                      detail={`${metrics.acceptedEntries} aceitas · ${metrics.rejectedEntries} recusadas`}
+                      tone="warning"
+                    />
+                    <MetricCard
+                      label="Perdas evitadas"
+                      value={String(metrics.avoidedLosses)}
+                      detail="Recusadas que atingiram o stop teórico"
+                      tone="positive"
+                    />
+                    <MetricCard
+                      label="Ganhos perdidos"
+                      value={String(metrics.missedWins)}
+                      detail="Recusadas que atingiram o alvo teórico"
+                      tone="warning"
+                    />
+                    <MetricCard
+                      label="PnL executado"
+                      value={`${fmtNumber(
+                        metrics.executedNetPnlUsdt,
+                        4,
+                      )} USDT`}
+                      detail="Somente ordens realmente executadas"
+                      tone={
+                        metrics.executedNetPnlUsdt > 0
+                          ? 'positive'
+                          : metrics.executedNetPnlUsdt < 0
+                            ? 'danger'
+                            : 'neutral'
+                      }
+                    />
+                  </div>
+
+                  {metrics.resolvedOpportunities < 30 && (
+                    <div
+                      style={{
+                        color: S.a,
+                        fontSize: 11,
+                        lineHeight: 1.5,
+                        marginTop: 12,
+                      }}
+                    >
+                      A amostra ainda é pequena. Evite conclusões
+                      amplas antes de aproximadamente 30 a 50
+                      oportunidades encerradas da mesma estratégia e
+                      versão.
+                    </div>
+                  )}
+                </Card>
+
+                <PerformanceModeSection
+                  title="Qualidade teórica dos setups"
+                  subtitle="Inclui oportunidades aceitas, recusadas, ignoradas ou expiradas que tiveram um plano válido."
+                  metrics={metrics.theoretical}
+                />
+
+                <PerformanceModeSection
+                  title="Qualidade da execução"
+                  subtitle="Considera somente operações realmente executadas, incluindo taxas, slippage e saídas antecipadas."
+                  metrics={metrics.executed}
+                />
+
+                <BreakdownTable
+                  title="Desempenho por ativo"
+                  rows={symbolBreakdown}
+                />
+
+                <BreakdownTable
+                  title="Desempenho por versão"
+                  rows={versionBreakdown}
+                />
+              </>
+            ) : (
+              <Card>
+                <SectionTitle
+                  title={TAB_LABELS[activeTab]}
+                  subtitle={
+                    activeTab === 'pending'
+                      ? 'Oportunidades válidas que aguardam revisão, decisão ou revalidação.'
+                      : activeTab === 'positions'
+                        ? 'Entradas em processamento e posições abertas.'
+                        : activeTab === 'exits'
+                          ? 'Sinais de saída que precisam de tratamento seguro.'
+                          : 'Oportunidades encerradas, recusadas, invalidadas ou expiradas.'
+                  }
+                />
+
+                {renderOpportunityGrid(
+                  activeRows,
+                  activeTab === 'pending'
+                    ? 'Nenhuma oportunidade pendente'
+                    : activeTab === 'positions'
+                      ? 'Nenhuma posição em andamento'
+                      : activeTab === 'exits'
+                        ? 'Nenhuma saída pendente'
+                        : 'Histórico vazio',
+                  activeTab === 'pending'
+                    ? 'Use “Sincronizar setups” depois de salvar um setup com condições atendidas no Day Trade.'
+                    : activeTab === 'positions'
+                      ? 'As posições aparecerão aqui quando uma oportunidade avançar para abertura ou acompanhamento.'
+                      : activeTab === 'exits'
+                        ? 'As recomendações de saída aparecerão aqui quando o motor seguro estiver conectado.'
+                        : 'As oportunidades concluídas aparecerão conforme o acompanhamento resolver os cenários.',
+                )}
+              </Card>
+            )}
+
+            <div
+              style={{
+                color: S.dim,
+                fontSize: 10,
+                lineHeight: 1.5,
+                textAlign: 'center',
+                maxWidth: 820,
+                margin: '4px auto 0',
+              }}
+            >
+              A Central de Oportunidades organiza cenários
+              determinísticos e resultados auditáveis. Ela não
+              promete lucro e não substitui sua decisão, sua gestão
+              de risco nem a conferência da conta Binance.
+            </div>
           </>
         )}
-
-        <div style={{ color: S.dim, fontSize: 11, textAlign: 'center', lineHeight: 1.5, paddingBottom: 8 }}>
-          Dados públicos de mercado da Binance. O preço ao vivo pode mudar até o fechamento do candle.
-          O playbook, os alertas, a Testnet e o backtest são ferramentas educacionais e de simulação; não constituem recomendação de investimento nem promessa de resultado.
-        </div>
       </div>
     </main>
   );
