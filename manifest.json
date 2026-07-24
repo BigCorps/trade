@@ -1,20 +1,67 @@
 {
-  "generated_at": "2026-07-24T15:35:55.846Z",
-  "repository": "BigCorps/trade",
+  "package": "vigia-validation-news-v1",
+  "generated_at": "2026-07-24T17:23:48.475Z",
+  "source_repository": "BigCorps/trade",
   "files": [
-    "app/api/forward-test/route.ts",
-    "app/oportunidades/page.tsx",
-    "lib/forward-test/engine.ts",
-    "lib/forward-test/statistics.ts",
-    "tests/forward-test/engine.test.ts",
-    "tests/forward-test/statistics.test.ts",
-    "package.json",
-    "README-forward-test-sequence.md",
-    "supabase/migrations/20260723185938_forward_test_congelado.sql",
-    "supabase/migrations/20260724132238_forward_test_multiplos_timeframes.sql",
-    "supabase/migrations/20260724133247_forward_test_v2_correcoes.sql",
-    "supabase/migrations/20260724140714_harden_forward_test_and_strategy_execution.sql",
-    "supabase/migrations/20260724142211_forward_test_recovery_statistics.sql"
-  ],
-  "migrations_already_applied": true
+    {
+      "path": "app/api/validation/route.ts",
+      "bytes": 15016,
+      "sha256": "811fa83cb3865f6bbd76f46c45165a05e9e4b82cfa33d58a7b268a05a808f517"
+    },
+    {
+      "path": "app/api/market-news/route.ts",
+      "bytes": 13047,
+      "sha256": "b81ea25db26a2465bd31481b24cf6f8b34dbd0af163fd44a2d2ddd21cdca77e8"
+    },
+    {
+      "path": "app/robustez/page.tsx",
+      "bytes": 12039,
+      "sha256": "f20c82e7712efaf9a6e31217af982523f2bafd042b7afd953ef6a4909a27ba17"
+    },
+    {
+      "path": "app/oportunidades/page.tsx",
+      "bytes": 32744,
+      "sha256": "31b4b18a5bdc9ba33c09de95c2e5f3df6660ab8194d3339574123c99fb52699f"
+    },
+    {
+      "path": "lib/forward-test/validation.ts",
+      "bytes": 9420,
+      "sha256": "af102566fc6c8d74cce4c1b041592a2c45643eef25d8abfabdc832b088e51893"
+    },
+    {
+      "path": "lib/market-news/classifier.ts",
+      "bytes": 4706,
+      "sha256": "06775089c0dd5e9d0a70c0a0017bf3fb79796407fef05d0db8ab8ba756fe7983"
+    },
+    {
+      "path": "lib/market-news/gdelt.ts",
+      "bytes": 2782,
+      "sha256": "ae7e85e040b98a130cdf70e9835ddd723168342aaad05f408ecd2ff1fe832bfd"
+    },
+    {
+      "path": "tests/forward-test/validation.test.ts",
+      "bytes": 1655,
+      "sha256": "b038ae9052182e5f5fab5ad7cc4b6ac819933330602b1cd6927851c33772fa52"
+    },
+    {
+      "path": "tests/market-news/classifier.test.ts",
+      "bytes": 1186,
+      "sha256": "43216ed8e6670fd44e9b57a119d94f45674f563efa07e1d056ab51417711fd2a"
+    },
+    {
+      "path": "supabase/migrations/20260724165636_validation_pack_and_news_event_study.sql",
+      "bytes": 13795,
+      "sha256": "3c38aceb659ae2c5aecc487f35f439237289bc7b2a631814a1c30f227c2a705a"
+    },
+    {
+      "path": "supabase/sql/ativar-crons-validation-news.sql",
+      "bytes": 1080,
+      "sha256": "77e3be732365ad00b469222fb13d080e05dcfd9fb4b92fb7156e781afe76bf20"
+    },
+    {
+      "path": "README-validation-news.md",
+      "bytes": 1917,
+      "sha256": "6c56fe028c457b85be19013f1dd6e3129e59972fa2b67bb5995a965958010b84"
+    }
+  ]
 }

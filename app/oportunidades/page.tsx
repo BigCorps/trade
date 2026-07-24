@@ -340,7 +340,7 @@ export default function TestePropectivoPage() {
     setSinais((sinaisRes.data as SinalRow[] | null) ?? []);
     setUltimaExecucao((execucaoRes.data as RunRow | null) ?? null);
     setCheckpoints((checkpointsRes.data as CheckpointRow[] | null) ?? []);
-    setCarregando(false);    setCarregando(false);
+    setCarregando(false);
   }, [supabase]);
 
   useEffect(() => {
@@ -448,6 +448,9 @@ export default function TestePropectivoPage() {
             Validação
           </a>
           <span style={{ color: S.b, fontWeight: 700 }}>Teste prospectivo</span>
+          <a href="/robustez" style={{ color: S.dim, textDecoration: 'none' }}>
+            Robustez
+          </a>
           <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
             Alertas
           </a>
