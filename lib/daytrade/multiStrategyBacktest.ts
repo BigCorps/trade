@@ -73,7 +73,9 @@ export type MultiStrategyBacktestSkippedSignalReason =
   | 'no_next_candle'
   | 'entry_below_stop'
   | 'entry_above_reference_limit'
-  | 'position_sizing_failed';
+  | 'position_sizing_failed'
+  /** Sinal ocorrido no aquecimento, antes do início da janela avaliada. */
+  | 'warmup';
 
 export interface MultiStrategyBacktestPartialTakeOptions {
   /** Múltiplo de R que dispara a realização parcial (ex.: 1 = +1R). */
@@ -167,6 +169,18 @@ export interface MultiStrategyBacktestOptions {
 
   /** Gestão intra-trade opcional (breakeven, parcial, trailing). */
   management?: MultiStrategyBacktestManagementOptions | null;
+
+  /**
+   * Índice do primeiro candle que pode gerar sinal.
+   *
+   * Existe para o walk-forward: os candles anteriores servem só para aquecer
+   * os indicadores. Sem esta trava, o motor abre posições durante o
+   * aquecimento que continuam abertas quando a janela de validação começa —
+   * e, como só se permite uma posição por vez, elas bloqueiam os primeiros
+   * sinais legítimos da janela. Não é lookahead, mas distorce a fronteira
+   * entre aquecimento e período medido.
+   */
+  firstAllowedSignalIndex?: number;
 }
 
 export interface ResolvedMultiStrategyBacktestOptions {
@@ -182,6 +196,7 @@ export interface ResolvedMultiStrategyBacktestOptions {
   maximumHoldingCandles: number;
   maximumNextOpenDistanceAtr: number;
   management: ResolvedMultiStrategyBacktestManagement;
+  firstAllowedSignalIndex: number;
 }
 
 export interface MultiStrategyBacktestInput {
@@ -521,8 +536,14 @@ export function resolveMultiStrategyBacktestOptions(
     }
   }
 
+  const firstAllowedSignalIndex =
+    options.firstAllowedSignalIndex === undefined
+      ? 0
+      : Math.max(0, Math.floor(options.firstAllowedSignalIndex));
+
   return {
     management,
+    firstAllowedSignalIndex,
 
     initialCapitalUsdt:
       positiveBacktestNumber(
@@ -2377,6 +2398,30 @@ export function runMultiStrategyBacktest(
 
           explanation:
             'O sinal foi ignorado porque o backtest permite somente uma posição aberta por vez.',
+        });
+      } else if (
+        index <
+        options.firstAllowedSignalIndex
+      ) {
+        // Candle de aquecimento: serve para estabilizar os indicadores, mas
+        // não pode gerar posição, senão ela invade a janela de validação.
+        skippedSignals.push({
+          strategy:
+            input.strategyId,
+
+          signalCandleOpenTime:
+            evaluation
+              .candleOpenTime,
+
+          signalCandleCloseTime:
+            evaluation
+              .candleCloseTime,
+
+          reason:
+            'warmup',
+
+          explanation:
+            'O sinal ocorreu durante o aquecimento e foi ignorado para não invadir a janela avaliada.',
         });
       } else {
         pendingSignal =

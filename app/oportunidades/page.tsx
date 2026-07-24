@@ -86,6 +86,7 @@ interface ConfigRow {
 }
 
 interface ResumoRow {
+  config_id: string;
   nome: string;
   versao: string;
   timeframe: string;
@@ -114,6 +115,8 @@ interface SinalRow {
   entrada_preco: number | null;
   saida_preco: number | null;
   saida_motivo: string | null;
+  alvo_efetivo: number | null;
+  cancelamento_motivo: string | null;
   resultado_r: number | null;
   tamanho_anti: number;
   resultado_anterior: string | null;
@@ -233,21 +236,14 @@ export default function TestePropectivoPage() {
     setCarregando(true);
     setErro(null);
 
-    const [configRes, resumoRes, sinaisRes] = await Promise.all([
-      supabase
-        .from('forward_test_config')
-        .select('*')
-        .eq('ativo', true)
-        .maybeSingle(),
-      supabase.from('forward_test_resumo').select('*'),
-      supabase
-        .from('forward_test_signals')
-        .select(
-          'id, simbolo, estrategia, timeframe, candle_open_time, status, entrada_referencia, stop_referencia, alvo_referencia, entrada_preco, saida_preco, saida_motivo, resultado_r, tamanho_anti, resultado_anterior',
-        )
-        .order('candle_open_time', { ascending: false })
-        .limit(60),
-    ]);
+    // A configuração ativa é carregada primeiro porque tudo o mais precisa ser
+    // filtrado por ela: versões diferentes do experimento têm regras distintas
+    // e somá-las produziria um número sem significado.
+    const configRes = await supabase
+      .from('forward_test_config')
+      .select('*')
+      .eq('ativo', true)
+      .maybeSingle();
 
     if (configRes.error) {
       setErro(
@@ -257,7 +253,31 @@ export default function TestePropectivoPage() {
       return;
     }
 
-    setConfig((configRes.data as ConfigRow | null) ?? null);
+    const configAtiva = (configRes.data as ConfigRow | null) ?? null;
+    setConfig(configAtiva);
+
+    if (!configAtiva) {
+      setResumo([]);
+      setSinais([]);
+      setCarregando(false);
+      return;
+    }
+
+    const [resumoRes, sinaisRes] = await Promise.all([
+      supabase
+        .from('forward_test_resumo')
+        .select('*')
+        .eq('config_id', configAtiva.id),
+      supabase
+        .from('forward_test_signals')
+        .select(
+          'id, simbolo, estrategia, timeframe, candle_open_time, status, entrada_referencia, stop_referencia, alvo_referencia, entrada_preco, alvo_efetivo, saida_preco, saida_motivo, cancelamento_motivo, resultado_r, tamanho_anti, resultado_anterior',
+        )
+        .eq('config_id', configAtiva.id)
+        .order('candle_open_time', { ascending: false })
+        .limit(60),
+    ]);
+
     setResumo((resumoRes.data as ResumoRow[] | null) ?? []);
     setSinais((sinaisRes.data as SinalRow[] | null) ?? []);
     setCarregando(false);
@@ -751,7 +771,10 @@ export default function TestePropectivoPage() {
                             {fmtNum(sinal.stop_referencia, 4)}
                           </td>
                           <td style={{ padding: '8px', color: S.dim }}>
-                            {fmtNum(sinal.alvo_referencia, 4)}
+                            {fmtNum(
+                              sinal.alvo_efetivo ?? sinal.alvo_referencia,
+                              4,
+                            )}
                           </td>
                           <td
                             style={{

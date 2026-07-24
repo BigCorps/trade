@@ -131,8 +131,18 @@ export const DAYTRADE_STRATEGY_REGISTRY = {
       'Busca tendência positiva, alinhamento das médias, rompimento confirmado, volume e plano mínimo de risco e retorno.',
     category: 'trend_following',
     preferredRegimes: ['tendência'],
-    executionMode: 'testnet_allowed',
-    authorizedForAutomaticOrders: true,
+    /**
+     * Rebaixado para shadow em 24/07/2026.
+     *
+     * A validação walk-forward mediu esta estratégia em -0,142R por operação
+     * no horizonte de 1 hora, sem nenhum dos nove símbolos testados apresentar
+     * resultado positivo. Enquanto não passar por validação prospectiva, ela
+     * não deve ser executável por nenhuma rota — nem manual em testnet, nem
+     * automática. Desligar o cron não bastava: a autorização precisa cair aqui,
+     * que é onde todas as rotas consultam.
+     */
+    executionMode: 'shadow',
+    authorizedForAutomaticOrders: false,
     enabledForBacktest: true,
     enabledForPersistence: true,
     displayOrder: 1,

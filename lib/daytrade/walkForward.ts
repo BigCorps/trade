@@ -412,7 +412,17 @@ export function runWalkForwardBacktest(
         candles: slice,
         indicatorOptions: input.indicatorOptions,
         strategyOptions: input.strategyOptions,
-        backtestOptions: input.backtestOptions,
+        backtestOptions: {
+          ...input.backtestOptions,
+          /**
+           * Os candles de aquecimento ficam no início da fatia e servem apenas
+           * para estabilizar os indicadores. Sem esta trava, o motor abriria
+           * posições durante o aquecimento que continuariam abertas no começo
+           * da janela — e, como só se permite uma posição por vez, elas
+           * bloqueariam os primeiros sinais legítimos do período avaliado.
+           */
+          firstAllowedSignalIndex: options.warmupCandles,
+        },
       });
     } catch (error) {
       const message =

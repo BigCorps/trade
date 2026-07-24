@@ -214,6 +214,11 @@ function precoVendaComSlippage(preco: number, slippagePct: number): number {
 interface ResolucaoResultado {
   status: 'aguardando_entrada' | 'aberto' | 'fechado' | 'cancelado';
   entrada_preco?: number;
+  /** Alvo e risco recalculados sobre o preenchimento real, que é o que a
+   *  simulação de fato usou — o plano original fica em *_referencia. */
+  alvo_efetivo?: number;
+  risco_efetivo?: number;
+  cancelamento_motivo?: string;
   entrada_em?: string;
   saida_preco?: number;
   saida_em?: string;
@@ -258,6 +263,7 @@ function resolverSinal(
     return {
       status: 'cancelado',
       saida_motivo: 'cancelado',
+      cancelamento_motivo: 'plano_invalido',
       saida_em: new Date().toISOString(),
     };
   }
@@ -272,6 +278,7 @@ function resolverSinal(
     return {
       status: 'cancelado',
       saida_motivo: 'cancelado',
+      cancelamento_motivo: 'abertura_distante',
       saida_em: new Date(candleEntrada.openTime).toISOString(),
     };
   }
@@ -289,6 +296,7 @@ function resolverSinal(
     return {
       status: 'cancelado',
       saida_motivo: 'cancelado',
+      cancelamento_motivo: 'risco_real_invalido',
       saida_em: new Date(candleEntrada.openTime).toISOString(),
     };
   }
@@ -305,16 +313,50 @@ function resolverSinal(
     const candle = candles[i];
     if (!candle.isClosed) break;
 
+    /**
+     * Estimativa por extremos do candle, não trajetória real: o OHLC não diz
+     * em que ordem a máxima e a mínima aconteceram. No candle de saída, a
+     * máxima pode ter ocorrido depois de a posição já ter sido encerrada, o
+     * que superestima a excursão favorável. O resultado financeiro continua
+     * conservador; apenas MFE e MAE devem ser lidos como aproximação.
+     */
     mfe = Math.max(mfe, (candle.high - entradaPreco) / riscoReal);
     mae = Math.min(mae, (candle.low - entradaPreco) / riscoReal);
 
-    const tocouStop = candle.low <= stop;
-    const tocouAlvo = candle.high >= alvo;
+    /**
+     * A ordem das checagens reproduz exatamente a do motor de backtest.
+     *
+     * O caso do gap é o que mais importa: se o candle ABRE abaixo do stop, a
+     * saída real acontece na abertura, não no preço do stop — o mercado
+     * simplesmente passou por cima dele. Tratar como saída no stop tornaria o
+     * resultado prospectivo mais otimista que o backtest, e no horizonte
+     * diário gaps são comuns. No gap acima do alvo vale o inverso: usa-se o
+     * alvo como preenchimento, que é o conservador.
+     */
+    let motivo: 'stop' | 'alvo' | null = null;
+    let precoBruto = 0;
 
-    // Conservador: quando o candle toca os dois, considera o stop.
-    if (tocouStop || tocouAlvo) {
-      const motivo: 'stop' | 'alvo' = tocouStop ? 'stop' : 'alvo';
-      const precoBruto = tocouStop ? stop : alvo;
+    if (candle.open <= stop) {
+      motivo = 'stop';
+      precoBruto = candle.open;
+    } else if (candle.open >= alvo) {
+      motivo = 'alvo';
+      precoBruto = alvo;
+    } else {
+      const tocouStop = candle.low <= stop;
+      const tocouAlvo = candle.high >= alvo;
+
+      // Conservador: quando o candle toca os dois, considera o stop.
+      if (tocouStop) {
+        motivo = 'stop';
+        precoBruto = stop;
+      } else if (tocouAlvo) {
+        motivo = 'alvo';
+        precoBruto = alvo;
+      }
+    }
+
+    if (motivo !== null) {
       const saidaPreco = precoVendaComSlippage(precoBruto, config.slippage_pct);
 
       const taxas =
@@ -327,6 +369,8 @@ function resolverSinal(
         status: 'fechado',
         entrada_preco: entradaPreco,
         entrada_em: new Date(candleEntrada.openTime).toISOString(),
+        alvo_efetivo: alvo,
+        risco_efetivo: riscoReal,
         saida_preco: saidaPreco,
         saida_em: new Date(candle.closeTime).toISOString(),
         saida_motivo: motivo,
@@ -341,6 +385,8 @@ function resolverSinal(
     status: 'aberto',
     entrada_preco: entradaPreco,
     entrada_em: new Date(candleEntrada.openTime).toISOString(),
+    alvo_efetivo: alvo,
+    risco_efetivo: riscoReal,
     excursao_favoravel_r: mfe,
     excursao_adversa_r: mae,
   };
@@ -403,6 +449,22 @@ export async function POST(req: Request): Promise<NextResponse> {
       500,
     );
   }
+
+  const inicioMs = Date.now();
+
+  // Registro de auditoria: sem isto, uma falha do cron sumiria sem rastro e
+  // criaria lacunas invisíveis no experimento.
+  const { data: execucao } = await supabase
+    .from('forward_test_runs')
+    .insert({
+      config_id: config.id,
+      pares_esperados: config.simbolos.length * timeframes.length,
+      status: 'executando',
+    })
+    .select('id')
+    .maybeSingle();
+
+  const execucaoId = (execucao as { id: string } | null)?.id ?? null;
 
   const resumo = {
     pares_processados: 0,
@@ -601,10 +663,31 @@ export async function POST(req: Request): Promise<NextResponse> {
       }
     }
   });
+  const duracaoMs = Date.now() - inicioMs;
+
+  if (execucaoId) {
+    await supabase
+      .from('forward_test_runs')
+      .update({
+        finalizado_em: new Date().toISOString(),
+        pares_processados: resumo.pares_processados,
+        sinais_criados: resumo.novos,
+        sinais_resolvidos: resumo.resolvidos,
+        falhas: resumo.falhas,
+        duracao_ms: duracaoMs,
+        // Falha parcial ainda conta como concluída; o que importa é que as
+        // falhas fiquem registradas para auditoria posterior.
+        status: resumo.pares_processados === 0 ? 'falhou' : 'concluido',
+      })
+      .eq('id', execucaoId);
+  }
+
   return respostaJson({
     ok: true,
     config: `${config.nome} v${config.versao}`,
+    execucao_id: execucaoId,
     executado_em: new Date().toISOString(),
+    duracao_ms: duracaoMs,
     ...resumo,
   });
 }

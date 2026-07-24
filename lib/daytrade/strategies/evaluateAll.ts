@@ -26,6 +26,7 @@ import {
 import {
   DAYTRADE_STRATEGY_REGISTRY,
   type DayTradeStrategyId,
+  type DayTradeStrategyExecutionMode,
 } from './index';
 
 import {
@@ -445,10 +446,19 @@ export function assertAutomaticOrderCandidate(
   const definition =
     DAYTRADE_STRATEGY_REGISTRY[result.strategy];
 
+  /**
+   * O registro é declarado com `as const`, então o TypeScript infere o literal
+   * exato de cada campo. Como hoje NENHUMA estratégia está autorizada, todos os
+   * modos são 'shadow' e o compilador acusaria a comparação abaixo como
+   * impossível. O alargamento explícito preserva a verificação para quando
+   * alguma estratégia for aprovada em validação prospectiva — remover a
+   * comparação seria perder a trava justamente onde ela importa.
+   */
+  const modo = definition.executionMode as DayTradeStrategyExecutionMode;
+
   if (
     !definition.authorizedForAutomaticOrders ||
-    definition.executionMode !==
-      'testnet_allowed'
+    modo !== 'testnet_allowed'
   ) {
     throw new Error(
       `A estratégia ${result.strategy} está em modo shadow e não pode criar oportunidade ou ordem.`,
