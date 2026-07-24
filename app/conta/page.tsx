@@ -2529,13 +2529,13 @@ export default function ContaPage() {
           <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
             Alertas
           </a>
-          <span style={{ color: S.a, fontWeight: 600 }}>
+          <span style={{ color: S.b, fontWeight: 600 }}>
             Conta Binance
           </span>
           {session && (
             <button
               onClick={() => supabase.auth.signOut()}
-              style={{ background: 'transparent', border: 'none', color: S.blue, fontSize: 13, cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
+              style={{ background: 'transparent', border: 'none', color: S.red, fontSize: 13, cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
             >
               Sair
             </button>
