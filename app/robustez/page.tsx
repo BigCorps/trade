@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { Session } from '@supabase/supabase-js';
 import { getSupabase } from '@/lib/supabaseClient';
 
 const S = { bg: '#101418', panel: '#181f26', soft: '#141a20', border: '#2a343f', text: '#d7dee6', dim: '#7d8a97', orange: '#e8a13c', blue: '#4f8fd0', green: '#3fb26f', red: '#d05555' };
@@ -24,6 +25,7 @@ function Metric({ label, value, detail, color }: { label: string; value: string;
 
 export default function RobustezPage() {
   const supabase = useMemo(() => getSupabase(), []);
+  const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true); const [error, setError] = useState<string | null>(null);
   const [config, setConfig] = useState<Config | null>(null); const [validation, setValidation] = useState<Validation | null>(null);
   const [integrity, setIntegrity] = useState<Integrity | null>(null); const [newsRun, setNewsRun] = useState<NewsRun | null>(null);
@@ -49,12 +51,24 @@ export default function RobustezPage() {
   }, [supabase]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    void supabase.auth
+      .getSession()
+      .then(({ data }) => setSession(data.session ?? null));
+
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_evento, novaSessao) => setSession(novaSessao),
+    );
+
+    return () => listener.subscription.unsubscribe();
+  }, [supabase]);
   const result = object(validation?.resultado); const base = object(result.base); const stress = object(result.stress); const costs2x = object(stress.costs2x);
   const robustness = object(result.robustness); const monteCarlo = object(result.monteCarlo); const drawdown = object(monteCarlo.drawdownR); const readiness = object(result.readiness);
   const ready = readiness.readyForRealMoney === true;
 
   return <main style={{ minHeight: '100vh', background: S.bg, color: S.text, fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-    
+
       {/* Header + navegação — mesmo padrão das demais páginas */}
       <header
         style={{
@@ -107,7 +121,7 @@ export default function RobustezPage() {
           <a href="/oportunidades" style={{ color: S.dim, textDecoration: 'none' }}>
             Teste prospectivo
           </a>
-          <span style={{ color: S.b, fontWeight: 700 }}>Robustez</span>
+          <span style={{ color: S.blue, fontWeight: 700 }}>Robustez</span>
           <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
             Alertas
           </a>
