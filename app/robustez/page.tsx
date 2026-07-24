@@ -54,13 +54,92 @@ export default function RobustezPage() {
   const ready = readiness.readyForRealMoney === true;
 
   return <main style={{ minHeight: '100vh', background: S.bg, color: S.text, fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-    <header style={{ background: S.panel, borderBottom: '1px solid ' + S.border, padding: '12px 20px', textAlign: 'center' }}>
-      <img src="/logo.png" alt="VigIA Trade" style={{ height: 32 }} />
-      <div style={{ fontWeight: 700, marginTop: 4 }}>Robustez e contexto de mercado</div>
-      <nav style={{ display: 'flex', justifyContent: 'center', gap: 20, flexWrap: 'wrap', marginTop: 9, fontSize: 13 }}>
-        <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>Análise</a><a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>Validação</a><a href="/oportunidades" style={{ color: S.dim, textDecoration: 'none' }}>Teste prospectivo</a><span style={{ color: S.blue, fontWeight: 700 }}>Robustez</span><a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>Alertas</a>
-      </nav>
-    </header>
+    
+      {/* Header + navegação — mesmo padrão das demais páginas */}
+      <header
+        style={{
+          borderBottom: `1px solid ${S.border}`,
+          background: S.panel,
+          padding: '12px 20px',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 12,
+          }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/logo.png"
+            alt="VigIA Trade"
+            style={{ height: 32, width: 'auto', display: 'block' }}
+          />
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>
+              Robustez
+            </div>
+            <div style={{ fontSize: 11, color: S.dim }}>
+              notícias · contexto de mercado
+            </div>
+          </div>
+        </div>
+
+        <nav
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 20,
+            marginTop: 8,
+            fontSize: 13,
+          }}
+        >
+          <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
+            Análise
+          </a>
+          <a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>
+            Validação
+          </a>
+          <a href="/oportunidades" style={{ color: S.dim, textDecoration: 'none' }}>
+            Teste prospectivo
+          </a>
+          <span style={{ color: S.b, fontWeight: 700 }}>Robustez</span>
+          <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
+            Alertas
+          </a>
+          <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
+            Conta Binance
+          </a>
+          {!session ? (
+            <a
+              href="/alertas?next=%2Foportunidades"
+              style={{ color: S.green, textDecoration: 'none' }}
+            >
+              Entrar
+            </a>
+          ) : (
+            <button
+              onClick={() => supabase.auth.signOut()}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: S.red,
+                fontSize: 13,
+                cursor: 'pointer',
+                padding: 0,
+                fontFamily: 'inherit',
+              }}
+            >
+              Sair
+            </button>
+          )}
+        </nav>
+      </header>
+
     <div style={{ maxWidth: 1180, margin: '0 auto', padding: '24px 16px 60px', display: 'grid', gap: 18 }}>
       {loading && <Card>Carregando…</Card>}{error && <Card><span style={{ color: S.orange }}>{error}</span></Card>}
       {!loading && config && <>
