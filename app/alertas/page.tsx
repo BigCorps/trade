@@ -495,7 +495,7 @@ export default function AlertasPage() {
           <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>Conta Binance</a>
           {session && (
             <button onClick={signOut}
-              style={{ background: 'transparent', border: 'none', color: S.red, fontSize: 13, cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>
+              style={{ background: 'transparent', border: 'none', color: S.blue, fontSize: 13, cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>
               Sair
             </button>
           )}

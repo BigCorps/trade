@@ -2535,7 +2535,7 @@ export default function ContaPage() {
           {session && (
             <button
               onClick={() => supabase.auth.signOut()}
-              style={{ background: 'transparent', border: 'none', color: S.red, fontSize: 13, cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
+              style={{ background: 'transparent', border: 'none', color: S.blue, fontSize: 13, cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
             >
               Sair
             </button>
