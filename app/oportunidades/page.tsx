@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { getSupabase } from '@/lib/supabaseClient';
+import { combineForwardStatistics } from '@/lib/forward-test/statistics';
 
 // ---------------------------------------------------------------------------
 // Estilo (mesma paleta das demais páginas)
@@ -93,11 +94,25 @@ interface ResumoRow {
   estrategia: string;
   operacoes_fechadas: number;
   em_andamento: number;
+  canceladas: number;
   ganhos: number;
   perdas: number;
+  empates: number;
   media_r: number | null;
+  desvio_r: number | null;
+  erro_padrao_r: number | null;
+  ic95_inferior_r: number | null;
+  ic95_superior_r: number | null;
+  t_stat_r: number | null;
   soma_r_fixo: number | null;
+  soma_quadrados_r_fixo: number | null;
+  ganho_bruto_r: number | null;
+  perda_bruta_r: number | null;
+  profit_factor: number | null;
   soma_r_anti: number | null;
+  delta_anti_r: number | null;
+  max_drawdown_r_fixo: number | null;
+  max_drawdown_r_anti: number | null;
   primeiro_sinal: string | null;
   ultimo_sinal: string | null;
 }
@@ -120,6 +135,30 @@ interface SinalRow {
   resultado_r: number | null;
   tamanho_anti: number;
   resultado_anterior: string | null;
+}
+
+interface RunRow {
+  id: string;
+  iniciado_em: string;
+  status: string;
+  pares_esperados: number | null;
+  pares_processados: number | null;
+  sinais_criados: number | null;
+  sinais_resolvidos: number | null;
+  duracao_ms: number | null;
+  candles_avaliados: number;
+  candles_recuperados: number;
+  pares_bloqueados: number;
+  backlog_pares: number;
+  backlog_candles_estimados: number;
+}
+
+interface CheckpointRow {
+  simbolo: string;
+  timeframe: string;
+  backlog_estimated: number;
+  last_error: string | null;
+  locked_until: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +270,8 @@ export default function TestePropectivoPage() {
   const [config, setConfig] = useState<ConfigRow | null>(null);
   const [resumo, setResumo] = useState<ResumoRow[]>([]);
   const [sinais, setSinais] = useState<SinalRow[]>([]);
+  const [ultimaExecucao, setUltimaExecucao] = useState<RunRow | null>(null);
+  const [checkpoints, setCheckpoints] = useState<CheckpointRow[]>([]);
 
   const carregar = useCallback(async () => {
     setCarregando(true);
@@ -259,11 +300,13 @@ export default function TestePropectivoPage() {
     if (!configAtiva) {
       setResumo([]);
       setSinais([]);
+      setUltimaExecucao(null);
+      setCheckpoints([]);
       setCarregando(false);
       return;
     }
 
-    const [resumoRes, sinaisRes] = await Promise.all([
+    const [resumoRes, sinaisRes, execucaoRes, checkpointsRes] = await Promise.all([
       supabase
         .from('forward_test_resumo')
         .select('*')
@@ -276,11 +319,28 @@ export default function TestePropectivoPage() {
         .eq('config_id', configAtiva.id)
         .order('candle_open_time', { ascending: false })
         .limit(60),
+      supabase
+        .from('forward_test_runs')
+        .select('*')
+        .eq('config_id', configAtiva.id)
+        .order('iniciado_em', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      supabase
+        .from('forward_test_checkpoints')
+        .select('simbolo, timeframe, backlog_estimated, last_error, locked_until')
+        .eq('config_id', configAtiva.id),
     ]);
+
+    const consultaErro =
+      resumoRes.error ?? sinaisRes.error ?? execucaoRes.error ?? checkpointsRes.error;
+    if (consultaErro) setErro('Falha ao carregar o acompanhamento: ' + consultaErro.message);
 
     setResumo((resumoRes.data as ResumoRow[] | null) ?? []);
     setSinais((sinaisRes.data as SinalRow[] | null) ?? []);
-    setCarregando(false);
+    setUltimaExecucao((execucaoRes.data as RunRow | null) ?? null);
+    setCheckpoints((checkpointsRes.data as CheckpointRow[] | null) ?? []);
+    setCarregando(false);    setCarregando(false);
   }, [supabase]);
 
   useEffect(() => {
@@ -299,31 +359,29 @@ export default function TestePropectivoPage() {
     return () => listener.subscription.unsubscribe();
   }, [supabase]);
 
-  const totais = useMemo(() => {
-    const fechadas = resumo.reduce(
-      (t, r) => t + Number(r.operacoes_fechadas ?? 0),
-      0,
-    );
-    const andamento = resumo.reduce(
-      (t, r) => t + Number(r.em_andamento ?? 0),
-      0,
-    );
-    const ganhos = resumo.reduce((t, r) => t + Number(r.ganhos ?? 0), 0);
-    const perdas = resumo.reduce((t, r) => t + Number(r.perdas ?? 0), 0);
-    const somaFixo = resumo.reduce((t, r) => t + Number(r.soma_r_fixo ?? 0), 0);
-    const somaAnti = resumo.reduce((t, r) => t + Number(r.soma_r_anti ?? 0), 0);
-
+  const combinados = useMemo(() => combineForwardStatistics(resumo), [resumo]);
+  const totais = {
+    fechadas: combinados.closed,
+    andamento: combinados.inProgress,
+    ganhos: combinados.wins,
+    perdas: combinados.losses,
+    canceladas: combinados.cancelled,
+    somaFixo: combinados.sumR,
+    somaAnti: combinados.sumAntiR,
+    acerto: combinados.winRatePct,
+    mediaR: combinados.meanR,
+  };
+  const saude = useMemo(() => {
+    const agora = Date.now();
     return {
-      fechadas,
-      andamento,
-      ganhos,
-      perdas,
-      somaFixo,
-      somaAnti,
-      acerto: ganhos + perdas > 0 ? (ganhos / (ganhos + perdas)) * 100 : null,
-      mediaR: fechadas > 0 ? somaFixo / fechadas : null,
+      backlog: checkpoints.reduce((soma, item) => soma + Number(item.backlog_estimated ?? 0), 0),
+      paresComBacklog: checkpoints.filter((item) => Number(item.backlog_estimated ?? 0) > 0).length,
+      falhas: checkpoints.filter((item) => Boolean(item.last_error)).length,
+      bloqueados: checkpoints.filter(
+        (item) => item.locked_until && new Date(item.locked_until).getTime() > agora,
+      ).length,
     };
-  }, [resumo]);
+  }, [checkpoints]);
 
   /**
    * Abaixo de ~100 operações a diferença entre habilidade e acaso não é
@@ -546,6 +604,25 @@ export default function TestePropectivoPage() {
               )}
             </Card>
 
+            <Card style={{ marginBottom: 18 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>Saúde da coleta</div>
+                  <div style={{ color: S.dim, fontSize: 12, marginTop: 4 }}>
+                    Última execução: {ultimaExecucao ? fmtData(ultimaExecucao.iniciado_em) : '—'}
+                  </div>
+                </div>
+                {ultimaExecucao && <Etiqueta status={ultimaExecucao.status} />}
+              </div>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 14 }}>
+                <Metrica rotulo="Checkpoints" valor={String(checkpoints.length)} detalhe="pares × horizontes" />
+                <Metrica rotulo="Pares processados" valor={ultimaExecucao ? String(ultimaExecucao.pares_processados ?? 0) + '/' + String(ultimaExecucao.pares_esperados ?? 0) : '—'} detalhe={String(ultimaExecucao?.pares_bloqueados ?? 0) + ' bloqueados'} />
+                <Metrica rotulo="Candles avaliados" valor={ultimaExecucao ? String(ultimaExecucao.candles_avaliados ?? 0) : '—'} detalhe={String(ultimaExecucao?.candles_recuperados ?? 0) + ' recuperados'} />
+                <Metrica rotulo="Backlog" valor={String(saude.backlog)} detalhe={String(saude.paresComBacklog) + ' pares'} cor={saude.backlog > 0 ? S.a : S.green} />
+                <Metrica rotulo="Falhas" valor={String(saude.falhas)} detalhe={String(saude.bloqueados) + ' locks ativos'} cor={saude.falhas > 0 ? S.red : S.green} />
+              </div>
+            </Card>
+
             <div
               style={{
                 display: 'flex',
@@ -591,6 +668,18 @@ export default function TestePropectivoPage() {
                 cor={totais.somaAnti > 0 ? S.green : S.red}
               />
             </div>
+
+
+            <Card style={{ marginBottom: 18 }}>
+              <h2 style={{ fontSize: 15, margin: '0 0 12px', fontWeight: 600 }}>Evidência estatística</h2>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                <Metrica rotulo="IC 95% da média" valor={fmtR(combinados.confidence95LowerR) + ' a ' + fmtR(combinados.confidence95UpperR)} detalhe={'t = ' + fmtNum(combinados.tStatisticR, 2)} />
+                <Metrica rotulo="Desvio-padrão" valor={fmtR(combinados.standardDeviationR)} detalhe={'erro-padrão ' + fmtR(combinados.standardErrorR)} />
+                <Metrica rotulo="Profit factor" valor={fmtNum(combinados.profitFactor, 2)} detalhe="ganho bruto / perda bruta" />
+                <Metrica rotulo="Drawdown fixo" valor={fmtR(combinados.worstDrawdownFixedR)} detalhe={'anti ' + fmtR(combinados.worstDrawdownAntiR)} />
+                <Metrica rotulo="Delta anti" valor={fmtR(combinados.deltaAntiR)} detalhe="anti menos tamanho fixo" cor={combinados.deltaAntiR > 0 ? S.green : S.red} />
+              </div>
+            </Card>
 
             {resumo.length > 0 && (
               <Card style={{ marginBottom: 18 }}>

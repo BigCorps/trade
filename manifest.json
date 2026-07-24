@@ -1,0 +1,20 @@
+{
+  "generated_at": "2026-07-24T15:35:55.846Z",
+  "repository": "BigCorps/trade",
+  "files": [
+    "app/api/forward-test/route.ts",
+    "app/oportunidades/page.tsx",
+    "lib/forward-test/engine.ts",
+    "lib/forward-test/statistics.ts",
+    "tests/forward-test/engine.test.ts",
+    "tests/forward-test/statistics.test.ts",
+    "package.json",
+    "README-forward-test-sequence.md",
+    "supabase/migrations/20260723185938_forward_test_congelado.sql",
+    "supabase/migrations/20260724132238_forward_test_multiplos_timeframes.sql",
+    "supabase/migrations/20260724133247_forward_test_v2_correcoes.sql",
+    "supabase/migrations/20260724140714_harden_forward_test_and_strategy_execution.sql",
+    "supabase/migrations/20260724142211_forward_test_recovery_statistics.sql"
+  ],
+  "migrations_already_applied": true
+}

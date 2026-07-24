@@ -33,6 +33,12 @@ import {
 
 import type { DayTradeStrategyId } from '@/lib/daytrade/strategies';
 
+import {
+  evaluationWindow,
+  resolveForwardLongSignal,
+  selectRecoveryCandles,
+} from '@/lib/forward-test/engine';
+
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -58,6 +64,7 @@ const TIMEFRAME_MS: Record<DayTradeIndicatorTimeframe, number> = {
 
 /** Suficiente para aquecer EMA200 e a distribuição de volatilidade. */
 const CANDLES_NECESSARIOS = 400;
+const MAX_CANDLES_RECUPERADOS = 24;
 
 /**
  * Buscas simultâneas na Binance. Com 30 moedas e 4 horizontes são 120
@@ -122,9 +129,7 @@ async function buscarCandles(
   simbolo: string,
   timeframe: DayTradeIndicatorTimeframe,
 ): Promise<DayTradeCandle[]> {
-  const intervalo = TIMEFRAME_MS[timeframe];
   const agora = Date.now();
-  const inicio = agora - CANDLES_NECESSARIOS * intervalo;
 
   let ultimoErro: unknown = null;
 
@@ -133,7 +138,7 @@ async function buscarCandles(
       const url = new URL('/api/v3/klines', base);
       url.searchParams.set('symbol', simbolo);
       url.searchParams.set('interval', timeframe);
-      url.searchParams.set('startTime', String(inicio));
+      // Inclui aquecimento, recuperação e margem para posições abertas.
       url.searchParams.set('limit', '1000');
 
       const controller = new AbortController();
@@ -202,195 +207,6 @@ async function buscarCandles(
 // ---------------------------------------------------------------------------
 // Simulação de execução (idêntica à regra do backtest)
 // ---------------------------------------------------------------------------
-
-function precoCompraComSlippage(preco: number, slippagePct: number): number {
-  return preco * (1 + slippagePct / 100);
-}
-
-function precoVendaComSlippage(preco: number, slippagePct: number): number {
-  return preco * (1 - slippagePct / 100);
-}
-
-interface ResolucaoResultado {
-  status: 'aguardando_entrada' | 'aberto' | 'fechado' | 'cancelado';
-  entrada_preco?: number;
-  /** Alvo e risco recalculados sobre o preenchimento real, que é o que a
-   *  simulação de fato usou — o plano original fica em *_referencia. */
-  alvo_efetivo?: number;
-  risco_efetivo?: number;
-  cancelamento_motivo?: string;
-  entrada_em?: string;
-  saida_preco?: number;
-  saida_em?: string;
-  saida_motivo?: 'stop' | 'alvo' | 'cancelado';
-  resultado_r?: number;
-  excursao_favoravel_r?: number;
-  excursao_adversa_r?: number;
-}
-
-/**
- * Reproduz a mesma sequência do backtest: entrada na abertura do candle
- * seguinte ao sinal, resolução intrabar conservadora (stop antes do alvo
- * quando o candle toca os dois) e alvo recalculado a partir do preenchimento
- * real para preservar a relação de risco planejada.
- */
-function resolverSinal(
-  sinal: SignalRow,
-  candles: readonly DayTradeCandle[],
-  config: ConfigRow,
-): ResolucaoResultado {
-  const tempoSinal = new Date(sinal.candle_open_time).getTime();
-
-  const indiceSinal = candles.findIndex(
-    (candle) => candle.openTime === tempoSinal,
-  );
-
-  if (indiceSinal < 0) {
-    // Candle do sinal saiu da janela baixada; nada a fazer nesta execução.
-    return { status: sinal.status as ResolucaoResultado['status'] };
-  }
-
-  const indiceEntrada = indiceSinal + 1;
-  const candleEntrada = candles[indiceEntrada];
-
-  if (!candleEntrada || !candleEntrada.isClosed) {
-    if (!candleEntrada) return { status: 'aguardando_entrada' };
-  }
-
-  const risco = sinal.entrada_referencia - sinal.stop_referencia;
-
-  if (!Number.isFinite(risco) || risco <= 0) {
-    return {
-      status: 'cancelado',
-      saida_motivo: 'cancelado',
-      cancelamento_motivo: 'plano_invalido',
-      saida_em: new Date().toISOString(),
-    };
-  }
-
-  // Abertura muito distante do planejado: não entra, para não simular um
-  // preenchimento que na prática seria péssimo.
-  if (
-    sinal.atr !== null &&
-    candleEntrada.open >
-      sinal.entrada_referencia + sinal.atr * config.max_next_open_distance_atr
-  ) {
-    return {
-      status: 'cancelado',
-      saida_motivo: 'cancelado',
-      cancelamento_motivo: 'abertura_distante',
-      saida_em: new Date(candleEntrada.openTime).toISOString(),
-    };
-  }
-
-  const entradaPreco =
-    sinal.entrada_preco ??
-    precoCompraComSlippage(candleEntrada.open, config.slippage_pct);
-
-  const stop = sinal.stop_referencia;
-
-  // Preserva o R planejado a partir do preenchimento real.
-  const riscoReal = entradaPreco - stop;
-
-  if (riscoReal <= 0) {
-    return {
-      status: 'cancelado',
-      saida_motivo: 'cancelado',
-      cancelamento_motivo: 'risco_real_invalido',
-      saida_em: new Date(candleEntrada.openTime).toISOString(),
-    };
-  }
-
-  const proporcaoAlvo =
-    (sinal.alvo_referencia - sinal.entrada_referencia) / risco;
-
-  const alvo = entradaPreco + riscoReal * proporcaoAlvo;
-
-  let mfe = 0;
-  let mae = 0;
-
-  for (let i = indiceEntrada; i < candles.length; i += 1) {
-    const candle = candles[i];
-    if (!candle.isClosed) break;
-
-    /**
-     * Estimativa por extremos do candle, não trajetória real: o OHLC não diz
-     * em que ordem a máxima e a mínima aconteceram. No candle de saída, a
-     * máxima pode ter ocorrido depois de a posição já ter sido encerrada, o
-     * que superestima a excursão favorável. O resultado financeiro continua
-     * conservador; apenas MFE e MAE devem ser lidos como aproximação.
-     */
-    mfe = Math.max(mfe, (candle.high - entradaPreco) / riscoReal);
-    mae = Math.min(mae, (candle.low - entradaPreco) / riscoReal);
-
-    /**
-     * A ordem das checagens reproduz exatamente a do motor de backtest.
-     *
-     * O caso do gap é o que mais importa: se o candle ABRE abaixo do stop, a
-     * saída real acontece na abertura, não no preço do stop — o mercado
-     * simplesmente passou por cima dele. Tratar como saída no stop tornaria o
-     * resultado prospectivo mais otimista que o backtest, e no horizonte
-     * diário gaps são comuns. No gap acima do alvo vale o inverso: usa-se o
-     * alvo como preenchimento, que é o conservador.
-     */
-    let motivo: 'stop' | 'alvo' | null = null;
-    let precoBruto = 0;
-
-    if (candle.open <= stop) {
-      motivo = 'stop';
-      precoBruto = candle.open;
-    } else if (candle.open >= alvo) {
-      motivo = 'alvo';
-      precoBruto = alvo;
-    } else {
-      const tocouStop = candle.low <= stop;
-      const tocouAlvo = candle.high >= alvo;
-
-      // Conservador: quando o candle toca os dois, considera o stop.
-      if (tocouStop) {
-        motivo = 'stop';
-        precoBruto = stop;
-      } else if (tocouAlvo) {
-        motivo = 'alvo';
-        precoBruto = alvo;
-      }
-    }
-
-    if (motivo !== null) {
-      const saidaPreco = precoVendaComSlippage(precoBruto, config.slippage_pct);
-
-      const taxas =
-        entradaPreco * (config.fee_rate_pct / 100) +
-        saidaPreco * (config.fee_rate_pct / 100);
-
-      const resultadoR = (saidaPreco - entradaPreco - taxas) / riscoReal;
-
-      return {
-        status: 'fechado',
-        entrada_preco: entradaPreco,
-        entrada_em: new Date(candleEntrada.openTime).toISOString(),
-        alvo_efetivo: alvo,
-        risco_efetivo: riscoReal,
-        saida_preco: saidaPreco,
-        saida_em: new Date(candle.closeTime).toISOString(),
-        saida_motivo: motivo,
-        resultado_r: resultadoR,
-        excursao_favoravel_r: mfe,
-        excursao_adversa_r: mae,
-      };
-    }
-  }
-
-  return {
-    status: 'aberto',
-    entrada_preco: entradaPreco,
-    entrada_em: new Date(candleEntrada.openTime).toISOString(),
-    alvo_efetivo: alvo,
-    risco_efetivo: riscoReal,
-    excursao_favoravel_r: mfe,
-    excursao_adversa_r: mae,
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Rota
@@ -474,6 +290,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     cancelados: 0,
     novos: 0,
     por_timeframe: {} as Record<string, number>,
+    candles_avaliados: 0,
+    candles_recuperados: 0,
+    pares_bloqueados: 0,
+    backlog_pares: 0,
+    backlog_candles_estimados: 0,
   };
 
   /** Cada combinação de moeda e horizonte é uma unidade independente. */
@@ -482,84 +303,107 @@ export async function POST(req: Request): Promise<NextResponse> {
   );
 
   await emLotes(combinacoes, CONCORRENCIA, async ({ simbolo, timeframe }) => {
-    let candles: DayTradeCandle[];
-
+    let lockToken: string | null = null;
     try {
-      candles = await buscarCandles(simbolo, timeframe);
-    } catch (erro) {
-      resumo.falhas.push(
-        `${simbolo} ${timeframe}: ${erro instanceof Error ? erro.message : String(erro)}`,
-      );
-      return;
-    }
-
-    if (candles.length < 250) {
-      resumo.falhas.push(
-        `${simbolo} ${timeframe}: histórico curto (${candles.length})`,
-      );
-      return;
-    }
-
-    resumo.pares_processados += 1;
-
-    // ---- 1. Resolver sinais pendentes -------------------------------------
-
-    const { data: pendentes } = await supabase
-      .from('forward_test_signals')
-      .select(
-        'id, simbolo, estrategia, timeframe, candle_open_time, entrada_referencia, stop_referencia, alvo_referencia, atr, status, entrada_preco, entrada_em',
-      )
-      .eq('config_id', config.id)
-      .eq('simbolo', simbolo)
-      .eq('timeframe', timeframe)
-      .in('status', ['aguardando_entrada', 'aberto']);
-
-    for (const sinal of (pendentes ?? []) as SignalRow[]) {
-      const resultado = resolverSinal(sinal, candles, config);
-
-      if (resultado.status === sinal.status && resultado.status !== 'aberto') {
-        continue;
-      }
-
-      const { error: erroUpdate } = await supabase
-        .from('forward_test_signals')
-        .update({ ...resultado, atualizado_em: new Date().toISOString() })
-        .eq('id', sinal.id);
-
-      if (!erroUpdate) {
-        resumo.resolvidos += 1;
-        if (resultado.status === 'fechado') resumo.fechados += 1;
-        if (resultado.status === 'cancelado') resumo.cancelados += 1;
-      }
-    }
-
-    // ---- 2. Detectar sinais novos -----------------------------------------
-
-    const fechados = candles.filter((candle) => candle.isClosed);
-    if (fechados.length < 250) return;
-
-    const ultimo = fechados[fechados.length - 1];
-
-    let avaliacao;
-
-    try {
-      avaliacao = evaluateAllDayTradeStrategies({
-        candles: fechados,
-        indicatorOptions: DAYTRADE_TIMEFRAME_INDICATOR_OPTIONS[timeframe],
-        enabledStrategies: config.estrategias as DayTradeStrategyId[],
+      const { data: claimData, error: claimError } = await supabase.rpc('claim_forward_test_checkpoint', {
+        p_config_id: config.id,
+        p_simbolo: simbolo,
+        p_timeframe: timeframe,
+        p_run_id: execucaoId,
+        p_lock_seconds: 240,
       });
-    } catch (erro) {
-      resumo.falhas.push(
-        `${simbolo} ${timeframe}: avaliação — ${erro instanceof Error ? erro.message : String(erro)}`,
-      );
-      return;
-    }
+      if (claimError) throw new Error('checkpoint: ' + claimError.message);
+      const claim = (claimData ?? {}) as Record<string, unknown>;
+      if (claim.claimed !== true) {
+        if (claim.code === 'FORWARD_TEST_PAIR_LOCKED') {
+          resumo.pares_bloqueados += 1;
+          return;
+        }
+        throw new Error(String(claim.code ?? 'checkpoint não reservado'));
+      }
+      lockToken = typeof claim.lock_token === 'string' ? claim.lock_token : null;
+      if (!lockToken) throw new Error('checkpoint sem lock_token');
 
-    for (const estrategia of config.estrategias) {
-      const resultado = (
-        avaliacao.evaluations as Record<string, unknown>
-      )[estrategia] as
-        | {
+      const candles = await buscarCandles(simbolo, timeframe);
+      const fechados = candles.filter((candle) => candle.isClosed).sort((a, b) => a.openTime - b.openTime);
+      if (fechados.length < 250) throw new Error('histórico curto (' + fechados.length + ')');
+
+      const { data: pendingData, error: pendingError } = await supabase
+        .from('forward_test_signals')
+        .select('id, simbolo, estrategia, timeframe, candle_open_time, entrada_referencia, stop_referencia, alvo_referencia, atr, status, entrada_preco, entrada_em')
+        .eq('config_id', config.id)
+        .eq('simbolo', simbolo)
+        .eq('timeframe', timeframe)
+        .in('status', ['aguardando_entrada', 'aberto']);
+      if (pendingError) throw new Error('sinais pendentes: ' + pendingError.message);
+      const active = new Map<string, SignalRow>();
+      for (const signal of (pendingData ?? []) as SignalRow[]) active.set(signal.estrategia, signal);
+
+      const { data: closedData, error: closedError } = await supabase
+        .from('forward_test_signals')
+        .select('estrategia, resultado_r, candle_open_time')
+        .eq('config_id', config.id)
+        .eq('simbolo', simbolo)
+        .eq('timeframe', timeframe)
+        .eq('status', 'fechado')
+        .order('candle_open_time', { ascending: false })
+        .limit(30);
+      if (closedError) throw new Error('histórico fechado: ' + closedError.message);
+      const previous = new Map<string, number>();
+      for (const row of (closedData ?? []) as Array<{ estrategia: string; resultado_r: number | null }>) {
+        if (!previous.has(row.estrategia) && row.resultado_r !== null) previous.set(row.estrategia, Number(row.resultado_r));
+      }
+
+      const selection = selectRecoveryCandles(
+        fechados,
+        typeof claim.last_evaluated_open_time === 'string' ? claim.last_evaluated_open_time : null,
+        MAX_CANDLES_RECUPERADOS,
+      );
+      let lastEvaluated: DayTradeCandle | null = null;
+
+      for (const candleIndex of selection.indexes) {
+        const untilNow = fechados.slice(0, candleIndex + 1);
+        const current = fechados[candleIndex];
+        lastEvaluated = current;
+
+        for (const [strategy, signal] of [...active.entries()]) {
+          const resolution = resolveForwardLongSignal(signal, untilNow, config);
+          if (resolution.status !== signal.status || ['aberto', 'fechado', 'cancelado'].includes(resolution.status)) {
+            const { error } = await supabase
+              .from('forward_test_signals')
+              .update({ ...resolution, atualizado_em: new Date().toISOString() })
+              .eq('id', signal.id);
+            if (error) throw new Error('atualização ' + signal.id + ': ' + error.message);
+            resumo.resolvidos += 1;
+          }
+          if (resolution.status === 'fechado') {
+            resumo.fechados += 1;
+            if (resolution.resultado_r !== undefined) previous.set(strategy, resolution.resultado_r);
+            active.delete(strategy);
+          } else if (resolution.status === 'cancelado') {
+            resumo.cancelados += 1;
+            active.delete(strategy);
+          } else {
+            active.set(strategy, {
+              ...signal,
+              ...resolution,
+              entrada_preco: resolution.entrada_preco ?? signal.entrada_preco,
+              entrada_em: resolution.entrada_em ?? signal.entrada_em,
+            });
+          }
+        }
+
+        const window = evaluationWindow(fechados, candleIndex, CANDLES_NECESSARIOS);
+        if (window.length < 250) throw new Error('aquecimento insuficiente em ' + current.openTime);
+        const evaluation = evaluateAllDayTradeStrategies({
+          candles: window,
+          indicatorOptions: DAYTRADE_TIMEFRAME_INDICATOR_OPTIONS[timeframe],
+          enabledStrategies: config.estrategias as DayTradeStrategyId[],
+        });
+
+        for (const strategy of config.estrategias) {
+          if (active.has(strategy)) continue;
+          const result = (evaluation.evaluations as Record<string, unknown>)[strategy] as undefined | {
             status?: string;
             allConditionsMet?: boolean;
             strategyVersion?: string;
@@ -575,94 +419,93 @@ export async function POST(req: Request): Promise<NextResponse> {
               riskPerUnit: number;
               stopDistanceAtr: number;
             } | null;
+          };
+          if (!result || result.status !== 'condicoes_atendidas' || !result.allConditionsMet || !result.plan) continue;
+          const plan = result.plan;
+          const prior = previous.get(strategy);
+          const priorLabel = prior === undefined ? 'nenhum' : prior > 0 ? 'ganho' : 'perda';
+          const row = {
+            config_id: config.id,
+            simbolo,
+            timeframe,
+            estrategia: strategy,
+            estrategia_versao: result.strategyVersion ?? null,
+            candle_open_time: new Date(result.candleOpenTime ?? current.openTime).toISOString(),
+            candle_close_time: new Date(result.candleCloseTime ?? current.closeTime).toISOString(),
+            entrada_referencia: plan.entryReference,
+            stop_referencia: plan.stopReference,
+            alvo_referencia: plan.targetReference,
+            atr: plan.stopDistanceAtr > 0 ? plan.riskPerUnit / plan.stopDistanceAtr : null,
+            score_pct: result.scorePct ?? null,
+            condicoes_atendidas: result.passedConditions ?? null,
+            condicoes_totais: result.totalConditions ?? null,
+            tamanho_fixo: 1,
+            tamanho_anti: priorLabel === 'ganho' ? 1.5 : 1,
+            resultado_anterior: priorLabel,
+          };
+          const { data: inserted, error: insertError } = await supabase
+            .from('forward_test_signals')
+            .insert(row)
+            .select('id, simbolo, estrategia, timeframe, candle_open_time, entrada_referencia, stop_referencia, alvo_referencia, atr, status, entrada_preco, entrada_em')
+            .maybeSingle();
+          if (insertError && insertError.code !== '23505') throw new Error('novo sinal ' + strategy + ': ' + insertError.message);
+          let signal = inserted as SignalRow | null;
+          if (!signal && insertError?.code === '23505') {
+            const { data: existing } = await supabase
+              .from('forward_test_signals')
+              .select('id, simbolo, estrategia, timeframe, candle_open_time, entrada_referencia, stop_referencia, alvo_referencia, atr, status, entrada_preco, entrada_em')
+              .eq('config_id', config.id)
+              .eq('simbolo', simbolo)
+              .eq('timeframe', timeframe)
+              .eq('estrategia', strategy)
+              .eq('candle_open_time', row.candle_open_time)
+              .maybeSingle();
+            signal = existing as SignalRow | null;
           }
-        | undefined;
-
-      if (
-        !resultado ||
-        resultado.status !== 'condicoes_atendidas' ||
-        !resultado.allConditionsMet ||
-        !resultado.plan
-      ) {
-        continue;
+          if (signal && ['aguardando_entrada', 'aberto'].includes(signal.status)) active.set(strategy, signal);
+          if (!insertError) {
+            resumo.novos += 1;
+            resumo.por_timeframe[timeframe] = (resumo.por_timeframe[timeframe] ?? 0) + 1;
+          }
+        }
       }
 
-      // Uma posição por moeda, estratégia e horizonte de cada vez, como no
-      // backtest. Horizontes diferentes operam de forma independente.
-      const { count } = await supabase
-        .from('forward_test_signals')
-        .select('id', { count: 'exact', head: true })
-        .eq('config_id', config.id)
-        .eq('simbolo', simbolo)
-        .eq('timeframe', timeframe)
-        .eq('estrategia', estrategia)
-        .in('status', ['aguardando_entrada', 'aberto']);
+      const { data: completionData, error: completionError } = await supabase.rpc('complete_forward_test_checkpoint', {
+        p_config_id: config.id,
+        p_simbolo: simbolo,
+        p_timeframe: timeframe,
+        p_lock_token: lockToken,
+        p_run_id: execucaoId,
+        p_last_evaluated_open_time: lastEvaluated ? new Date(lastEvaluated.openTime).toISOString() : null,
+        p_last_evaluated_close_time: lastEvaluated ? new Date(lastEvaluated.closeTime).toISOString() : null,
+        p_candles_evaluated: selection.indexes.length,
+        p_recovery_candles: selection.recoveredCount,
+        p_backlog_estimated: selection.backlog,
+      });
+      if (completionError) throw new Error('conclusão: ' + completionError.message);
+      if (((completionData ?? {}) as Record<string, unknown>).updated !== true) throw new Error('checkpoint não concluído');
 
-      if ((count ?? 0) > 0) continue;
-
-      // Anti-martingale suave: x1,5 quando a operação anterior fechada da
-      // mesma moeda, estratégia e horizonte terminou positiva.
-      const { data: anterior } = await supabase
-        .from('forward_test_signals')
-        .select('resultado_r')
-        .eq('config_id', config.id)
-        .eq('simbolo', simbolo)
-        .eq('timeframe', timeframe)
-        .eq('estrategia', estrategia)
-        .eq('status', 'fechado')
-        .order('candle_open_time', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      const resultadoAnterior =
-        anterior?.resultado_r === undefined || anterior?.resultado_r === null
-          ? 'nenhum'
-          : Number(anterior.resultado_r) > 0
-            ? 'ganho'
-            : 'perda';
-
-      const plano = resultado.plan;
-
-      const atr =
-        plano.stopDistanceAtr > 0
-          ? plano.riskPerUnit / plano.stopDistanceAtr
-          : null;
-
-      const { error: erroInsert } = await supabase
-        .from('forward_test_signals')
-        .insert({
-          config_id: config.id,
-          simbolo,
-          timeframe,
-          estrategia,
-          estrategia_versao: resultado.strategyVersion ?? null,
-          candle_open_time: new Date(
-            resultado.candleOpenTime ?? ultimo.openTime,
-          ).toISOString(),
-          candle_close_time: new Date(
-            resultado.candleCloseTime ?? ultimo.closeTime,
-          ).toISOString(),
-          entrada_referencia: plano.entryReference,
-          stop_referencia: plano.stopReference,
-          alvo_referencia: plano.targetReference,
-          atr,
-          score_pct: resultado.scorePct ?? null,
-          condicoes_atendidas: resultado.passedConditions ?? null,
-          condicoes_totais: resultado.totalConditions ?? null,
-          tamanho_fixo: 1,
-          tamanho_anti: resultadoAnterior === 'ganho' ? 1.5 : 1,
-          resultado_anterior: resultadoAnterior,
+      resumo.pares_processados += 1;
+      resumo.candles_avaliados += selection.indexes.length;
+      resumo.candles_recuperados += selection.recoveredCount;
+      resumo.backlog_candles_estimados += selection.backlog;
+      if (selection.backlog > 0) resumo.backlog_pares += 1;
+    } catch (error) {
+      const message = simbolo + ' ' + timeframe + ': ' + (error instanceof Error ? error.message : String(error));
+      resumo.falhas.push(message);
+      if (lockToken) {
+        await supabase.rpc('fail_forward_test_checkpoint', {
+          p_config_id: config.id,
+          p_simbolo: simbolo,
+          p_timeframe: timeframe,
+          p_lock_token: lockToken,
+          p_run_id: execucaoId,
+          p_error: message,
         });
-
-      // Conflito de chave única significa que o sinal já existia: o cron pode
-      // rodar várias vezes sem duplicar nada.
-      if (!erroInsert) {
-        resumo.novos += 1;
-        resumo.por_timeframe[timeframe] =
-          (resumo.por_timeframe[timeframe] ?? 0) + 1;
       }
     }
   });
+
   const duracaoMs = Date.now() - inicioMs;
 
   if (execucaoId) {
@@ -675,9 +518,17 @@ export async function POST(req: Request): Promise<NextResponse> {
         sinais_resolvidos: resumo.resolvidos,
         falhas: resumo.falhas,
         duracao_ms: duracaoMs,
-        // Falha parcial ainda conta como concluída; o que importa é que as
-        // falhas fiquem registradas para auditoria posterior.
-        status: resumo.pares_processados === 0 ? 'falhou' : 'concluido',
+        candles_avaliados: resumo.candles_avaliados,
+        candles_recuperados: resumo.candles_recuperados,
+        pares_bloqueados: resumo.pares_bloqueados,
+        backlog_pares: resumo.backlog_pares,
+        backlog_candles_estimados: resumo.backlog_candles_estimados,
+        status:
+          resumo.pares_processados === 0 && resumo.pares_bloqueados === 0
+            ? 'falhou'
+            : resumo.falhas.length > 0
+              ? 'concluido_com_falhas'
+              : 'concluido',
       })
       .eq('id', execucaoId);
   }
