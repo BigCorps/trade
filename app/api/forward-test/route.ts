@@ -52,11 +52,34 @@ const TIMEFRAME_MS: Record<DayTradeIndicatorTimeframe, number> = {
   '30m': 30 * 60 * 1_000,
   '1h': 60 * 60 * 1_000,
   '4h': 4 * 60 * 60 * 1_000,
+  '12h': 12 * 60 * 60 * 1_000,
   '1d': 24 * 60 * 60 * 1_000,
 };
 
 /** Suficiente para aquecer EMA200 e a distribuição de volatilidade. */
 const CANDLES_NECESSARIOS = 400;
+
+/**
+ * Buscas simultâneas na Binance. Com 30 moedas e 4 horizontes são 120
+ * requisições; em série passariam do tempo limite da função. Quatro por vez
+ * mantém o total em poucos segundos sem esbarrar no limite de taxa da API.
+ */
+const CONCORRENCIA = 4;
+
+async function emLotes<T, R>(
+  itens: readonly T[],
+  tamanho: number,
+  tarefa: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const resultados: R[] = [];
+
+  for (let i = 0; i < itens.length; i += tamanho) {
+    const lote = itens.slice(i, i + tamanho);
+    resultados.push(...(await Promise.all(lote.map(tarefa))));
+  }
+
+  return resultados;
+}
 
 const BINANCE_TIMEOUT_MS = 15_000;
 
@@ -68,7 +91,7 @@ interface ConfigRow {
   id: string;
   nome: string;
   versao: string;
-  timeframe: string;
+  timeframes: string[];
   estrategias: string[];
   simbolos: string[];
   fee_rate_pct: number;
@@ -80,6 +103,7 @@ interface SignalRow {
   id: string;
   simbolo: string;
   estrategia: string;
+  timeframe: string;
   candle_open_time: string;
   entrada_referencia: number;
   stop_referencia: number;
@@ -369,52 +393,63 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   const config = configData as ConfigRow;
-  const timeframe = config.timeframe as DayTradeIndicatorTimeframe;
+  const timeframes = config.timeframes as DayTradeIndicatorTimeframe[];
 
-  if (!(timeframe in TIMEFRAME_MS)) {
+  const invalidos = timeframes.filter((tf) => !(tf in TIMEFRAME_MS));
+
+  if (timeframes.length === 0 || invalidos.length > 0) {
     return respostaJson(
-      { ok: false, erro: `timeframe inválido: ${config.timeframe}` },
+      { ok: false, erro: `timeframe inválido: ${invalidos.join(', ')}` },
       500,
     );
   }
 
   const resumo = {
-    simbolos: 0,
+    pares_processados: 0,
     falhas: [] as string[],
     resolvidos: 0,
     fechados: 0,
     cancelados: 0,
     novos: 0,
+    por_timeframe: {} as Record<string, number>,
   };
 
-  for (const simbolo of config.simbolos) {
+  /** Cada combinação de moeda e horizonte é uma unidade independente. */
+  const combinacoes = config.simbolos.flatMap((simbolo) =>
+    timeframes.map((timeframe) => ({ simbolo, timeframe })),
+  );
+
+  await emLotes(combinacoes, CONCORRENCIA, async ({ simbolo, timeframe }) => {
     let candles: DayTradeCandle[];
 
     try {
       candles = await buscarCandles(simbolo, timeframe);
     } catch (erro) {
       resumo.falhas.push(
-        `${simbolo}: ${erro instanceof Error ? erro.message : String(erro)}`,
+        `${simbolo} ${timeframe}: ${erro instanceof Error ? erro.message : String(erro)}`,
       );
-      continue;
+      return;
     }
 
     if (candles.length < 250) {
-      resumo.falhas.push(`${simbolo}: histórico curto (${candles.length})`);
-      continue;
+      resumo.falhas.push(
+        `${simbolo} ${timeframe}: histórico curto (${candles.length})`,
+      );
+      return;
     }
 
-    resumo.simbolos += 1;
+    resumo.pares_processados += 1;
 
     // ---- 1. Resolver sinais pendentes -------------------------------------
 
     const { data: pendentes } = await supabase
       .from('forward_test_signals')
       .select(
-        'id, simbolo, estrategia, candle_open_time, entrada_referencia, stop_referencia, alvo_referencia, atr, status, entrada_preco, entrada_em',
+        'id, simbolo, estrategia, timeframe, candle_open_time, entrada_referencia, stop_referencia, alvo_referencia, atr, status, entrada_preco, entrada_em',
       )
       .eq('config_id', config.id)
       .eq('simbolo', simbolo)
+      .eq('timeframe', timeframe)
       .in('status', ['aguardando_entrada', 'aberto']);
 
     for (const sinal of (pendentes ?? []) as SignalRow[]) {
@@ -439,7 +474,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     // ---- 2. Detectar sinais novos -----------------------------------------
 
     const fechados = candles.filter((candle) => candle.isClosed);
-    if (fechados.length < 250) continue;
+    if (fechados.length < 250) return;
 
     const ultimo = fechados[fechados.length - 1];
 
@@ -453,9 +488,9 @@ export async function POST(req: Request): Promise<NextResponse> {
       });
     } catch (erro) {
       resumo.falhas.push(
-        `${simbolo}: avaliação — ${erro instanceof Error ? erro.message : String(erro)}`,
+        `${simbolo} ${timeframe}: avaliação — ${erro instanceof Error ? erro.message : String(erro)}`,
       );
-      continue;
+      return;
     }
 
     for (const estrategia of config.estrategias) {
@@ -490,24 +525,27 @@ export async function POST(req: Request): Promise<NextResponse> {
         continue;
       }
 
-      // Uma posição por símbolo e estratégia de cada vez, como no backtest.
+      // Uma posição por moeda, estratégia e horizonte de cada vez, como no
+      // backtest. Horizontes diferentes operam de forma independente.
       const { count } = await supabase
         .from('forward_test_signals')
         .select('id', { count: 'exact', head: true })
         .eq('config_id', config.id)
         .eq('simbolo', simbolo)
+        .eq('timeframe', timeframe)
         .eq('estrategia', estrategia)
         .in('status', ['aguardando_entrada', 'aberto']);
 
       if ((count ?? 0) > 0) continue;
 
-      // Anti-martingale suave: x1,5 quando a operação anterior fechada do
-      // mesmo símbolo e estratégia terminou positiva.
+      // Anti-martingale suave: x1,5 quando a operação anterior fechada da
+      // mesma moeda, estratégia e horizonte terminou positiva.
       const { data: anterior } = await supabase
         .from('forward_test_signals')
         .select('resultado_r')
         .eq('config_id', config.id)
         .eq('simbolo', simbolo)
+        .eq('timeframe', timeframe)
         .eq('estrategia', estrategia)
         .eq('status', 'fechado')
         .order('candle_open_time', { ascending: false })
@@ -533,6 +571,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         .insert({
           config_id: config.id,
           simbolo,
+          timeframe,
           estrategia,
           estrategia_versao: resultado.strategyVersion ?? null,
           candle_open_time: new Date(
@@ -554,11 +593,14 @@ export async function POST(req: Request): Promise<NextResponse> {
         });
 
       // Conflito de chave única significa que o sinal já existia: o cron pode
-      // rodar mais de uma vez no mesmo dia sem duplicar nada.
-      if (!erroInsert) resumo.novos += 1;
+      // rodar várias vezes sem duplicar nada.
+      if (!erroInsert) {
+        resumo.novos += 1;
+        resumo.por_timeframe[timeframe] =
+          (resumo.por_timeframe[timeframe] ?? 0) + 1;
+      }
     }
-  }
-
+  });
   return respostaJson({
     ok: true,
     config: `${config.nome} v${config.versao}`,

@@ -76,6 +76,7 @@ const TIMEFRAME_MS: Record<DayTradeIndicatorTimeframe, number> = {
   '30m': 30 * 60 * 1_000,
   '1h': 60 * 60 * 1_000,
   '4h': 4 * 60 * 60 * 1_000,
+  '12h': 12 * 60 * 60 * 1_000,
   '1d': 24 * 60 * 60 * 1_000,
 };
 
@@ -115,6 +116,7 @@ const WINDOW_BY_TIMEFRAME: Record<DayTradeIndicatorTimeframe, number> = {
   '30m': 2_000,
   '1h': 2_000,
   '4h': 750,
+  '12h': 400,
   '1d': 250,
 };
 
@@ -125,6 +127,7 @@ const DAYS_BY_TIMEFRAME: Record<DayTradeIndicatorTimeframe, number> = {
   '30m': 360,
   '1h': 360,
   '4h': 1_100,
+  '12h': 1_600,
   '1d': 2_900,
 };
 const DEFAULT_SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT'];

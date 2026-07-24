@@ -886,6 +886,10 @@ export const DAYTRADE_TIMEFRAME_INDICATOR_OPTIONS = {
     periodsPerYear: 6 * 365,
     volatilityWindow: 30,
   },
+  '12h': {
+    periodsPerYear: 2 * 365,
+    volatilityWindow: 30,
+  },
   '1d': {
     periodsPerYear: 365,
     volatilityWindow: 20,

@@ -76,7 +76,7 @@ interface ConfigRow {
   id: string;
   nome: string;
   versao: string;
-  timeframe: string;
+  timeframes: string[];
   estrategias: string[];
   simbolos: string[];
   fee_rate_pct: number;
@@ -88,6 +88,7 @@ interface ConfigRow {
 interface ResumoRow {
   nome: string;
   versao: string;
+  timeframe: string;
   estrategia: string;
   operacoes_fechadas: number;
   em_andamento: number;
@@ -104,6 +105,7 @@ interface SinalRow {
   id: string;
   simbolo: string;
   estrategia: string;
+  timeframe: string;
   candle_open_time: string;
   status: string;
   entrada_referencia: number;
@@ -241,7 +243,7 @@ export default function TestePropectivoPage() {
       supabase
         .from('forward_test_signals')
         .select(
-          'id, simbolo, estrategia, candle_open_time, status, entrada_referencia, stop_referencia, alvo_referencia, entrada_preco, saida_preco, saida_motivo, resultado_r, tamanho_anti, resultado_anterior',
+          'id, simbolo, estrategia, timeframe, candle_open_time, status, entrada_referencia, stop_referencia, alvo_referencia, entrada_preco, saida_preco, saida_motivo, resultado_r, tamanho_anti, resultado_anterior',
         )
         .order('candle_open_time', { ascending: false })
         .limit(60),
@@ -345,7 +347,7 @@ export default function TestePropectivoPage() {
               Teste prospectivo
             </div>
             <div style={{ fontSize: 11, color: S.dim }}>
-              regras congeladas · sem execução · medição em curso
+              regras congeladas · sem execução · quatro horizontes comparados
             </div>
           </div>
         </div>
@@ -490,8 +492,8 @@ export default function TestePropectivoPage() {
                 }}
               >
                 <div>
-                  <div style={{ color: S.dim }}>Timeframe</div>
-                  <div>{config.timeframe}</div>
+                  <div style={{ color: S.dim }}>Horizontes</div>
+                  <div>{config.timeframes.join(' · ')}</div>
                 </div>
                 <div>
                   <div style={{ color: S.dim }}>Estratégias</div>
@@ -573,10 +575,24 @@ export default function TestePropectivoPage() {
             {resumo.length > 0 && (
               <Card style={{ marginBottom: 18 }}>
                 <h2
-                  style={{ fontSize: 15, margin: '0 0 12px', fontWeight: 600 }}
+                  style={{ fontSize: 15, margin: '0 0 4px', fontWeight: 600 }}
                 >
-                  Por estratégia
+                  Por horizonte e estratégia
                 </h2>
+
+                <p
+                  style={{
+                    color: S.dim,
+                    fontSize: 12,
+                    margin: '0 0 12px',
+                    lineHeight: 1.6,
+                  }}
+                >
+                  O horizonte de 1h é controle negativo, não candidato: já foi
+                  medido em −0,142R por operação na validação. Ele está aqui para
+                  confirmar que o teste reproduz o resultado conhecido — se
+                  aparecer positivo, há erro na análise anterior.
+                </p>
 
                 <div style={{ overflowX: 'auto' }}>
                   <table
@@ -588,6 +604,7 @@ export default function TestePropectivoPage() {
                   >
                     <thead>
                       <tr style={{ color: S.dim, textAlign: 'left' }}>
+                        <th style={{ padding: '6px 8px' }}>Horizonte</th>
                         <th style={{ padding: '6px 8px' }}>Estratégia</th>
                         <th style={{ padding: '6px 8px' }}>Fechadas</th>
                         <th style={{ padding: '6px 8px' }}>Andamento</th>
@@ -598,7 +615,17 @@ export default function TestePropectivoPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {resumo.map((linha) => {
+                      {[...resumo]
+                        .sort((a, b) => {
+                          const ordem = ['1d', '12h', '4h', '1h'];
+                          const d =
+                            ordem.indexOf(a.timeframe) -
+                            ordem.indexOf(b.timeframe);
+                          return d !== 0
+                            ? d
+                            : a.estrategia.localeCompare(b.estrategia);
+                        })
+                        .map((linha) => {
                         const decididas =
                           Number(linha.ganhos ?? 0) + Number(linha.perdas ?? 0);
                         const acerto =
@@ -606,13 +633,33 @@ export default function TestePropectivoPage() {
                             ? (Number(linha.ganhos ?? 0) / decididas) * 100
                             : null;
 
+                        const controle = linha.timeframe === '1h';
+
                         return (
                           <tr
-                            key={linha.estrategia}
-                            style={{ borderTop: `1px solid ${S.border}` }}
+                            key={`${linha.timeframe}-${linha.estrategia}`}
+                            style={{
+                              borderTop: `1px solid ${S.border}`,
+                              opacity: controle ? 0.65 : 1,
+                            }}
                           >
+                            <td style={{ padding: '8px', fontWeight: 600 }}>
+                              {linha.timeframe}
+                              {controle && (
+                                <span
+                                  style={{
+                                    color: S.dim,
+                                    fontWeight: 400,
+                                    fontSize: 11,
+                                    marginLeft: 6,
+                                  }}
+                                >
+                                  controle
+                                </span>
+                              )}
+                            </td>
                             <td style={{ padding: '8px' }}>
-                              {linha.estrategia}
+                              {linha.estrategia.replace('trend_', '')}
                             </td>
                             <td style={{ padding: '8px' }}>
                               {linha.operacoes_fechadas}
@@ -665,6 +712,7 @@ export default function TestePropectivoPage() {
                       <tr style={{ color: S.dim, textAlign: 'left' }}>
                         <th style={{ padding: '6px 8px' }}>Data</th>
                         <th style={{ padding: '6px 8px' }}>Moeda</th>
+                        <th style={{ padding: '6px 8px' }}>Horizonte</th>
                         <th style={{ padding: '6px 8px' }}>Estratégia</th>
                         <th style={{ padding: '6px 8px' }}>Situação</th>
                         <th style={{ padding: '6px 8px' }}>Entrada</th>
@@ -684,6 +732,9 @@ export default function TestePropectivoPage() {
                             {fmtData(sinal.candle_open_time)}
                           </td>
                           <td style={{ padding: '8px' }}>{sinal.simbolo}</td>
+                          <td style={{ padding: '8px', color: S.dim }}>
+                            {sinal.timeframe}
+                          </td>
                           <td style={{ padding: '8px', color: S.dim }}>
                             {sinal.estrategia.replace('trend_', '')}
                           </td>
@@ -734,11 +785,12 @@ export default function TestePropectivoPage() {
                 lineHeight: 1.7,
               }}
             >
-              As estratégias intradiárias que antes ocupavam esta página foram
-              retiradas após serem reprovadas na validação: média de −0,142R por
-              operação no timeframe de 1 hora, com nenhum dos nove símbolos
-              testados apresentando resultado positivo. Este experimento mede
-              estratégias diárias, cujo resultado ainda é desconhecido. Conteúdo
+              Os sinais acionáveis que antes ocupavam esta página foram retirados
+              após as estratégias intradiárias serem reprovadas na validação:
+              média de −0,142R por operação no horizonte de 1 hora, com nenhum
+              dos nove símbolos testados apresentando resultado positivo. Este
+              experimento mede horizontes mais longos, cujo resultado ainda é
+              desconhecido, e mantém o de 1 hora apenas como controle. Conteúdo
               educacional; não constitui recomendação de investimento.
             </p>
           </>
