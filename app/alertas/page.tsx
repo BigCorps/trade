@@ -491,7 +491,7 @@ export default function AlertasPage() {
           <a href="/robustez" style={{ color: S.dim, textDecoration: 'none' }}>
             Robustez
           </a>
-          <span style={{ color: S.b, fontWeight: 600 }}>Alertas</span>
+          <span style={{ color: S.a, fontWeight: 600 }}>Alertas</span>
           <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>Conta Binance</a>
           {session && (
             <button onClick={signOut}

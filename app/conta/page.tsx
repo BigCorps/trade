@@ -2529,7 +2529,7 @@ export default function ContaPage() {
           <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
             Alertas
           </a>
-          <span style={{ color: S.b, fontWeight: 600 }}>
+          <span style={{ color: S.a, fontWeight: 600 }}>
             Conta Binance
           </span>
           {session && (
