@@ -1855,6 +1855,10 @@ export default function AnalisePage() {
   Teste prospectivo
 </a>
 
+<a href="/robustez" style={{ color: S.dim, textDecoration: 'none' }}>
+Robustez
+</a>
+
 <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
   Alertas
 </a>
