@@ -488,6 +488,9 @@ export default function AlertasPage() {
           <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>Análise</a>
           <a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>Validação</a>
           <a href="/oportunidades" style={{ color: S.dim, textDecoration: 'none' }}>Teste prospectivo</a>
+          <a href="/robustez" style={{ color: S.dim, textDecoration: 'none' }}>
+            Robustez
+          </a>
           <span style={{ color: S.a, fontWeight: 600 }}>Alertas</span>
           <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>Conta Binance</a>
           {session && (
