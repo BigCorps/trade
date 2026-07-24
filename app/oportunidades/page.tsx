@@ -19,6 +19,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { Session } from '@supabase/supabase-js';
 import { getSupabase } from '@/lib/supabaseClient';
 
 // ---------------------------------------------------------------------------
@@ -219,6 +220,7 @@ function Etiqueta({ status }: { status: string }) {
 export default function TestePropectivoPage() {
   const supabase = useMemo(() => getSupabase(), []);
 
+  const [session, setSession] = useState<Session | null>(null);
   const [carregando, setCarregando] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
   const [config, setConfig] = useState<ConfigRow | null>(null);
@@ -263,6 +265,18 @@ export default function TestePropectivoPage() {
     void carregar();
   }, [carregar]);
 
+  useEffect(() => {
+    void supabase.auth
+      .getSession()
+      .then(({ data }) => setSession(data.session ?? null));
+
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_evento, novaSessao) => setSession(novaSessao),
+    );
+
+    return () => listener.subscription.unsubscribe();
+  }, [supabase]);
+
   const totais = useMemo(() => {
     const fechadas = resumo.reduce(
       (t, r) => t + Number(r.operacoes_fechadas ?? 0),
@@ -301,54 +315,105 @@ export default function TestePropectivoPage() {
         minHeight: '100vh',
         background: S.bg,
         color: S.text,
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-        padding: '28px 16px 60px',
+        fontFamily: 'ui-sans-serif, system-ui, sans-serif',
       }}
     >
-      <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-        <header style={{ marginBottom: 24 }}>
-          <h1 style={{ fontSize: 22, margin: 0, fontWeight: 600 }}>
-            Teste prospectivo
-          </h1>
-          <p
-            style={{
-              color: S.dim,
-              fontSize: 13,
-              marginTop: 6,
-              lineHeight: 1.6,
-            }}
-          >
-            Acompanhamento de um experimento em andamento, com regras congeladas.
-            Nenhuma ordem é executada a partir desta página, e os números abaixo
-            não constituem recomendação.
-          </p>
-
-          <nav
-            style={{
-              display: 'flex',
-              gap: 20,
-              marginTop: 14,
-              fontSize: 13,
-              flexWrap: 'wrap',
-            }}
-          >
-            <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
-              Análise
-            </a>
-            <a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>
-              Validação
-            </a>
-            <span style={{ color: S.a, fontWeight: 600 }}>
+      {/* Header + navegação — mesmo padrão das demais páginas */}
+      <header
+        style={{
+          borderBottom: `1px solid ${S.border}`,
+          background: S.panel,
+          padding: '12px 20px',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 12,
+          }}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/logo.png"
+            alt="VigIA Trade"
+            style={{ height: 32, width: 'auto', display: 'block' }}
+          />
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>
               Teste prospectivo
-            </span>
-            <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
-              Alertas
+            </div>
+            <div style={{ fontSize: 11, color: S.dim }}>
+              regras congeladas · sem execução · medição em curso
+            </div>
+          </div>
+        </div>
+
+        <nav
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 20,
+            marginTop: 8,
+            fontSize: 13,
+          }}
+        >
+          <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
+            Análise
+          </a>
+          <a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>
+            Validação
+          </a>
+          <span style={{ color: S.b, fontWeight: 700 }}>Teste prospectivo</span>
+          <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
+            Alertas
+          </a>
+          <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
+            Conta Binance
+          </a>
+          {!session ? (
+            <a
+              href="/alertas?next=%2Foportunidades"
+              style={{ color: S.green, textDecoration: 'none' }}
+            >
+              Entrar
             </a>
-            <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
-              Conta Binance
-            </a>
-          </nav>
-        </header>
+          ) : (
+            <button
+              onClick={() => supabase.auth.signOut()}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: S.red,
+                fontSize: 13,
+                cursor: 'pointer',
+                padding: 0,
+                fontFamily: 'inherit',
+              }}
+            >
+              Sair
+            </button>
+          )}
+        </nav>
+      </header>
+
+      <div style={{ maxWidth: 1100, margin: '0 auto', padding: '24px 16px 60px' }}>
+        <p
+          style={{
+            color: S.dim,
+            fontSize: 13,
+            margin: '0 0 20px',
+            lineHeight: 1.6,
+            textAlign: 'center',
+          }}
+        >
+          Acompanhamento de um experimento em andamento, com regras congeladas.
+          Nenhuma ordem é executada a partir desta página, e os números abaixo
+          não constituem recomendação.
+        </p>
 
         {carregando && (
           <Card>
@@ -682,4 +747,3 @@ export default function TestePropectivoPage() {
     </main>
   );
 }
-

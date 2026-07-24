@@ -2518,10 +2518,10 @@ export default function ContaPage() {
             Análise
           </a>
           <a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>
-            Day Trade
+            Validação
           </a>
           <a href="/oportunidades" style={{ color: S.dim, textDecoration: 'none' }}>
-            Oportunidades
+            Teste prospectivo
           </a>
           <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
             Alertas
@@ -4254,40 +4254,32 @@ export default function ContaPage() {
               </Card>
             )}
 
-            {/* --------------------------- Central de Oportunidades --------------------------- */}
+            {/* --------------------------- Teste prospectivo --------------------------- */}
             <Card style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 15, fontWeight: 600 }}>Vínculo com a Central</div>
+              <div style={{ fontSize: 15, fontWeight: 600 }}>Teste prospectivo</div>
 
-              {centralSchemaAvailable === false ? (
-                <div style={{ color: S.dim, fontSize: 12, lineHeight: 1.55, marginTop: 8 }}>
-                  O histórico normal continua disponível. Os vínculos com oportunidades aparecerão
-                  depois que a migration da Central for aplicada.
-                </div>
-              ) : (
-                <>
-                  <div style={{ color: S.dim, fontSize: 12, lineHeight: 1.55, marginTop: 8 }}>
-                    {linkedOrdersCount === 0
-                      ? 'Nenhuma ordem vinculada a uma oportunidade entre as 15 ordens mais recentes.'
-                      : `${linkedOrdersCount} ordem(ns) vinculada(s), sendo ${linkedOpenOrdersCount} ainda aberta(s).`}
-                  </div>
-                  <a
-                    href="/oportunidades"
-                    style={{
-                      display: 'inline-block',
-                      marginTop: 10,
-                      color: S.a,
-                      textDecoration: 'none',
-                      border: `1px solid ${S.a}66`,
-                      borderRadius: 8,
-                      padding: '7px 14px',
-                      fontSize: 12,
-                      fontWeight: 700,
-                    }}
-                  >
-                    Abrir Central de Oportunidades
-                  </a>
-                </>
-              )}
+              <div style={{ color: S.dim, fontSize: 12, lineHeight: 1.55, marginTop: 8 }}>
+                As estratégias intradiárias foram retiradas após reprovarem na
+                validação. O experimento em curso mede estratégias diárias e não
+                executa ordens.
+              </div>
+
+              <a
+                href="/oportunidades"
+                style={{
+                  display: 'inline-block',
+                  marginTop: 10,
+                  color: S.a,
+                  textDecoration: 'none',
+                  border: `1px solid ${S.a}66`,
+                  borderRadius: 8,
+                  padding: '7px 14px',
+                  fontSize: 12,
+                  fontWeight: 700,
+                }}
+              >
+                Acompanhar teste prospectivo
+              </a>
             </Card>
 
             {/* --------------------------- Histórico de ordens --------------------------- */}
