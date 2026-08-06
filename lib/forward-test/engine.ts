@@ -1,5 +1,7 @@
 import type { DayTradeCandle } from '@/lib/daytrade/indicators';
 
+export type ForwardDirection = 'long' | 'short';
+
 export interface ForwardSignalInput {
   candle_open_time: string;
   entrada_referencia: number;
@@ -8,6 +10,7 @@ export interface ForwardSignalInput {
   atr: number | null;
   status: string;
   entrada_preco: number | null;
+  direcao?: ForwardDirection | null;
 }
 
 export interface ForwardExecutionConfig {
@@ -58,13 +61,20 @@ export function selectRecoveryCandles(
     .filter(({ candle }) => candle.isClosed)
     .sort((a, b) => a.candle.openTime - b.candle.openTime);
   if (closed.length === 0) {
-    return { indexes: [], eligibleCount: 0, backlog: 0, recoveredCount: 0, latestClosedOpenTime: null };
+    return {
+      indexes: [],
+      eligibleCount: 0,
+      backlog: 0,
+      recoveredCount: 0,
+      latestClosedOpenTime: null,
+    };
   }
   const latest = closed[closed.length - 1].candle.openTime;
   const checkpoint = validTime(lastEvaluatedOpenTime);
-  const eligible = checkpoint === null
-    ? [closed[closed.length - 1]]
-    : closed.filter(({ candle }) => candle.openTime > checkpoint);
+  const eligible =
+    checkpoint === null
+      ? [closed[closed.length - 1]]
+      : closed.filter(({ candle }) => candle.openTime > checkpoint);
   const selected = eligible.slice(0, maximumCandles);
   return {
     indexes: selected.map(({ index }) => index),
@@ -80,15 +90,33 @@ export function evaluationWindow(
   terminalIndex: number,
   desiredWarmup = 400,
 ): DayTradeCandle[] {
-  if (!Number.isInteger(terminalIndex) || terminalIndex < 0 || terminalIndex >= candles.length) {
+  if (
+    !Number.isInteger(terminalIndex) ||
+    terminalIndex < 0 ||
+    terminalIndex >= candles.length
+  ) {
     throw new Error('terminalIndex está fora da série de candles.');
   }
   const start = Math.max(0, terminalIndex - Math.max(1, desiredWarmup) + 1);
   return candles.slice(start, terminalIndex + 1);
 }
 
-const buyWithSlippage = (price: number, pct: number) => price * (1 + pct / 100);
-const sellWithSlippage = (price: number, pct: number) => price * (1 - pct / 100);
+const buyWithSlippage = (price: number, pct: number) =>
+  price * (1 + pct / 100);
+const sellWithSlippage = (price: number, pct: number) =>
+  price * (1 - pct / 100);
+
+function cancelled(
+  reason: string,
+  candle: DayTradeCandle,
+): ForwardResolution {
+  return {
+    status: 'cancelado',
+    saida_motivo: 'cancelado',
+    cancelamento_motivo: reason,
+    saida_em: new Date(candle.openTime).toISOString(),
+  };
+}
 
 export function resolveForwardLongSignal(
   signal: ForwardSignalInput,
@@ -97,27 +125,36 @@ export function resolveForwardLongSignal(
 ): ForwardResolution {
   const signalTime = new Date(signal.candle_open_time).getTime();
   const signalIndex = candles.findIndex((candle) => candle.openTime === signalTime);
-  if (signalIndex < 0) return { status: signal.status as ForwardResolution['status'] };
-
+  if (signalIndex < 0) {
+    return { status: signal.status as ForwardResolution['status'] };
+  }
   const entryCandle = candles[signalIndex + 1];
-  if (!entryCandle || !entryCandle.isClosed) return { status: 'aguardando_entrada' };
-
+  if (!entryCandle || !entryCandle.isClosed) {
+    return { status: 'aguardando_entrada' };
+  }
   const plannedRisk = signal.entrada_referencia - signal.stop_referencia;
   if (!Number.isFinite(plannedRisk) || plannedRisk <= 0) {
-    return { status: 'cancelado', saida_motivo: 'cancelado', cancelamento_motivo: 'plano_invalido', saida_em: new Date(entryCandle.openTime).toISOString() };
+    return cancelled('plano_invalido', entryCandle);
   }
-  if (signal.atr !== null && entryCandle.open > signal.entrada_referencia + signal.atr * config.max_next_open_distance_atr) {
-    return { status: 'cancelado', saida_motivo: 'cancelado', cancelamento_motivo: 'abertura_distante', saida_em: new Date(entryCandle.openTime).toISOString() };
+  if (
+    signal.atr !== null &&
+    entryCandle.open >
+      signal.entrada_referencia +
+        signal.atr * config.max_next_open_distance_atr
+  ) {
+    return cancelled('abertura_distante', entryCandle);
   }
 
-  const entryPrice = signal.entrada_preco ?? buyWithSlippage(entryCandle.open, config.slippage_pct);
+  const entryPrice =
+    signal.entrada_preco ??
+    buyWithSlippage(entryCandle.open, config.slippage_pct);
   const stop = signal.stop_referencia;
   const actualRisk = entryPrice - stop;
   if (!Number.isFinite(actualRisk) || actualRisk <= 0) {
-    return { status: 'cancelado', saida_motivo: 'cancelado', cancelamento_motivo: 'risco_real_invalido', saida_em: new Date(entryCandle.openTime).toISOString() };
+    return cancelled('risco_real_invalido', entryCandle);
   }
-
-  const targetRatio = (signal.alvo_referencia - signal.entrada_referencia) / plannedRisk;
+  const targetRatio =
+    (signal.alvo_referencia - signal.entrada_referencia) / plannedRisk;
   const target = entryPrice + actualRisk * targetRatio;
   let mfe = 0;
   let mae = 0;
@@ -129,29 +166,155 @@ export function resolveForwardLongSignal(
     mae = Math.min(mae, (candle.low - entryPrice) / actualRisk);
     let reason: 'stop' | 'alvo' | null = null;
     let rawExit = 0;
-    if (candle.open <= stop) { reason = 'stop'; rawExit = candle.open; }
-    else if (candle.open >= target) { reason = 'alvo'; rawExit = target; }
-    else if (candle.low <= stop) { reason = 'stop'; rawExit = stop; }
-    else if (candle.high >= target) { reason = 'alvo'; rawExit = target; }
+    if (candle.open <= stop) {
+      reason = 'stop';
+      rawExit = candle.open;
+    } else if (candle.open >= target) {
+      reason = 'alvo';
+      rawExit = target;
+    } else if (candle.low <= stop) {
+      reason = 'stop';
+      rawExit = stop;
+    } else if (candle.high >= target) {
+      reason = 'alvo';
+      rawExit = target;
+    }
 
     if (reason) {
       const exitPrice = sellWithSlippage(rawExit, config.slippage_pct);
-      const fees = entryPrice * (config.fee_rate_pct / 100) + exitPrice * (config.fee_rate_pct / 100);
+      const fees =
+        entryPrice * (config.fee_rate_pct / 100) +
+        exitPrice * (config.fee_rate_pct / 100);
       return {
-        status: 'fechado', entrada_preco: entryPrice,
-        entrada_em: new Date(entryCandle.openTime).toISOString(), alvo_efetivo: target,
-        risco_efetivo: actualRisk, saida_preco: exitPrice,
-        saida_em: new Date(candle.closeTime).toISOString(), saida_motivo: reason,
+        status: 'fechado',
+        entrada_preco: entryPrice,
+        entrada_em: new Date(entryCandle.openTime).toISOString(),
+        alvo_efetivo: target,
+        risco_efetivo: actualRisk,
+        saida_preco: exitPrice,
+        saida_em: new Date(candle.closeTime).toISOString(),
+        saida_motivo: reason,
         resultado_r: (exitPrice - entryPrice - fees) / actualRisk,
-        excursao_favoravel_r: mfe, excursao_adversa_r: mae,
+        excursao_favoravel_r: mfe,
+        excursao_adversa_r: mae,
       };
     }
   }
 
   return {
-    status: 'aberto', entrada_preco: entryPrice,
+    status: 'aberto',
+    entrada_preco: entryPrice,
     entrada_em: new Date(entryCandle.openTime).toISOString(),
-    alvo_efetivo: target, risco_efetivo: actualRisk,
-    excursao_favoravel_r: mfe, excursao_adversa_r: mae,
+    alvo_efetivo: target,
+    risco_efetivo: actualRisk,
+    excursao_favoravel_r: mfe,
+    excursao_adversa_r: mae,
   };
+}
+
+export function resolveForwardShortSignal(
+  signal: ForwardSignalInput,
+  candles: readonly DayTradeCandle[],
+  config: ForwardExecutionConfig,
+): ForwardResolution {
+  const signalTime = new Date(signal.candle_open_time).getTime();
+  const signalIndex = candles.findIndex((candle) => candle.openTime === signalTime);
+  if (signalIndex < 0) {
+    return { status: signal.status as ForwardResolution['status'] };
+  }
+  const entryCandle = candles[signalIndex + 1];
+  if (!entryCandle || !entryCandle.isClosed) {
+    return { status: 'aguardando_entrada' };
+  }
+  const plannedRisk = signal.stop_referencia - signal.entrada_referencia;
+  if (!Number.isFinite(plannedRisk) || plannedRisk <= 0) {
+    return cancelled('plano_invalido', entryCandle);
+  }
+  if (
+    signal.atr !== null &&
+    entryCandle.open <
+      signal.entrada_referencia -
+        signal.atr * config.max_next_open_distance_atr
+  ) {
+    return cancelled('abertura_distante', entryCandle);
+  }
+
+  const entryPrice =
+    signal.entrada_preco ??
+    sellWithSlippage(entryCandle.open, config.slippage_pct);
+  const stop = signal.stop_referencia;
+  const actualRisk = stop - entryPrice;
+  if (!Number.isFinite(actualRisk) || actualRisk <= 0) {
+    return cancelled('risco_real_invalido', entryCandle);
+  }
+  const targetRatio =
+    (signal.entrada_referencia - signal.alvo_referencia) / plannedRisk;
+  const target = entryPrice - actualRisk * targetRatio;
+  if (!Number.isFinite(target) || target <= 0) {
+    return cancelled('alvo_real_invalido', entryCandle);
+  }
+
+  let mfe = 0;
+  let mae = 0;
+  for (let index = signalIndex + 1; index < candles.length; index += 1) {
+    const candle = candles[index];
+    if (!candle.isClosed) break;
+    mfe = Math.max(mfe, (entryPrice - candle.low) / actualRisk);
+    mae = Math.min(mae, (entryPrice - candle.high) / actualRisk);
+    let reason: 'stop' | 'alvo' | null = null;
+    let rawExit = 0;
+    if (candle.open >= stop) {
+      reason = 'stop';
+      rawExit = candle.open;
+    } else if (candle.open <= target) {
+      reason = 'alvo';
+      rawExit = target;
+    } else if (candle.high >= stop) {
+      reason = 'stop';
+      rawExit = stop;
+    } else if (candle.low <= target) {
+      reason = 'alvo';
+      rawExit = target;
+    }
+
+    if (reason) {
+      const exitPrice = buyWithSlippage(rawExit, config.slippage_pct);
+      const fees =
+        entryPrice * (config.fee_rate_pct / 100) +
+        exitPrice * (config.fee_rate_pct / 100);
+      return {
+        status: 'fechado',
+        entrada_preco: entryPrice,
+        entrada_em: new Date(entryCandle.openTime).toISOString(),
+        alvo_efetivo: target,
+        risco_efetivo: actualRisk,
+        saida_preco: exitPrice,
+        saida_em: new Date(candle.closeTime).toISOString(),
+        saida_motivo: reason,
+        resultado_r: (entryPrice - exitPrice - fees) / actualRisk,
+        excursao_favoravel_r: mfe,
+        excursao_adversa_r: mae,
+      };
+    }
+  }
+
+  return {
+    status: 'aberto',
+    entrada_preco: entryPrice,
+    entrada_em: new Date(entryCandle.openTime).toISOString(),
+    alvo_efetivo: target,
+    risco_efetivo: actualRisk,
+    excursao_favoravel_r: mfe,
+    excursao_adversa_r: mae,
+  };
+}
+
+export function resolveForwardSignal(
+  signal: ForwardSignalInput,
+  candles: readonly DayTradeCandle[],
+  config: ForwardExecutionConfig,
+): ForwardResolution {
+  return signal.direcao === 'short'
+    ? resolveForwardShortSignal(signal, candles, config)
+    : resolveForwardLongSignal(signal, candles, config);
 }

@@ -1,393 +1,230 @@
 'use client';
 
-/**
- * app/oportunidades/page.tsx — VigIA Trade
- * ---------------------------------------------------------------------------
- * Teste prospectivo das estratégias diárias.
- *
- * Esta rota antes exibia oportunidades intradiárias acionáveis. Aquelas
- * estratégias foram reprovadas na validação walk-forward (média de -0,142R por
- * operação no 1h, com 0 de 9 símbolos positivos), e apresentar sinais delas
- * como acionáveis seria enganoso. A rota foi mantida para não quebrar links,
- * mas o conteúdo agora é o acompanhamento honesto de um experimento em curso.
- *
- * A página é deliberadamente somente leitura. O valor do teste prospectivo vem
- * de as regras permanecerem congeladas; qualquer botão que permitisse ajustar
- * parâmetros no meio do caminho destruiria o experimento.
- *
- * Nenhuma ordem é executada a partir daqui.
- */
-
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { Session } from '@supabase/supabase-js';
 import { getSupabase } from '@/lib/supabaseClient';
-import { combineForwardStatistics } from '@/lib/forward-test/statistics';
-
-// ---------------------------------------------------------------------------
-// Estilo (mesma paleta das demais páginas)
-// ---------------------------------------------------------------------------
 
 const S = {
   bg: '#101418',
   panel: '#181f26',
-  panelSoft: '#141a20',
+  soft: '#141a20',
   border: '#2a343f',
   text: '#d7dee6',
   dim: '#7d8a97',
-  a: '#e8a13c',
-  b: '#4f8fd0',
+  blue: '#4f8fd0',
   green: '#3fb26f',
   red: '#d05555',
+  orange: '#e8a13c',
+  purple: '#9a7fd1',
 };
 
-const fmtNum = (valor: number | null | undefined, casas = 2): string => {
-  if (valor === null || valor === undefined || !Number.isFinite(Number(valor))) {
-    return '—';
-  }
-  return Number(valor).toLocaleString('pt-BR', {
-    minimumFractionDigits: casas,
-    maximumFractionDigits: casas,
-  });
-};
-
-const fmtR = (valor: number | null | undefined): string => {
-  if (valor === null || valor === undefined || !Number.isFinite(Number(valor))) {
-    return '—';
-  }
-  return `${Number(valor) > 0 ? '+' : ''}${fmtNum(valor)}R`;
-};
-
-const fmtData = (iso: string | null): string => {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? '—'
-    : d.toLocaleDateString('pt-BR', {
-        day: '2-digit',
-        month: '2-digit',
-        year: '2-digit',
-      });
-};
-
-// ---------------------------------------------------------------------------
-// Tipos
-// ---------------------------------------------------------------------------
-
-interface ConfigRow {
+type Config = {
   id: string;
   nome: string;
   versao: string;
+  grupo_experimento: string;
   timeframes: string[];
   estrategias: string[];
   simbolos: string[];
-  fee_rate_pct: number;
-  slippage_pct: number;
+  amostra_alvo: number;
+  protocolo_status: string;
   congelado_em: string;
   observacoes: string | null;
-}
+};
 
-interface ResumoRow {
+type Dashboard = {
   config_id: string;
   nome: string;
   versao: string;
-  timeframe: string;
-  estrategia: string;
-  operacoes_fechadas: number;
-  em_andamento: number;
-  canceladas: number;
-  ganhos: number;
-  perdas: number;
-  empates: number;
-  media_r: number | null;
-  desvio_r: number | null;
-  erro_padrao_r: number | null;
-  ic95_inferior_r: number | null;
-  ic95_superior_r: number | null;
-  t_stat_r: number | null;
-  soma_r_fixo: number | null;
-  soma_quadrados_r_fixo: number | null;
-  ganho_bruto_r: number | null;
-  perda_bruta_r: number | null;
+  grupo_experimento: string;
+  amostra_alvo: number;
+  protocolo_status: string;
+  congelado_em: string;
+  operacoes: number;
+  abertas: number;
+  resultado_r_liquido: number;
+  media_r_operacao: number | null;
+  acerto_pct: number | null;
   profit_factor: number | null;
-  soma_r_anti: number | null;
-  delta_anti_r: number | null;
-  max_drawdown_r_fixo: number | null;
-  max_drawdown_r_anti: number | null;
-  primeiro_sinal: string | null;
-  ultimo_sinal: string | null;
-}
+  progresso_pct: number;
+  situacao_amostra: string;
+};
 
-interface SinalRow {
-  id: string;
-  simbolo: string;
-  estrategia: string;
-  timeframe: string;
-  candle_open_time: string;
+type Validation = {
+  config_id: string;
   status: string;
-  entrada_referencia: number;
-  stop_referencia: number;
-  alvo_referencia: number;
-  entrada_preco: number | null;
-  saida_preco: number | null;
-  saida_motivo: string | null;
-  alvo_efetivo: number | null;
-  cancelamento_motivo: string | null;
-  resultado_r: number | null;
-  tamanho_anti: number;
-  resultado_anterior: string | null;
-}
-
-interface RunRow {
-  id: string;
   iniciado_em: string;
-  status: string;
-  pares_esperados: number | null;
-  pares_processados: number | null;
-  sinais_criados: number | null;
-  sinais_resolvidos: number | null;
-  duracao_ms: number | null;
-  candles_avaliados: number;
-  candles_recuperados: number;
-  pares_bloqueados: number;
-  backlog_pares: number;
-  backlog_candles_estimados: number;
-}
+  operacoes_fechadas: number;
+  resultado: Record<string, unknown>;
+};
 
-interface CheckpointRow {
+type Funding = {
   simbolo: string;
-  timeframe: string;
-  backlog_estimated: number;
-  last_error: string | null;
-  locked_until: string | null;
+  coletado_em: string;
+  funding_rate_pct: number;
+  funding_anualizado_pct: number;
+  basis_pct: number;
+  custo_round_trip_pct: number;
+  carry_liquido_anualizado_pct: number;
+  elegivel: boolean;
+  motivo: string;
+};
+
+function numeric(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
-
-// ---------------------------------------------------------------------------
-// Componentes
-// ---------------------------------------------------------------------------
-
-function Card({
-  children,
-  style,
-}: {
-  children: React.ReactNode;
-  style?: React.CSSProperties;
-}) {
+function fmt(value: unknown, digits = 2) {
+  const number = numeric(value);
+  return number !== null
+    ? number.toLocaleString('pt-BR', {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+      })
+    : '—';
+}
+function fmtR(value: unknown) {
+  const number = numeric(value);
+  return number !== null
+    ? `${number > 0 ? '+' : ''}${fmt(number)}R`
+    : '—';
+}
+function fmtPct(value: unknown, digits = 2) {
+  const number = numeric(value);
+  return number !== null ? `${fmt(number, digits)}%` : '—';
+}
+function date(value: string | null | undefined) {
+  return value
+    ? new Date(value).toLocaleString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : '—';
+}
+function object(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+function colorForResult(value: unknown) {
+  const number = numeric(value);
+  return number === null ? S.dim : number > 0 ? S.green : number < 0 ? S.red : S.dim;
+}
+function Card({ children }: { children: React.ReactNode }) {
   return (
-    <div
+    <section
       style={{
         background: S.panel,
         border: `1px solid ${S.border}`,
         borderRadius: 12,
         padding: 18,
-        ...style,
       }}
     >
       {children}
-    </div>
+    </section>
   );
 }
-
-function Metrica({
-  rotulo,
-  valor,
-  detalhe,
-  cor,
+function Badge({ children, color }: { children: React.ReactNode; color: string }) {
+  return (
+    <span
+      style={{
+        color,
+        border: `1px solid ${color}66`,
+        background: `${color}18`,
+        borderRadius: 999,
+        padding: '3px 8px',
+        fontSize: 10,
+        fontWeight: 700,
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+function Metric({
+  label,
+  value,
+  detail,
+  color,
 }: {
-  rotulo: string;
-  valor: string;
-  detalhe?: string;
-  cor?: string;
+  label: string;
+  value: string;
+  detail?: string;
+  color?: string;
 }) {
   return (
     <div
       style={{
-        background: S.panelSoft,
+        flex: '1 1 145px',
+        minWidth: 145,
+        background: S.soft,
         border: `1px solid ${S.border}`,
         borderRadius: 10,
-        padding: 14,
-        minWidth: 150,
-        flex: '1 1 150px',
+        padding: 13,
       }}
     >
-      <div style={{ color: S.dim, fontSize: 11, marginBottom: 6 }}>
-        {rotulo}
+      <div style={{ color: S.dim, fontSize: 11 }}>{label}</div>
+      <div style={{ color: color ?? S.text, fontSize: 21, fontWeight: 750, marginTop: 5 }}>
+        {value}
       </div>
-      <div style={{ color: cor ?? S.text, fontSize: 22, fontWeight: 600 }}>
-        {valor}
-      </div>
-      {detalhe && (
-        <div style={{ color: S.dim, fontSize: 11, marginTop: 4 }}>
-          {detalhe}
-        </div>
-      )}
+      {detail ? <div style={{ color: S.dim, fontSize: 11, marginTop: 4 }}>{detail}</div> : null}
     </div>
   );
 }
 
-function Etiqueta({ status }: { status: string }) {
-  const cores: Record<string, string> = {
-    aguardando_entrada: S.b,
-    aberto: S.a,
-    fechado: S.green,
-    cancelado: S.dim,
-  };
-
-  const rotulos: Record<string, string> = {
-    aguardando_entrada: 'aguardando',
-    aberto: 'aberta',
-    fechado: 'fechada',
-    cancelado: 'cancelada',
-  };
-
-  const cor = cores[status] ?? S.dim;
-
-  return (
-    <span
-      style={{
-        color: cor,
-        border: `1px solid ${cor}`,
-        borderRadius: 6,
-        padding: '2px 8px',
-        fontSize: 11,
-        whiteSpace: 'nowrap',
-      }}
-    >
-      {rotulos[status] ?? status}
-    </span>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Página
-// ---------------------------------------------------------------------------
-
-export default function TestePropectivoPage() {
+export default function OportunidadesV2Page() {
   const supabase = useMemo(() => getSupabase(), []);
+  const [configs, setConfigs] = useState<Config[]>([]);
+  const [dashboard, setDashboard] = useState<Dashboard[]>([]);
+  const [validations, setValidations] = useState<Validation[]>([]);
+  const [funding, setFunding] = useState<Funding[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const [session, setSession] = useState<Session | null>(null);
-  const [carregando, setCarregando] = useState(true);
-  const [erro, setErro] = useState<string | null>(null);
-  const [config, setConfig] = useState<ConfigRow | null>(null);
-  const [resumo, setResumo] = useState<ResumoRow[]>([]);
-  const [sinais, setSinais] = useState<SinalRow[]>([]);
-  const [ultimaExecucao, setUltimaExecucao] = useState<RunRow | null>(null);
-  const [checkpoints, setCheckpoints] = useState<CheckpointRow[]>([]);
-
-  const carregar = useCallback(async () => {
-    setCarregando(true);
-    setErro(null);
-
-    // A configuração ativa é carregada primeiro porque tudo o mais precisa ser
-    // filtrado por ela: versões diferentes do experimento têm regras distintas
-    // e somá-las produziria um número sem significado.
-    const configRes = await supabase
-      .from('forward_test_config')
-      .select('*')
-      .eq('ativo', true)
-      .maybeSingle();
-
-    if (configRes.error) {
-      setErro(
-        'Não foi possível carregar a configuração. Faça login para acompanhar o experimento.',
-      );
-      setCarregando(false);
-      return;
-    }
-
-    const configAtiva = (configRes.data as ConfigRow | null) ?? null;
-    setConfig(configAtiva);
-
-    if (!configAtiva) {
-      setResumo([]);
-      setSinais([]);
-      setUltimaExecucao(null);
-      setCheckpoints([]);
-      setCarregando(false);
-      return;
-    }
-
-    const [resumoRes, sinaisRes, execucaoRes, checkpointsRes] = await Promise.all([
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    const results = await Promise.all([
       supabase
-        .from('forward_test_resumo')
-        .select('*')
-        .eq('config_id', configAtiva.id),
-      supabase
-        .from('forward_test_signals')
+        .from('forward_test_config')
         .select(
-          'id, simbolo, estrategia, timeframe, candle_open_time, status, entrada_referencia, stop_referencia, alvo_referencia, entrada_preco, alvo_efetivo, saida_preco, saida_motivo, cancelamento_motivo, resultado_r, tamanho_anti, resultado_anterior',
+          'id,nome,versao,grupo_experimento,timeframes,estrategias,simbolos,amostra_alvo,protocolo_status,congelado_em,observacoes',
         )
-        .eq('config_id', configAtiva.id)
-        .order('candle_open_time', { ascending: false })
-        .limit(60),
+        .like('versao', '2.0.0-%')
+        .order('congelado_em', { ascending: true }),
       supabase
-        .from('forward_test_runs')
+        .from('forward_test_v2_dashboard')
         .select('*')
-        .eq('config_id', configAtiva.id)
-        .order('iniciado_em', { ascending: false })
-        .limit(1)
-        .maybeSingle(),
+        .order('congelado_em', { ascending: true }),
       supabase
-        .from('forward_test_checkpoints')
-        .select('simbolo, timeframe, backlog_estimated, last_error, locked_until')
-        .eq('config_id', configAtiva.id),
+        .from('forward_test_validation_latest')
+        .select('config_id,status,iniciado_em,operacoes_fechadas,resultado'),
+      supabase
+        .from('funding_carry_latest')
+        .select('*')
+        .order('carry_liquido_anualizado_pct', { ascending: false }),
     ]);
-
-    const consultaErro =
-      resumoRes.error ?? sinaisRes.error ?? execucaoRes.error ?? checkpointsRes.error;
-    if (consultaErro) setErro('Falha ao carregar o acompanhamento: ' + consultaErro.message);
-
-    setResumo((resumoRes.data as ResumoRow[] | null) ?? []);
-    setSinais((sinaisRes.data as SinalRow[] | null) ?? []);
-    setUltimaExecucao((execucaoRes.data as RunRow | null) ?? null);
-    setCheckpoints((checkpointsRes.data as CheckpointRow[] | null) ?? []);
-    setCarregando(false);
+    const failure = results.map((result) => result.error).find(Boolean);
+    if (failure) setError(failure.message);
+    setConfigs((results[0].data as Config[] | null) ?? []);
+    setDashboard((results[1].data as Dashboard[] | null) ?? []);
+    setValidations((results[2].data as Validation[] | null) ?? []);
+    setFunding((results[3].data as Funding[] | null) ?? []);
+    setLoading(false);
   }, [supabase]);
 
   useEffect(() => {
-    void carregar();
-  }, [carregar]);
+    void load();
+  }, [load]);
 
-  useEffect(() => {
-    void supabase.auth
-      .getSession()
-      .then(({ data }) => setSession(data.session ?? null));
-
-    const { data: listener } = supabase.auth.onAuthStateChange(
-      (_evento, novaSessao) => setSession(novaSessao),
-    );
-
-    return () => listener.subscription.unsubscribe();
-  }, [supabase]);
-
-  const combinados = useMemo(() => combineForwardStatistics(resumo), [resumo]);
-  const totais = {
-    fechadas: combinados.closed,
-    andamento: combinados.inProgress,
-    ganhos: combinados.wins,
-    perdas: combinados.losses,
-    canceladas: combinados.cancelled,
-    somaFixo: combinados.sumR,
-    somaAnti: combinados.sumAntiR,
-    acerto: combinados.winRatePct,
-    mediaR: combinados.meanR,
-  };
-  const saude = useMemo(() => {
-    const agora = Date.now();
-    return {
-      backlog: checkpoints.reduce((soma, item) => soma + Number(item.backlog_estimated ?? 0), 0),
-      paresComBacklog: checkpoints.filter((item) => Number(item.backlog_estimated ?? 0) > 0).length,
-      falhas: checkpoints.filter((item) => Boolean(item.last_error)).length,
-      bloqueados: checkpoints.filter(
-        (item) => item.locked_until && new Date(item.locked_until).getTime() > agora,
-      ).length,
-    };
-  }, [checkpoints]);
-
-  /**
-   * Abaixo de ~100 operações a diferença entre habilidade e acaso não é
-   * estatisticamente distinguível. O aviso é permanente até lá, de propósito.
-   */
-  const amostraSuficiente = totais.fechadas >= 100;
+  const validationByConfig = new Map(
+    validations.map((validation) => [validation.config_id, validation]),
+  );
+  const dashboardByConfig = new Map(
+    dashboard.map((row) => [row.config_id, row]),
+  );
 
   return (
     <main
@@ -395,10 +232,9 @@ export default function TestePropectivoPage() {
         minHeight: '100vh',
         background: S.bg,
         color: S.text,
-        fontFamily: 'ui-sans-serif, system-ui, sans-serif',
+        fontFamily: 'ui-sans-serif,system-ui,sans-serif',
       }}
     >
-      {/* Header + navegação — mesmo padrão das demais páginas */}
       <header
         style={{
           borderBottom: `1px solid ${S.border}`,
@@ -406,510 +242,261 @@ export default function TestePropectivoPage() {
           padding: '12px 20px',
         }}
       >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 12,
-          }}
-        >
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12 }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/logo.png"
-            alt="VigIA Trade"
-            style={{ height: 32, width: 'auto', display: 'block' }}
-          />
+          <img src="/logo.png" alt="VigIA Trade" style={{ height: 32, width: 'auto' }} />
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>
-              Teste prospectivo
-            </div>
-            <div style={{ fontSize: 11, color: S.dim }}>
-              regras congeladas · sem execução · quatro horizontes comparados
-            </div>
+            <div style={{ fontSize: 16, fontWeight: 750 }}>Teste prospectivo v2</div>
+            <div style={{ fontSize: 11, color: S.dim }}>shadow · tamanho fixo · amostras independentes</div>
           </div>
         </div>
-
         <nav
           style={{
             display: 'flex',
             justifyContent: 'center',
-            alignItems: 'center',
+            gap: 18,
             flexWrap: 'wrap',
-            gap: 20,
-            marginTop: 8,
+            marginTop: 9,
             fontSize: 13,
           }}
         >
-          <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
-            Análise
-          </a>
-          <a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>
-            Validação
-          </a>
-          <span style={{ color: S.b, fontWeight: 700 }}>Teste prospectivo</span>
-          <a href="/robustez" style={{ color: S.dim, textDecoration: 'none' }}>
-            Robustez
-          </a>
-          <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
-            Alertas
-          </a>
-          <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
-            Conta Binance
-          </a>
-          {!session ? (
-            <a
-              href="/alertas?next=%2Foportunidades"
-              style={{ color: S.green, textDecoration: 'none' }}
-            >
-              Entrar
-            </a>
-          ) : (
-            <button
-              onClick={() => supabase.auth.signOut()}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: S.red,
-                fontSize: 13,
-                cursor: 'pointer',
-                padding: 0,
-                fontFamily: 'inherit',
-              }}
-            >
-              Sair
-            </button>
-          )}
+          <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>Análise</a>
+          <span style={{ color: S.blue, fontWeight: 750 }}>Teste prospectivo</span>
+          <a href="/robustez" style={{ color: S.dim, textDecoration: 'none' }}>Robustez</a>
+          <a href="/alertas?next=%2Foportunidades" style={{ color: S.green, textDecoration: 'none' }}>Entrar</a>
         </nav>
       </header>
 
-      <div style={{ maxWidth: 1100, margin: '0 auto', padding: '24px 16px 60px' }}>
-        <p
-          style={{
-            color: S.dim,
-            fontSize: 13,
-            margin: '0 0 20px',
-            lineHeight: 1.6,
-            textAlign: 'center',
-          }}
-        >
-          Acompanhamento de um experimento em andamento, com regras congeladas.
-          Nenhuma ordem é executada a partir desta página, e os números abaixo
-          não constituem recomendação.
-        </p>
-
-        {carregando && (
+      <div
+        style={{
+          maxWidth: 1220,
+          margin: '0 auto',
+          padding: '24px 16px 60px',
+          display: 'grid',
+          gap: 18,
+        }}
+      >
+        {loading ? <Card>Carregando protocolos…</Card> : null}
+        {error ? (
           <Card>
-            <span style={{ color: S.dim }}>Carregando…</span>
+            <div style={{ color: S.red, fontWeight: 700 }}>Não foi possível carregar tudo</div>
+            <div style={{ color: S.dim, fontSize: 12, marginTop: 6 }}>{error}</div>
           </Card>
-        )}
+        ) : null}
 
-        {erro && !carregando && (
-          <Card style={{ borderColor: S.a }}>
-            <span style={{ color: S.a }}>{erro}</span>
-          </Card>
-        )}
-
-        {!carregando && !erro && !config && (
+        {!loading ? (
           <Card>
-            <span style={{ color: S.dim }}>
-              Nenhum experimento ativo no momento.
-            </span>
+            <div style={{ fontSize: 17, fontWeight: 750 }}>Regras desta rodada</div>
+            <div style={{ color: S.dim, fontSize: 13, marginTop: 7, lineHeight: 1.55 }}>
+              Nenhuma estratégia está liberada para Testnet ou conta real. As três amostras usam
+              tamanho fixo de 1R, custos incluídos e histórico separado. A seleção de ativos é
+              comparada contra uma cesta ampla para evitar confundir escolha retrospectiva com vantagem.
+            </div>
           </Card>
-        )}
+        ) : null}
 
-        {!carregando && !erro && config && (
-          <>
-            {!amostraSuficiente && (
-              <Card
-                style={{
-                  borderColor: S.a,
-                  marginBottom: 18,
-                  background: 'rgba(232,161,60,0.06)',
-                }}
-              >
-                <div style={{ fontSize: 13, lineHeight: 1.7 }}>
-                  <strong style={{ color: S.a }}>
-                    Amostra ainda insuficiente.
-                  </strong>{' '}
-                  São {totais.fechadas} operações encerradas. Abaixo de cerca de
-                  100, a diferença entre habilidade e acaso não é
-                  estatisticamente distinguível — qualquer resultado aqui, bom ou
-                  ruim, deve ser lido como preliminar. Uma vantagem pequena, do
-                  tamanho que esperamos, precisaria de várias centenas de
-                  operações para ser confirmada.
-                </div>
-              </Card>
-            )}
+        {configs.map((config) => {
+          const summary = dashboardByConfig.get(config.id);
+          const validation = validationByConfig.get(config.id);
+          const report = object(validation?.resultado);
+          const readiness = object(report.readiness);
+          const monteCarlo = object(report.monteCarlo);
+          const robustness = object(report.robustness);
+          const stress = object(report.stress);
+          const costs2x = object(stress.costs2x);
+          const ready = readiness.readyForRealMoney === true;
 
-            <Card style={{ marginBottom: 18 }}>
+          return (
+            <Card key={config.id}>
               <div
                 style={{
                   display: 'flex',
                   justifyContent: 'space-between',
-                  alignItems: 'baseline',
-                  flexWrap: 'wrap',
-                  gap: 8,
-                }}
-              >
-                <h2 style={{ fontSize: 15, margin: 0, fontWeight: 600 }}>
-                  {config.nome}{' '}
-                  <span style={{ color: S.dim, fontWeight: 400 }}>
-                    v{config.versao}
-                  </span>
-                </h2>
-                <span style={{ color: S.dim, fontSize: 12 }}>
-                  congelado em {fmtData(config.congelado_em)}
-                </span>
-              </div>
-
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                  alignItems: 'flex-start',
                   gap: 12,
-                  marginTop: 14,
-                  fontSize: 12,
+                  flexWrap: 'wrap',
                 }}
               >
                 <div>
-                  <div style={{ color: S.dim }}>Horizontes</div>
-                  <div>{config.timeframes.join(' · ')}</div>
-                </div>
-                <div>
-                  <div style={{ color: S.dim }}>Estratégias</div>
-                  <div>{config.estrategias.join(', ')}</div>
-                </div>
-                <div>
-                  <div style={{ color: S.dim }}>Moedas</div>
-                  <div>{config.simbolos.length} pares</div>
-                </div>
-                <div>
-                  <div style={{ color: S.dim }}>Custos simulados</div>
-                  <div>
-                    taxa {config.fee_rate_pct}% + slippage {config.slippage_pct}%
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <strong style={{ fontSize: 17 }}>{config.nome}</strong>
+                    <Badge color={S.purple}>{config.versao}</Badge>
+                    <Badge color={ready ? S.green : S.orange}>{ready ? 'APROVADA' : 'SHADOW'}</Badge>
+                  </div>
+                  <div style={{ color: S.dim, fontSize: 12, marginTop: 7 }}>
+                    {config.estrategias.join(', ')} · {config.timeframes.join(' / ')} ·{' '}
+                    {config.simbolos.length} ativos · congelada em {date(config.congelado_em)}
                   </div>
                 </div>
+                <Badge color={S.blue}>{config.grupo_experimento}</Badge>
               </div>
 
-              {config.observacoes && (
-                <p
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 15 }}>
+                <Metric
+                  label="Operações"
+                  value={String(summary?.operacoes ?? 0)}
+                  detail={`alvo ${config.amostra_alvo}`}
+                />
+                <Metric
+                  label="Progresso"
+                  value={fmtPct(summary?.progresso_pct ?? 0)}
+                  detail={summary?.situacao_amostra ?? 'insuficiente'}
+                  color={S.blue}
+                />
+                <Metric
+                  label="Resultado"
+                  value={fmtR(summary?.resultado_r_liquido)}
+                  color={colorForResult(summary?.resultado_r_liquido)}
+                />
+                <Metric
+                  label="Média"
+                  value={fmtR(summary?.media_r_operacao)}
+                  color={colorForResult(summary?.media_r_operacao)}
+                />
+                <Metric
+                  label="Profit factor"
+                  value={fmt(summary?.profit_factor)}
+                  color={(summary?.profit_factor ?? 0) > 1 ? S.green : S.orange}
+                />
+                <Metric
+                  label="Acerto"
+                  value={fmtPct(summary?.acerto_pct)}
+                />
+              </div>
+
+              {validation ? (
+                <div style={{ marginTop: 15 }}>
+                  <div style={{ color: S.dim, fontSize: 11, marginBottom: 8 }}>
+                    Validação mais recente: {date(validation.iniciado_em)} · {validation.status}
+                  </div>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    <Metric
+                      label="Custos 2×"
+                      value={fmtR(costs2x.sum)}
+                      color={colorForResult(costs2x.sum)}
+                    />
+                    <Metric
+                      label="Sem 3 melhores"
+                      value={fmtR(robustness.withoutBestThreeTradesR)}
+                      color={colorForResult(robustness.withoutBestThreeTradesR)}
+                    />
+                    <Metric
+                      label="Monte Carlo negativo"
+                      value={fmtPct(monteCarlo.probabilityNegativePct)}
+                      color={
+                        Number(monteCarlo.probabilityNegativePct) <= 20 ? S.green : S.red
+                      }
+                    />
+                    <Metric
+                      label="Decisão"
+                      value={ready ? 'APTA' : 'NÃO APTA'}
+                      color={ready ? S.green : S.red}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div style={{ color: S.dim, fontSize: 12, marginTop: 14 }}>
+                  Ainda sem validação: o relatório será criado pelo cron após existirem operações fechadas.
+                </div>
+              )}
+
+              {config.observacoes ? (
+                <div
                   style={{
                     color: S.dim,
                     fontSize: 12,
+                    lineHeight: 1.5,
                     marginTop: 14,
-                    marginBottom: 0,
-                    lineHeight: 1.6,
+                    borderTop: `1px solid ${S.border}`,
+                    paddingTop: 12,
                   }}
                 >
                   {config.observacoes}
-                </p>
-              )}
-            </Card>
-
-            <Card style={{ marginBottom: 18 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-                <div>
-                  <div style={{ fontSize: 15, fontWeight: 600 }}>Saúde da coleta</div>
-                  <div style={{ color: S.dim, fontSize: 12, marginTop: 4 }}>
-                    Última execução: {ultimaExecucao ? fmtData(ultimaExecucao.iniciado_em) : '—'}
-                  </div>
                 </div>
-                {ultimaExecucao && <Etiqueta status={ultimaExecucao.status} />}
-              </div>
-              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 14 }}>
-                <Metrica rotulo="Checkpoints" valor={String(checkpoints.length)} detalhe="pares × horizontes" />
-                <Metrica rotulo="Pares processados" valor={ultimaExecucao ? String(ultimaExecucao.pares_processados ?? 0) + '/' + String(ultimaExecucao.pares_esperados ?? 0) : '—'} detalhe={String(ultimaExecucao?.pares_bloqueados ?? 0) + ' bloqueados'} />
-                <Metrica rotulo="Candles avaliados" valor={ultimaExecucao ? String(ultimaExecucao.candles_avaliados ?? 0) : '—'} detalhe={String(ultimaExecucao?.candles_recuperados ?? 0) + ' recuperados'} />
-                <Metrica rotulo="Backlog" valor={String(saude.backlog)} detalhe={String(saude.paresComBacklog) + ' pares'} cor={saude.backlog > 0 ? S.a : S.green} />
-                <Metrica rotulo="Falhas" valor={String(saude.falhas)} detalhe={String(saude.bloqueados) + ' locks ativos'} cor={saude.falhas > 0 ? S.red : S.green} />
-              </div>
+              ) : null}
             </Card>
+          );
+        })}
 
-            <div
-              style={{
-                display: 'flex',
-                gap: 12,
-                flexWrap: 'wrap',
-                marginBottom: 18,
-              }}
-            >
-              <Metrica
-                rotulo="Operações encerradas"
-                valor={String(totais.fechadas)}
-                detalhe={`${totais.andamento} em andamento`}
-              />
-              <Metrica
-                rotulo="Taxa de acerto"
-                valor={
-                  totais.acerto === null ? '—' : `${fmtNum(totais.acerto, 1)}%`
-                }
-                detalhe={`${totais.ganhos} ganhos / ${totais.perdas} perdas`}
-              />
-              <Metrica
-                rotulo="Média por operação"
-                valor={fmtR(totais.mediaR)}
-                detalhe="tamanho fixo"
-                cor={
-                  totais.mediaR === null
-                    ? undefined
-                    : totais.mediaR > 0
-                      ? S.green
-                      : S.red
-                }
-              />
-              <Metrica
-                rotulo="Soma — tamanho fixo"
-                valor={fmtR(totais.somaFixo)}
-                detalhe="referência do experimento"
-                cor={totais.somaFixo > 0 ? S.green : S.red}
-              />
-              <Metrica
-                rotulo="Soma — anti-martingale"
-                valor={fmtR(totais.somaAnti)}
-                detalhe="×1,5 após ganho"
-                cor={totais.somaAnti > 0 ? S.green : S.red}
-              />
+        {!loading && configs.length === 0 ? (
+          <Card>
+            <div style={{ color: S.orange, fontWeight: 700 }}>Protocolos v2 ainda não encontrados</div>
+            <div style={{ color: S.dim, fontSize: 12, marginTop: 6 }}>
+              Aplique a migração do pacote depois de publicar o motor de estratégias.
             </div>
+          </Card>
+        ) : null}
 
-
-            <Card style={{ marginBottom: 18 }}>
-              <h2 style={{ fontSize: 15, margin: '0 0 12px', fontWeight: 600 }}>Evidência estatística</h2>
-              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                <Metrica rotulo="IC 95% da média" valor={fmtR(combinados.confidence95LowerR) + ' a ' + fmtR(combinados.confidence95UpperR)} detalhe={'t = ' + fmtNum(combinados.tStatisticR, 2)} />
-                <Metrica rotulo="Desvio-padrão" valor={fmtR(combinados.standardDeviationR)} detalhe={'erro-padrão ' + fmtR(combinados.standardErrorR)} />
-                <Metrica rotulo="Profit factor" valor={fmtNum(combinados.profitFactor, 2)} detalhe="ganho bruto / perda bruta" />
-                <Metrica rotulo="Drawdown fixo" valor={fmtR(combinados.worstDrawdownFixedR)} detalhe={'anti ' + fmtR(combinados.worstDrawdownAntiR)} />
-                <Metrica rotulo="Delta anti" valor={fmtR(combinados.deltaAntiR)} detalhe="anti menos tamanho fixo" cor={combinados.deltaAntiR > 0 ? S.green : S.red} />
+        <Card>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontSize: 17, fontWeight: 750 }}>Funding carry delta-neutro</div>
+              <div style={{ color: S.dim, fontSize: 12, marginTop: 5 }}>
+                Long spot + short perp, apenas observacional. Custos e basis entram na triagem.
               </div>
-            </Card>
+            </div>
+            <Badge color={S.orange}>SEM ORDENS</Badge>
+          </div>
 
-            {resumo.length > 0 && (
-              <Card style={{ marginBottom: 18 }}>
-                <h2
-                  style={{ fontSize: 15, margin: '0 0 4px', fontWeight: 600 }}
-                >
-                  Por horizonte e estratégia
-                </h2>
-
-                <p
-                  style={{
-                    color: S.dim,
-                    fontSize: 12,
-                    margin: '0 0 12px',
-                    lineHeight: 1.6,
-                  }}
-                >
-                  O horizonte de 1h é controle negativo, não candidato: já foi
-                  medido em −0,142R por operação na validação. Ele está aqui para
-                  confirmar que o teste reproduz o resultado conhecido — se
-                  aparecer positivo, há erro na análise anterior.
-                </p>
-
-                <div style={{ overflowX: 'auto' }}>
-                  <table
-                    style={{
-                      width: '100%',
-                      borderCollapse: 'collapse',
-                      fontSize: 13,
-                    }}
-                  >
-                    <thead>
-                      <tr style={{ color: S.dim, textAlign: 'left' }}>
-                        <th style={{ padding: '6px 8px' }}>Horizonte</th>
-                        <th style={{ padding: '6px 8px' }}>Estratégia</th>
-                        <th style={{ padding: '6px 8px' }}>Fechadas</th>
-                        <th style={{ padding: '6px 8px' }}>Andamento</th>
-                        <th style={{ padding: '6px 8px' }}>Acerto</th>
-                        <th style={{ padding: '6px 8px' }}>Média R</th>
-                        <th style={{ padding: '6px 8px' }}>Soma fixo</th>
-                        <th style={{ padding: '6px 8px' }}>Soma anti</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[...resumo]
-                        .sort((a, b) => {
-                          const ordem = ['1d', '12h', '4h', '1h'];
-                          const d =
-                            ordem.indexOf(a.timeframe) -
-                            ordem.indexOf(b.timeframe);
-                          return d !== 0
-                            ? d
-                            : a.estrategia.localeCompare(b.estrategia);
-                        })
-                        .map((linha) => {
-                        const decididas =
-                          Number(linha.ganhos ?? 0) + Number(linha.perdas ?? 0);
-                        const acerto =
-                          decididas > 0
-                            ? (Number(linha.ganhos ?? 0) / decididas) * 100
-                            : null;
-
-                        const controle = linha.timeframe === '1h';
-
-                        return (
-                          <tr
-                            key={`${linha.timeframe}-${linha.estrategia}`}
-                            style={{
-                              borderTop: `1px solid ${S.border}`,
-                              opacity: controle ? 0.65 : 1,
-                            }}
-                          >
-                            <td style={{ padding: '8px', fontWeight: 600 }}>
-                              {linha.timeframe}
-                              {controle && (
-                                <span
-                                  style={{
-                                    color: S.dim,
-                                    fontWeight: 400,
-                                    fontSize: 11,
-                                    marginLeft: 6,
-                                  }}
-                                >
-                                  controle
-                                </span>
-                              )}
-                            </td>
-                            <td style={{ padding: '8px' }}>
-                              {linha.estrategia.replace('trend_', '')}
-                            </td>
-                            <td style={{ padding: '8px' }}>
-                              {linha.operacoes_fechadas}
-                            </td>
-                            <td style={{ padding: '8px' }}>
-                              {linha.em_andamento}
-                            </td>
-                            <td style={{ padding: '8px' }}>
-                              {acerto === null ? '—' : `${fmtNum(acerto, 1)}%`}
-                            </td>
-                            <td style={{ padding: '8px' }}>
-                              {fmtR(linha.media_r)}
-                            </td>
-                            <td style={{ padding: '8px' }}>
-                              {fmtR(linha.soma_r_fixo)}
-                            </td>
-                            <td style={{ padding: '8px' }}>
-                              {fmtR(linha.soma_r_anti)}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-            )}
-
-            <Card>
-              <h2 style={{ fontSize: 15, margin: '0 0 12px', fontWeight: 600 }}>
-                Sinais recentes
-              </h2>
-
-              {sinais.length === 0 ? (
-                <p style={{ color: S.dim, fontSize: 13, margin: 0 }}>
-                  Nenhum sinal registrado ainda. O experimento avalia os candles
-                  diários uma vez por dia; os primeiros sinais aparecem conforme
-                  as condições das estratégias forem atendidas.
-                </p>
-              ) : (
-                <div style={{ overflowX: 'auto' }}>
-                  <table
-                    style={{
-                      width: '100%',
-                      borderCollapse: 'collapse',
-                      fontSize: 13,
-                    }}
-                  >
-                    <thead>
-                      <tr style={{ color: S.dim, textAlign: 'left' }}>
-                        <th style={{ padding: '6px 8px' }}>Data</th>
-                        <th style={{ padding: '6px 8px' }}>Moeda</th>
-                        <th style={{ padding: '6px 8px' }}>Horizonte</th>
-                        <th style={{ padding: '6px 8px' }}>Estratégia</th>
-                        <th style={{ padding: '6px 8px' }}>Situação</th>
-                        <th style={{ padding: '6px 8px' }}>Entrada</th>
-                        <th style={{ padding: '6px 8px' }}>Stop</th>
-                        <th style={{ padding: '6px 8px' }}>Alvo</th>
-                        <th style={{ padding: '6px 8px' }}>Resultado</th>
-                        <th style={{ padding: '6px 8px' }}>Tam. anti</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sinais.map((sinal) => (
-                        <tr
-                          key={sinal.id}
-                          style={{ borderTop: `1px solid ${S.border}` }}
-                        >
-                          <td style={{ padding: '8px', whiteSpace: 'nowrap' }}>
-                            {fmtData(sinal.candle_open_time)}
-                          </td>
-                          <td style={{ padding: '8px' }}>{sinal.simbolo}</td>
-                          <td style={{ padding: '8px', color: S.dim }}>
-                            {sinal.timeframe}
-                          </td>
-                          <td style={{ padding: '8px', color: S.dim }}>
-                            {sinal.estrategia.replace('trend_', '')}
-                          </td>
-                          <td style={{ padding: '8px' }}>
-                            <Etiqueta status={sinal.status} />
-                          </td>
-                          <td style={{ padding: '8px' }}>
-                            {fmtNum(
-                              sinal.entrada_preco ?? sinal.entrada_referencia,
-                              4,
-                            )}
-                          </td>
-                          <td style={{ padding: '8px', color: S.dim }}>
-                            {fmtNum(sinal.stop_referencia, 4)}
-                          </td>
-                          <td style={{ padding: '8px', color: S.dim }}>
-                            {fmtNum(
-                              sinal.alvo_efetivo ?? sinal.alvo_referencia,
-                              4,
-                            )}
-                          </td>
-                          <td
-                            style={{
-                              padding: '8px',
-                              color:
-                                sinal.resultado_r === null
-                                  ? S.dim
-                                  : Number(sinal.resultado_r) > 0
-                                    ? S.green
-                                    : S.red,
-                            }}
-                          >
-                            {fmtR(sinal.resultado_r)}
-                          </td>
-                          <td style={{ padding: '8px', color: S.dim }}>
-                            ×{fmtNum(sinal.tamanho_anti, 2)}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </Card>
-
-            <p
-              style={{
-                color: S.dim,
-                fontSize: 11,
-                marginTop: 20,
-                lineHeight: 1.7,
-              }}
-            >
-              Os sinais acionáveis que antes ocupavam esta página foram retirados
-              após as estratégias intradiárias serem reprovadas na validação:
-              média de −0,142R por operação no horizonte de 1 hora, com nenhum
-              dos nove símbolos testados apresentando resultado positivo. Este
-              experimento mede horizontes mais longos, cujo resultado ainda é
-              desconhecido, e mantém o de 1 hora apenas como controle. Conteúdo
-              educacional; não constitui recomendação de investimento.
-            </p>
-          </>
-        )}
+          <div style={{ overflowX: 'auto', marginTop: 14 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ color: S.dim, textAlign: 'left' }}>
+                  {['Ativo', 'Funding 8h', 'Anualizado', 'Basis', 'Carry líquido est.', 'Situação', 'Coleta'].map(
+                    (title) => (
+                      <th key={title} style={{ padding: '8px 10px', borderBottom: `1px solid ${S.border}` }}>
+                        {title}
+                      </th>
+                    ),
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {funding.map((row) => (
+                  <tr key={row.simbolo}>
+                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}` }}>
+                      <strong>{row.simbolo}</strong>
+                    </td>
+                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}` }}>
+                      {fmtPct(row.funding_rate_pct, 4)}
+                    </td>
+                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}` }}>
+                      {fmtPct(row.funding_anualizado_pct)}
+                    </td>
+                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}` }}>
+                      {fmtPct(row.basis_pct, 3)}
+                    </td>
+                    <td
+                      style={{
+                        padding: '9px 10px',
+                        borderBottom: `1px solid ${S.border}`,
+                        color: colorForResult(row.carry_liquido_anualizado_pct),
+                        fontWeight: 700,
+                      }}
+                    >
+                      {fmtPct(row.carry_liquido_anualizado_pct)}
+                    </td>
+                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}` }}>
+                      <Badge color={row.elegivel ? S.green : S.dim}>
+                        {row.elegivel ? 'ELEGÍVEL' : 'OBSERVAR'}
+                      </Badge>
+                    </td>
+                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}` }}>
+                      {date(row.coletado_em)}
+                    </td>
+                  </tr>
+                ))}
+                {funding.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} style={{ color: S.dim, padding: 14 }}>
+                      O coletor ainda não registrou snapshots.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </Card>
       </div>
     </main>
   );

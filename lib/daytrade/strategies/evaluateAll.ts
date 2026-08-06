@@ -1,20 +1,9 @@
 /**
- * lib/daytrade/strategies/evaluateAll.ts — VigIA Trade
- * -----------------------------------------------------------------------------
- * Avaliador central das estratégias de Day Trade.
+ * Avaliador central multiestratégia.
  *
- * Responsabilidades:
- * - Normalizar os candles uma única vez.
- * - Calcular os indicadores uma única vez.
- * - Executar as quatro estratégias sobre o mesmo snapshot de mercado.
- * - Separar a estratégia autorizada para ordens das estratégias shadow.
- * - Entregar uma resposta estável para interface, backtest e persistência.
- *
- * Regra de segurança:
- * - Apenas trend_breakout pode ser marcado como executável.
- * - As demais estratégias são calculadas somente para observação e comparação.
+ * As estratégias v2 são deliberadamente mantidas fora do registro executável
+ * principal. Elas existem somente para o teste prospectivo em shadow.
  */
-
 import {
   calculateDayTradeIndicators,
   normalizeClosedCandles,
@@ -22,187 +11,157 @@ import {
   type DayTradeIndicatorOptions,
   type DayTradeIndicators,
 } from '../indicators';
-
 import {
   DAYTRADE_STRATEGY_REGISTRY,
   type DayTradeStrategyId,
-  type DayTradeStrategyExecutionMode,
 } from './index';
-
 import {
   evaluateTrendBreakout,
   type TrendBreakoutEvaluation,
   type TrendBreakoutOptions,
 } from './trendBreakout';
-
 import {
   evaluateTrendPullback,
   type TrendPullbackEvaluation,
   type TrendPullbackOptions,
 } from './trendPullback';
-
 import {
   evaluateSqueezeBreakout,
   type SqueezeBreakoutEvaluation,
   type SqueezeBreakoutOptions,
 } from './squeezeBreakout';
-
 import {
   evaluateRangeMeanReversion,
   type RangeMeanReversionEvaluation,
   type RangeMeanReversionOptions,
 } from './rangeMeanReversion';
+import {
+  FAILED_BREAKOUT_REVERSAL_STRATEGY_ID,
+  evaluateFailedBreakoutReversal,
+  type FailedBreakoutReversalEvaluation,
+  type FailedBreakoutReversalOptions,
+} from './failedBreakoutReversal';
+import {
+  CONFIRMED_TREND_CONTINUATION_STRATEGY_ID,
+  evaluateConfirmedTrendContinuation,
+  type ConfirmedTrendContinuationEvaluation,
+  type ConfirmedTrendContinuationOptions,
+} from './confirmedTrendContinuation';
 
-// -----------------------------------------------------------------------------
-// Tipos públicos
-// -----------------------------------------------------------------------------
+export type ForwardTestStrategyId =
+  | DayTradeStrategyId
+  | typeof FAILED_BREAKOUT_REVERSAL_STRATEGY_ID
+  | typeof CONFIRMED_TREND_CONTINUATION_STRATEGY_ID;
 
 export interface DayTradeStrategyOptionsMap {
   trend_breakout?: TrendBreakoutOptions;
   trend_pullback?: TrendPullbackOptions;
   squeeze_breakout?: SqueezeBreakoutOptions;
   range_mean_reversion?: RangeMeanReversionOptions;
+  failed_breakout_reversal?: FailedBreakoutReversalOptions;
+  confirmed_trend_continuation?: ConfirmedTrendContinuationOptions;
 }
 
 export type AnyDayTradeStrategyEvaluation =
   | TrendBreakoutEvaluation
   | TrendPullbackEvaluation
   | SqueezeBreakoutEvaluation
-  | RangeMeanReversionEvaluation;
+  | RangeMeanReversionEvaluation
+  | FailedBreakoutReversalEvaluation
+  | ConfirmedTrendContinuationEvaluation;
 
 export interface DayTradeStrategyEvaluationMap {
   trend_breakout: TrendBreakoutEvaluation;
   trend_pullback: TrendPullbackEvaluation;
   squeeze_breakout: SqueezeBreakoutEvaluation;
   range_mean_reversion: RangeMeanReversionEvaluation;
+  failed_breakout_reversal: FailedBreakoutReversalEvaluation;
+  confirmed_trend_continuation: ConfirmedTrendContinuationEvaluation;
 }
 
 export interface EvaluateAllDayTradeStrategiesInput {
   candles: readonly DayTradeCandle[];
   indicatorOptions: DayTradeIndicatorOptions;
-
-  /**
-   * Preço ao vivo opcional.
-   *
-   * É usado somente para detectar entrada atrasada ou invalidação.
-   * Nunca confirma setup.
-   */
   livePrice?: number | null;
-
-  /**
-   * Permite alterar parâmetros de cada estratégia sem misturar configurações.
-   */
   strategyOptions?: DayTradeStrategyOptionsMap;
-
-  /**
-   * Estratégias que devem ser avaliadas.
-   *
-   * Quando omitido, executa as quatro.
-   */
-  enabledStrategies?: readonly DayTradeStrategyId[];
+  enabledStrategies?: readonly ForwardTestStrategyId[];
 }
 
 export interface DayTradeStrategyResult<
   TEvaluation extends AnyDayTradeStrategyEvaluation =
     AnyDayTradeStrategyEvaluation,
 > {
-  strategy: DayTradeStrategyId;
+  strategy: ForwardTestStrategyId;
   executionMode: 'testnet_allowed' | 'shadow';
   authorizedForAutomaticOrders: boolean;
   evaluation: TEvaluation;
 }
 
 export interface EvaluateAllDayTradeStrategiesResult {
-  /**
-   * Candles encerrados, validados, ordenados e deduplicados.
-   */
   candles: DayTradeCandle[];
-
-  /**
-   * Snapshot único de indicadores usado por todas as estratégias.
-   */
   indicators: DayTradeIndicators;
-
-  /**
-   * Resultado tipado por ID.
-   */
   evaluations: Partial<DayTradeStrategyEvaluationMap>;
-
-  /**
-   * Lista pronta para iteração, persistência e interface.
-   */
   results: DayTradeStrategyResult[];
-
-  /**
-   * Estratégias autorizadas a chegar ao fluxo de oportunidade automática.
-   */
   executableResults: DayTradeStrategyResult[];
-
-  /**
-   * Estratégias calculadas apenas para comparação.
-   */
   shadowResults: DayTradeStrategyResult[];
-
-  /**
-   * Melhor resultado por score, sem conceder autorização de execução.
-   */
   highestScoreResult: DayTradeStrategyResult | null;
-
-  /**
-   * Melhor resultado entre estratégias autorizadas.
-   */
   highestExecutableScoreResult: DayTradeStrategyResult | null;
 }
 
-// -----------------------------------------------------------------------------
-// Configuração
-// -----------------------------------------------------------------------------
-
-const ALL_STRATEGY_IDS = [
+const DEFAULT_STRATEGY_IDS = [
   'trend_breakout',
   'trend_pullback',
   'squeeze_breakout',
   'range_mean_reversion',
 ] as const satisfies readonly DayTradeStrategyId[];
 
-// -----------------------------------------------------------------------------
-// Helpers
-// -----------------------------------------------------------------------------
+const FORWARD_TEST_STRATEGY_IDS = [
+  ...DEFAULT_STRATEGY_IDS,
+  FAILED_BREAKOUT_REVERSAL_STRATEGY_ID,
+  CONFIRMED_TREND_CONTINUATION_STRATEGY_ID,
+] as const satisfies readonly ForwardTestStrategyId[];
 
 function resolveEnabledStrategies(
-  value: readonly DayTradeStrategyId[] | undefined,
-): DayTradeStrategyId[] {
-  if (value === undefined) {
-    return [...ALL_STRATEGY_IDS];
-  }
-
+  value: readonly ForwardTestStrategyId[] | undefined,
+): ForwardTestStrategyId[] {
+  if (value === undefined) return [...DEFAULT_STRATEGY_IDS];
   const unique = Array.from(new Set(value));
-
   for (const strategyId of unique) {
-    if (!ALL_STRATEGY_IDS.includes(strategyId)) {
-      throw new Error(
-        `Estratégia inválida: ${strategyId}. Valores aceitos: ${ALL_STRATEGY_IDS.join(', ')}.`,
-      );
+    if (!FORWARD_TEST_STRATEGY_IDS.includes(strategyId)) {
+      throw new Error(`Estratégia inválida: ${strategyId}.`);
     }
   }
-
   return unique;
+}
+
+function experimentalOrder(strategy: ForwardTestStrategyId): number {
+  if (strategy === FAILED_BREAKOUT_REVERSAL_STRATEGY_ID) return 5;
+  if (strategy === CONFIRMED_TREND_CONTINUATION_STRATEGY_ID) return 6;
+  return DAYTRADE_STRATEGY_REGISTRY[strategy].displayOrder;
 }
 
 function createStrategyResult<
   TEvaluation extends AnyDayTradeStrategyEvaluation,
 >(
-  strategy: DayTradeStrategyId,
+  strategy: ForwardTestStrategyId,
   evaluation: TEvaluation,
 ): DayTradeStrategyResult<TEvaluation> {
-  const definition =
-    DAYTRADE_STRATEGY_REGISTRY[strategy];
-
+  if (
+    strategy === FAILED_BREAKOUT_REVERSAL_STRATEGY_ID ||
+    strategy === CONFIRMED_TREND_CONTINUATION_STRATEGY_ID
+  ) {
+    return {
+      strategy,
+      executionMode: 'shadow',
+      authorizedForAutomaticOrders: false,
+      evaluation,
+    };
+  }
+  const definition = DAYTRADE_STRATEGY_REGISTRY[strategy];
   return {
     strategy,
     executionMode: definition.executionMode,
-    authorizedForAutomaticOrders:
-      definition.authorizedForAutomaticOrders,
+    authorizedForAutomaticOrders: definition.authorizedForAutomaticOrders,
     evaluation,
   };
 }
@@ -212,193 +171,114 @@ function compareByScoreThenOrder(
   right: DayTradeStrategyResult,
 ): number {
   const scoreDifference =
-    right.evaluation.scorePct -
-    left.evaluation.scorePct;
-
-  if (scoreDifference !== 0) {
-    return scoreDifference;
-  }
-
-  const leftOrder =
-    DAYTRADE_STRATEGY_REGISTRY[left.strategy]
-      .displayOrder;
-
-  const rightOrder =
-    DAYTRADE_STRATEGY_REGISTRY[right.strategy]
-      .displayOrder;
-
-  return leftOrder - rightOrder;
+    right.evaluation.scorePct - left.evaluation.scorePct;
+  return scoreDifference !== 0
+    ? scoreDifference
+    : experimentalOrder(left.strategy) - experimentalOrder(right.strategy);
 }
 
 function getHighestScoreResult(
   results: readonly DayTradeStrategyResult[],
 ): DayTradeStrategyResult | null {
-  if (results.length === 0) {
-    return null;
-  }
-
-  return [...results].sort(
-    compareByScoreThenOrder,
-  )[0];
+  return results.length === 0
+    ? null
+    : [...results].sort(compareByScoreThenOrder)[0];
 }
-
-// -----------------------------------------------------------------------------
-// Avaliação central
-// -----------------------------------------------------------------------------
 
 export function evaluateAllDayTradeStrategies(
   input: EvaluateAllDayTradeStrategiesInput,
 ): EvaluateAllDayTradeStrategiesResult {
-  const candles =
-    normalizeClosedCandles(input.candles);
-
+  const candles = normalizeClosedCandles(input.candles);
   if (candles.length < 2) {
-    throw new Error(
-      'São necessários pelo menos dois candles encerrados para avaliar as estratégias.',
-    );
+    throw new Error('São necessários pelo menos dois candles encerrados.');
   }
-
-  const indicators =
-    calculateDayTradeIndicators(
-      candles,
-      input.indicatorOptions,
-    );
-
-  const enabledStrategies =
-    resolveEnabledStrategies(
-      input.enabledStrategies,
-    );
-
-  const evaluations: Partial<DayTradeStrategyEvaluationMap> =
-    {};
-
+  const indicators = calculateDayTradeIndicators(candles, input.indicatorOptions);
+  const enabledStrategies = resolveEnabledStrategies(input.enabledStrategies);
+  const evaluations: Partial<DayTradeStrategyEvaluationMap> = {};
   const results: DayTradeStrategyResult[] = [];
 
   for (const strategyId of enabledStrategies) {
     switch (strategyId) {
       case 'trend_breakout': {
-        const evaluation =
-          evaluateTrendBreakout({
-            candles,
-            indicators,
-            livePrice: input.livePrice,
-            options:
-              input.strategyOptions
-                ?.trend_breakout,
-          });
-
-        evaluations.trend_breakout =
-          evaluation;
-
-        results.push(
-          createStrategyResult(
-            strategyId,
-            evaluation,
-          ),
-        );
-
+        const evaluation = evaluateTrendBreakout({
+          candles,
+          indicators,
+          livePrice: input.livePrice,
+          options: input.strategyOptions?.trend_breakout,
+        });
+        evaluations.trend_breakout = evaluation;
+        results.push(createStrategyResult(strategyId, evaluation));
         break;
       }
-
       case 'trend_pullback': {
-        const evaluation =
-          evaluateTrendPullback({
-            candles,
-            indicators,
-            livePrice: input.livePrice,
-            options:
-              input.strategyOptions
-                ?.trend_pullback,
-          });
-
-        evaluations.trend_pullback =
-          evaluation;
-
-        results.push(
-          createStrategyResult(
-            strategyId,
-            evaluation,
-          ),
-        );
-
+        const evaluation = evaluateTrendPullback({
+          candles,
+          indicators,
+          livePrice: input.livePrice,
+          options: input.strategyOptions?.trend_pullback,
+        });
+        evaluations.trend_pullback = evaluation;
+        results.push(createStrategyResult(strategyId, evaluation));
         break;
       }
-
       case 'squeeze_breakout': {
-        const evaluation =
-          evaluateSqueezeBreakout({
-            candles,
-            indicators,
-            livePrice: input.livePrice,
-            options:
-              input.strategyOptions
-                ?.squeeze_breakout,
-          });
-
-        evaluations.squeeze_breakout =
-          evaluation;
-
-        results.push(
-          createStrategyResult(
-            strategyId,
-            evaluation,
-          ),
-        );
-
+        const evaluation = evaluateSqueezeBreakout({
+          candles,
+          indicators,
+          livePrice: input.livePrice,
+          options: input.strategyOptions?.squeeze_breakout,
+        });
+        evaluations.squeeze_breakout = evaluation;
+        results.push(createStrategyResult(strategyId, evaluation));
         break;
       }
-
       case 'range_mean_reversion': {
-        const evaluation =
-          evaluateRangeMeanReversion({
-            candles,
-            indicators,
-            livePrice: input.livePrice,
-            options:
-              input.strategyOptions
-                ?.range_mean_reversion,
-          });
-
-        evaluations.range_mean_reversion =
-          evaluation;
-
-        results.push(
-          createStrategyResult(
-            strategyId,
-            evaluation,
-          ),
-        );
-
+        const evaluation = evaluateRangeMeanReversion({
+          candles,
+          indicators,
+          livePrice: input.livePrice,
+          options: input.strategyOptions?.range_mean_reversion,
+        });
+        evaluations.range_mean_reversion = evaluation;
+        results.push(createStrategyResult(strategyId, evaluation));
         break;
       }
-
+      case 'failed_breakout_reversal': {
+        const evaluation = evaluateFailedBreakoutReversal({
+          candles,
+          indicators,
+          livePrice: input.livePrice,
+          options: input.strategyOptions?.failed_breakout_reversal,
+        });
+        evaluations.failed_breakout_reversal = evaluation;
+        results.push(createStrategyResult(strategyId, evaluation));
+        break;
+      }
+      case 'confirmed_trend_continuation': {
+        const evaluation = evaluateConfirmedTrendContinuation({
+          candles,
+          indicators,
+          livePrice: input.livePrice,
+          options: input.strategyOptions?.confirmed_trend_continuation,
+        });
+        evaluations.confirmed_trend_continuation = evaluation;
+        results.push(createStrategyResult(strategyId, evaluation));
+        break;
+      }
       default: {
-        const exhaustiveCheck: never =
-          strategyId;
-
-        throw new Error(
-          `Estratégia não implementada: ${String(exhaustiveCheck)}.`,
-        );
+        const exhaustiveCheck: never = strategyId;
+        throw new Error(`Estratégia não implementada: ${String(exhaustiveCheck)}.`);
       }
     }
   }
 
-  const sortedResults =
-    [...results].sort(
-      compareByScoreThenOrder,
-    );
-
-  const executableResults =
-    sortedResults.filter(
-      (result) =>
-        result.authorizedForAutomaticOrders,
-    );
-
-  const shadowResults =
-    sortedResults.filter(
-      (result) =>
-        !result.authorizedForAutomaticOrders,
-    );
+  const sortedResults = [...results].sort(compareByScoreThenOrder);
+  const executableResults = sortedResults.filter(
+    (result) => result.authorizedForAutomaticOrders,
+  );
+  const shadowResults = sortedResults.filter(
+    (result) => !result.authorizedForAutomaticOrders,
+  );
 
   return {
     candles,
@@ -407,73 +287,49 @@ export function evaluateAllDayTradeStrategies(
     results: sortedResults,
     executableResults,
     shadowResults,
-    highestScoreResult:
-      getHighestScoreResult(
-        sortedResults,
-      ),
-    highestExecutableScoreResult:
-      getHighestScoreResult(
-        executableResults,
-      ),
+    highestScoreResult: getHighestScoreResult(sortedResults),
+    highestExecutableScoreResult: getHighestScoreResult(executableResults),
   };
 }
-
-// -----------------------------------------------------------------------------
-// Helpers de segurança para execução
-// -----------------------------------------------------------------------------
 
 export function getAutomaticOrderCandidate(
   result: EvaluateAllDayTradeStrategiesResult,
 ): DayTradeStrategyResult | null {
-  const candidates =
+  return getHighestScoreResult(
     result.executableResults.filter(
       (item) =>
-        item.evaluation
-          .allConditionsMet &&
-        item.evaluation.status ===
-          'condicoes_atendidas' &&
+        item.evaluation.allConditionsMet &&
+        item.evaluation.status === 'condicoes_atendidas' &&
         item.evaluation.plan !== null,
-    );
-
-  return getHighestScoreResult(
-    candidates,
+    ),
   );
 }
 
 export function assertAutomaticOrderCandidate(
   result: DayTradeStrategyResult,
 ): void {
-  const definition =
-    DAYTRADE_STRATEGY_REGISTRY[result.strategy];
-
-  /**
-   * O registro é declarado com `as const`, então o TypeScript infere o literal
-   * exato de cada campo. Como hoje NENHUMA estratégia está autorizada, todos os
-   * modos são 'shadow' e o compilador acusaria a comparação abaixo como
-   * impossível. O alargamento explícito preserva a verificação para quando
-   * alguma estratégia for aprovada em validação prospectiva — remover a
-   * comparação seria perder a trava justamente onde ela importa.
-   */
-  const modo = definition.executionMode as DayTradeStrategyExecutionMode;
-
   if (
-    !definition.authorizedForAutomaticOrders ||
-    modo !== 'testnet_allowed'
+    result.strategy === FAILED_BREAKOUT_REVERSAL_STRATEGY_ID ||
+    result.strategy === CONFIRMED_TREND_CONTINUATION_STRATEGY_ID
   ) {
     throw new Error(
-      `A estratégia ${result.strategy} está em modo shadow e não pode criar oportunidade ou ordem.`,
+      `A estratégia experimental ${result.strategy} está em shadow.`,
     );
   }
-
+  const definition = DAYTRADE_STRATEGY_REGISTRY[result.strategy];
   if (
-    !result.evaluation
-      .allConditionsMet ||
-    result.evaluation.status !==
-      'condicoes_atendidas' ||
-    result.evaluation.plan === null
+    !definition.authorizedForAutomaticOrders ||
+    definition.executionMode !== 'testnet_allowed'
   ) {
     throw new Error(
-      `A estratégia ${result.strategy} não possui setup elegível para execução.`,
+      `A estratégia ${result.strategy} está em shadow e não pode criar ordem.`,
     );
+  }
+  if (
+    !result.evaluation.allConditionsMet ||
+    result.evaluation.status !== 'condicoes_atendidas' ||
+    result.evaluation.plan === null
+  ) {
+    throw new Error(`A estratégia ${result.strategy} não possui setup elegível.`);
   }
 }
