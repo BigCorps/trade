@@ -17,6 +17,39 @@ const S = {
   purple: '#9a7fd1',
 };
 
+/**
+ * Regras responsivas. Inline style não aceita media query, por isso as faixas
+ * roláveis vivem aqui. Desktop mantém o comportamento atual (quebra de linha);
+ * até 760px cada faixa vira uma trilha horizontal com snap.
+ */
+const CSS = `
+.vt-page { overflow-x: hidden; }
+.vt-card { min-width: 0; }
+.vt-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.vt-row > * { flex: 1 1 145px; min-width: 145px; }
+.vt-scroll { overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; }
+.vt-row::-webkit-scrollbar,
+.vt-scroll::-webkit-scrollbar { height: 6px; }
+.vt-row::-webkit-scrollbar-thumb,
+.vt-scroll::-webkit-scrollbar-thumb { background: ${S.border}; border-radius: 999px; }
+.vt-row,
+.vt-scroll { scrollbar-width: thin; scrollbar-color: ${S.border} transparent; }
+@media (max-width: 760px) {
+  .vt-row {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
+    margin: 0 -18px;
+    padding: 0 18px 8px;
+  }
+  .vt-row > * { flex: 0 0 58%; min-width: 152px; scroll-snap-align: start; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vt-row { scroll-snap-type: none; }
+}
+`;
+
 type Config = {
   id: string;
   nome: string;
@@ -115,6 +148,7 @@ function colorForResult(value: unknown) {
 function Card({ children }: { children: React.ReactNode }) {
   return (
     <section
+      className="vt-card"
       style={{
         background: S.panel,
         border: `1px solid ${S.border}`,
@@ -124,6 +158,13 @@ function Card({ children }: { children: React.ReactNode }) {
     >
       {children}
     </section>
+  );
+}
+function Row({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
+  return (
+    <div className="vt-row" style={style}>
+      {children}
+    </div>
   );
 }
 function Badge({ children, color }: { children: React.ReactNode; color: string }) {
@@ -137,6 +178,7 @@ function Badge({ children, color }: { children: React.ReactNode; color: string }
         padding: '3px 8px',
         fontSize: 10,
         fontWeight: 700,
+        whiteSpace: 'nowrap',
       }}
     >
       {children}
@@ -157,8 +199,6 @@ function Metric({
   return (
     <div
       style={{
-        flex: '1 1 145px',
-        minWidth: 145,
         background: S.soft,
         border: `1px solid ${S.border}`,
         borderRadius: 10,
@@ -228,6 +268,7 @@ export default function OportunidadesV2Page() {
 
   return (
     <main
+      className="vt-page"
       style={{
         minHeight: '100vh',
         background: S.bg,
@@ -235,6 +276,8 @@ export default function OportunidadesV2Page() {
         fontFamily: 'ui-sans-serif,system-ui,sans-serif',
       }}
     >
+      <style dangerouslySetInnerHTML={{ __html: CSS }} />
+
       <header
         style={{
           borderBottom: `1px solid ${S.border}`,
@@ -317,7 +360,7 @@ export default function OportunidadesV2Page() {
                   flexWrap: 'wrap',
                 }}
               >
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                     <strong style={{ fontSize: 17 }}>{config.nome}</strong>
                     <Badge color={S.purple}>{config.versao}</Badge>
@@ -331,7 +374,7 @@ export default function OportunidadesV2Page() {
                 <Badge color={S.blue}>{config.grupo_experimento}</Badge>
               </div>
 
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 15 }}>
+              <Row style={{ marginTop: 15 }}>
                 <Metric
                   label="Operações"
                   value={String(summary?.operacoes ?? 0)}
@@ -362,14 +405,14 @@ export default function OportunidadesV2Page() {
                   label="Acerto"
                   value={fmtPct(summary?.acerto_pct)}
                 />
-              </div>
+              </Row>
 
               {validation ? (
                 <div style={{ marginTop: 15 }}>
                   <div style={{ color: S.dim, fontSize: 11, marginBottom: 8 }}>
                     Validação mais recente: {date(validation.iniciado_em)} · {validation.status}
                   </div>
-                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  <Row>
                     <Metric
                       label="Custos 2×"
                       value={fmtR(costs2x.sum)}
@@ -392,7 +435,7 @@ export default function OportunidadesV2Page() {
                       value={ready ? 'APTA' : 'NÃO APTA'}
                       color={ready ? S.green : S.red}
                     />
-                  </div>
+                  </Row>
                 </div>
               ) : (
                 <div style={{ color: S.dim, fontSize: 12, marginTop: 14 }}>
@@ -429,7 +472,7 @@ export default function OportunidadesV2Page() {
 
         <Card>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-            <div>
+            <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 17, fontWeight: 750 }}>Funding carry delta-neutro</div>
               <div style={{ color: S.dim, fontSize: 12, marginTop: 5 }}>
                 Long spot + short perp, apenas observacional. Custos e basis entram na triagem.
@@ -438,13 +481,20 @@ export default function OportunidadesV2Page() {
             <Badge color={S.orange}>SEM ORDENS</Badge>
           </div>
 
-          <div style={{ overflowX: 'auto', marginTop: 14 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <div className="vt-scroll" style={{ marginTop: 14 }}>
+            <table style={{ width: '100%', minWidth: 780, borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ color: S.dim, textAlign: 'left' }}>
                   {['Ativo', 'Funding 8h', 'Anualizado', 'Basis', 'Carry líquido est.', 'Situação', 'Coleta'].map(
                     (title) => (
-                      <th key={title} style={{ padding: '8px 10px', borderBottom: `1px solid ${S.border}` }}>
+                      <th
+                        key={title}
+                        style={{
+                          padding: '8px 10px',
+                          borderBottom: `1px solid ${S.border}`,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
                         {title}
                       </th>
                     ),
@@ -454,16 +504,16 @@ export default function OportunidadesV2Page() {
               <tbody>
                 {funding.map((row) => (
                   <tr key={row.simbolo}>
-                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}` }}>
+                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}`, whiteSpace: 'nowrap' }}>
                       <strong>{row.simbolo}</strong>
                     </td>
-                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}` }}>
+                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}`, whiteSpace: 'nowrap' }}>
                       {fmtPct(row.funding_rate_pct, 4)}
                     </td>
-                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}` }}>
+                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}`, whiteSpace: 'nowrap' }}>
                       {fmtPct(row.funding_anualizado_pct)}
                     </td>
-                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}` }}>
+                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}`, whiteSpace: 'nowrap' }}>
                       {fmtPct(row.basis_pct, 3)}
                     </td>
                     <td
@@ -472,16 +522,17 @@ export default function OportunidadesV2Page() {
                         borderBottom: `1px solid ${S.border}`,
                         color: colorForResult(row.carry_liquido_anualizado_pct),
                         fontWeight: 700,
+                        whiteSpace: 'nowrap',
                       }}
                     >
                       {fmtPct(row.carry_liquido_anualizado_pct)}
                     </td>
-                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}` }}>
+                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}`, whiteSpace: 'nowrap' }}>
                       <Badge color={row.elegivel ? S.green : S.dim}>
                         {row.elegivel ? 'ELEGÍVEL' : 'OBSERVAR'}
                       </Badge>
                     </td>
-                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}` }}>
+                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}`, whiteSpace: 'nowrap' }}>
                       {date(row.coletado_em)}
                     </td>
                   </tr>
