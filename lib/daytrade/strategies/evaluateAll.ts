@@ -14,6 +14,7 @@ import {
 import {
   DAYTRADE_STRATEGY_REGISTRY,
   type DayTradeStrategyId,
+  type DayTradeStrategyExecutionMode,
 } from './index';
 import {
   evaluateTrendBreakout,
@@ -316,11 +317,15 @@ export function assertAutomaticOrderCandidate(
       `A estratégia experimental ${result.strategy} está em shadow.`,
     );
   }
-  const definition = DAYTRADE_STRATEGY_REGISTRY[result.strategy];
-  if (
-    !definition.authorizedForAutomaticOrders ||
-    definition.executionMode !== 'testnet_allowed'
-  ) {
+const definition = DAYTRADE_STRATEGY_REGISTRY[result.strategy];
+
+const executionMode =
+  definition.executionMode as DayTradeStrategyExecutionMode;
+
+if (
+  !definition.authorizedForAutomaticOrders ||
+  executionMode !== 'testnet_allowed'
+) {
     throw new Error(
       `A estratégia ${result.strategy} está em shadow e não pode criar ordem.`,
     );
