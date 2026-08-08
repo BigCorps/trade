@@ -1,0 +1,27 @@
+Bateria walk-forward · 1d · 900 dias · janela 250
+Custos: taxa 0.1% + slippage 0.05% · Stop mínimo: padrão · Fim: 2026-08-08
+Símbolos: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT · Estratégias: confirmed_trend_continuation
+Gerado em: 2026-08-08T18:14:53.637Z
+
+simbolo | estrategia | gestao | trades | acerto% | somaR | mediaR | medianaR | PF | t | janelasPos | piorJanela | obs
+---|---|---|---|---|---|---|---|---|---|---|---|---
+XRPUSDT | confirmed_trend_continuation | nenhuma | 2 | 100.0 | +4.72 | +2.36 | +2.36 | — | — | 1/2 | 0.00 | amostra insuficiente
+XRPUSDT | confirmed_trend_continuation | breakeven | 2 | 100.0 | +4.72 | +2.36 | +2.36 | — | — | 1/2 | 0.00 | amostra insuficiente
+XRPUSDT | confirmed_trend_continuation | trailing | 2 | 100.0 | +4.72 | +2.36 | +2.36 | — | — | 1/2 | 0.00 | amostra insuficiente
+XRPUSDT | confirmed_trend_continuation | parcial | 2 | 100.0 | +3.29 | +1.65 | +1.65 | — | — | 1/2 | 0.00 | amostra insuficiente
+ETHUSDT | confirmed_trend_continuation | nenhuma | 2 | 50.0 | +1.37 | +0.69 | +0.69 | 2.37 | — | 1/2 | 0.00 | amostra insuficiente
+ETHUSDT | confirmed_trend_continuation | trailing | 2 | 50.0 | -0.29 | -0.14 | -0.14 | 0.71 | — | 0/2 | -0.29 | amostra insuficiente
+ETHUSDT | confirmed_trend_continuation | parcial | 2 | 50.0 | -0.55 | -0.27 | -0.27 | 0.45 | — | 0/2 | -0.55 | amostra insuficiente
+ETHUSDT | confirmed_trend_continuation | breakeven | 2 | 0.0 | -1.03 | -0.52 | -0.52 | 0.00 | — | 0/2 | -1.03 | amostra insuficiente
+BTCUSDT | confirmed_trend_continuation | nenhuma | 0 | — | 0.00 | — | — | — | — | 0/2 | 0.00 | amostra insuficiente
+BTCUSDT | confirmed_trend_continuation | breakeven | 0 | — | 0.00 | — | — | — | — | 0/2 | 0.00 | amostra insuficiente
+BTCUSDT | confirmed_trend_continuation | parcial | 0 | — | 0.00 | — | — | — | — | 0/2 | 0.00 | amostra insuficiente
+BTCUSDT | confirmed_trend_continuation | trailing | 0 | — | 0.00 | — | — | — | — | 0/2 | 0.00 | amostra insuficiente
+SOLUSDT | confirmed_trend_continuation | nenhuma | 0 | — | 0.00 | — | — | — | — | 0/2 | 0.00 | amostra insuficiente
+SOLUSDT | confirmed_trend_continuation | breakeven | 0 | — | 0.00 | — | — | — | — | 0/2 | 0.00 | amostra insuficiente
+SOLUSDT | confirmed_trend_continuation | parcial | 0 | — | 0.00 | — | — | — | — | 0/2 | 0.00 | amostra insuficiente
+SOLUSDT | confirmed_trend_continuation | trailing | 0 | — | 0.00 | — | — | — | — | 0/2 | 0.00 | amostra insuficiente
+BNBUSDT | confirmed_trend_continuation | nenhuma | 0 | — | 0.00 | — | — | — | — | 0/2 | 0.00 | amostra insuficiente
+BNBUSDT | confirmed_trend_continuation | breakeven | 0 | — | 0.00 | — | — | — | — | 0/2 | 0.00 | amostra insuficiente
+BNBUSDT | confirmed_trend_continuation | parcial | 0 | — | 0.00 | — | — | — | — | 0/2 | 0.00 | amostra insuficiente
+BNBUSDT | confirmed_trend_continuation | trailing | 0 | — | 0.00 | — | — | — | — | 0/2 | 0.00 | amostra insuficiente
