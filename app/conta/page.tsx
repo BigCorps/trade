@@ -32,11 +32,8 @@ import {
 import { getSupabase } from '../../lib/supabaseClient';
 import { isSafeUuid } from '../../lib/auth/safeRedirect';
 
-const S = {
-  bg: '#101418', panel: '#181f26', border: '#2a343f',
-  text: '#d7dee6', dim: '#7d8a97',
-  a: '#e8a13c', blue: '#4f8fd0', green: '#3fb26f', red: '#d05555',
-};
+import CabecalhoVigIA, { S } from '../../components/CabecalhoVigIA';
+
 
 const inputStyle: CSSProperties = {
   background: S.bg,
@@ -2494,54 +2491,12 @@ export default function ContaPage() {
 
   return (
     <main style={{ minHeight: '100vh', background: S.bg, color: S.text, fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}>
-      <header style={{ borderBottom: `1px solid ${S.border}`, background: S.panel, padding: '12px 20px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo.png" alt="VigIA Trade" style={{ height: 32, width: 'auto', display: 'block' }} />
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>Conta Binance</div>
-            <div style={{ fontSize: 11, color: S.dim }}>conexão · ordens · histórico</div>
-          </div>
-        </div>
-        <nav
-          style={{
-            display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
-            flexWrap: 'wrap',
-            gap: 20,
-            marginTop: 8,
-            fontSize: 13,
-          }}
-        >
-          <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
-            Análise
-          </a>
-          <a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>
-            Validação
-          </a>
-          <a href="/oportunidades" style={{ color: S.dim, textDecoration: 'none' }}>
-            Teste prospectivo
-          </a>
-          <a href="/robustez" style={{ color: S.dim, textDecoration: 'none' }}>
-            Robustez
-          </a>
-          <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
-            Alertas
-          </a>
-          <span style={{ color: S.a, fontWeight: 600 }}>
-            Conta Binance
-          </span>
-          {session && (
-            <button
-              onClick={() => supabase.auth.signOut()}
-              style={{ background: 'transparent', border: 'none', color: S.red, fontSize: 13, cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}
-            >
-              Sair
-            </button>
-          )}
-        </nav>
-      </header>
+      <CabecalhoVigIA
+        titulo="Conta Binance"
+        subtitulo="conexão · ordens · histórico"
+        ativo="/conta"
+        supabase={supabase}
+      />
 
       <div style={{ maxWidth: 720, margin: '0 auto', padding: '24px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
         {!authReady ? null : !session ? (

@@ -3,19 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getSupabase } from '@/lib/supabaseClient';
 
-const S = {
-  bg: '#101418',
-  panel: '#181f26',
-  soft: '#141a20',
-  border: '#2a343f',
-  text: '#d7dee6',
-  dim: '#7d8a97',
-  blue: '#4f8fd0',
-  green: '#3fb26f',
-  red: '#d05555',
-  orange: '#e8a13c',
-  purple: '#9a7fd1',
-};
+import CabecalhoVigIA, { S } from '../../components/CabecalhoVigIA';
+
 
 /**
  * Regras responsivas. Inline style não aceita media query, por isso as faixas
@@ -278,37 +267,12 @@ export default function OportunidadesV2Page() {
     >
       <style dangerouslySetInnerHTML={{ __html: CSS }} />
 
-      <header
-        style={{
-          borderBottom: `1px solid ${S.border}`,
-          background: S.panel,
-          padding: '12px 20px',
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12 }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo.png" alt="VigIA Trade" style={{ height: 32, width: 'auto' }} />
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 16, fontWeight: 750 }}>Teste prospectivo v2</div>
-            <div style={{ fontSize: 11, color: S.dim }}>shadow · tamanho fixo · amostras independentes</div>
-          </div>
-        </div>
-        <nav
-          style={{
-            display: 'flex',
-            justifyContent: 'center',
-            gap: 18,
-            flexWrap: 'wrap',
-            marginTop: 9,
-            fontSize: 13,
-          }}
-        >
-          <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>Análise</a>
-          <span style={{ color: S.blue, fontWeight: 750 }}>Teste prospectivo</span>
-          <a href="/robustez" style={{ color: S.dim, textDecoration: 'none' }}>Robustez</a>
-          <a href="/alertas?next=%2Foportunidades" style={{ color: S.green, textDecoration: 'none' }}>Entrar</a>
-        </nav>
-      </header>
+      <CabecalhoVigIA
+        titulo="Teste prospectivo"
+        subtitulo="sinais · funding · validação"
+        ativo="/oportunidades"
+        supabase={supabase}
+      />
 
       <div
         style={{

@@ -19,17 +19,33 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { Session, SupabaseClient } from '@supabase/supabase-js';
 
-// Paleta idêntica à usada nas demais páginas.
+/**
+ * Paleta unificada.
+ *
+ * Cada página mantinha sua própria cópia, e elas divergiram: `daytrade` usava
+ * `panelSoft`, `oportunidades` e `robustez` usavam `soft`, `robustez` chamava
+ * o âmbar de `orange` enquanto as outras chamavam de `a`, e só `robustez`
+ * tinha `purple`. Os hexadecimais eram os mesmos — só os nomes divergiam.
+ *
+ * Aqui estão todos os nomes já usados, apontando para as mesmas cores, para
+ * que nenhuma página quebre. Em código novo, prefira `a`, `blue` e `soft`.
+ */
 export const S = {
   bg: '#101418',
   panel: '#181f26',
+  soft: '#141a20',
+  panelSoft: '#141a20', // alias usado em daytrade
   border: '#2a343f',
   text: '#d7dee6',
   dim: '#7d8a97',
   a: '#e8a13c',
+  orange: '#e8a13c', // alias usado em robustez
   blue: '#4f8fd0',
+  b: '#4f8fd0', // alias usado em daytrade e na home antiga
   green: '#3fb26f',
   red: '#d05555',
+  yellow: '#d6b35b',
+  purple: '#9a7fd1',
 };
 
 export interface DestinoNav {

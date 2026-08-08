@@ -41,6 +41,8 @@ import {
   YAxis,
 } from 'recharts';
 import { getSupabase } from '../../lib/supabaseClient';
+
+import CabecalhoVigIA, { S as SBase } from '../../components/CabecalhoVigIA';
 import {
   DAYTRADE_TIMEFRAME_INDICATOR_OPTIONS,
   getRequiredCandleCount,
@@ -372,18 +374,10 @@ interface BacktestApiResponse {
 // Visual
 // ---------------------------------------------------------------------------
 
+// Paleta: base compartilhada + cores específicas desta tela.
+// Manter só o que é exclusivo daqui evita a divergência que existia antes.
 const S = {
-  bg: '#101418',
-  panel: '#181f26',
-  panelSoft: '#141a20',
-  border: '#2a343f',
-  text: '#d7dee6',
-  dim: '#7d8a97',
-  a: '#e8a13c',
-  b: '#4f8fd0',
-  green: '#3fb26f',
-  red: '#d05555',
-  yellow: '#d6b35b',
+  ...SBase,
   regime: {
     calmo: '#4f8fd0',
     normal: '#3fb26f',
@@ -3266,85 +3260,12 @@ export default function DayTradePage() {
         fontFamily: 'ui-sans-serif, system-ui, sans-serif',
       }}
     >
-      <header
-        style={{
-          borderBottom: `1px solid ${S.border}`,
-          background: S.panel,
-          padding: '12px 20px',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 12,
-          }}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/logo.png"
-            alt="VigIA Trade"
-            style={{ height: 32, width: 'auto', display: 'block' }}
-          />
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>
-              Validação de estratégias
-            </div>
-            <div style={{ fontSize: 11, color: S.dim }}>
-              backtest · walk-forward · significância estatística
-            </div>
-          </div>
-        </div>
-
-        <nav
-          style={{
-            display: 'flex',
-            justifyContent: 'center',
-            gap: 20,
-            marginTop: 8,
-            fontSize: 13,
-            flexWrap: 'wrap',
-          }}
-        >
-          <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>
-            Análise
-          </a>
-          <span style={{ color: S.b, fontWeight: 700 }}>Validação</span>
-          <a href="/oportunidades" style={{ color: S.dim, textDecoration: 'none' }}>
-            Teste prospectivo
-          </a>
-          <a href="/robustez" style={{ color: S.dim, textDecoration: 'none' }}>
-            Robustez
-          </a>
-          <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
-            Alertas
-          </a>
-          <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
-            Conta Binance
-          </a>
-          {!session ? (
-            <a href="/alertas" style={{ color: S.green, textDecoration: 'none' }}>
-              Entrar
-            </a>
-          ) : (
-            <button
-              onClick={() => supabase.auth.signOut()}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: S.red,
-                fontSize: 13,
-                cursor: 'pointer',
-                padding: 0,
-                fontFamily: 'inherit',
-              }}
-            >
-              Sair
-            </button>
-          )}
-        </nav>
-      </header>
+      <CabecalhoVigIA
+        titulo="Validação"
+        subtitulo="playbook · alertas · diário"
+        ativo="/daytrade"
+        supabase={supabase}
+      />
 
       <div
         style={{

@@ -4,11 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { getSupabase } from '@/lib/supabaseClient';
 
-const S = {
-  bg: '#101418', panel: '#181f26', soft: '#141a20', border: '#2a343f',
-  text: '#d7dee6', dim: '#7d8a97', orange: '#e8a13c', blue: '#4f8fd0',
-  green: '#3fb26f', red: '#d05555', purple: '#9a7fd1',
-};
+import CabecalhoVigIA, { S } from '../../components/CabecalhoVigIA';
+
 
 /**
  * Regras responsivas. Inline style não aceita media query, por isso as faixas
@@ -287,27 +284,12 @@ export default function RobustezPage() {
   return <main className="vt-page" style={{ minHeight: '100vh', background: S.bg, color: S.text, fontFamily: 'ui-sans-serif,system-ui,sans-serif' }}>
     <style dangerouslySetInnerHTML={{ __html: CSS }} />
 
-    <header style={{ borderBottom: `1px solid ${S.border}`, background: S.panel, padding: '12px 20px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/logo.png" alt="VigIA Trade" style={{ height: 32, width: 'auto', display: 'block' }} />
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>Robustez</div>
-          <div style={{ fontSize: 11, color: S.dim }}>notícias · estudo prospectivo</div>
-        </div>
-      </div>
-      <nav style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap', gap: 20, marginTop: 8, fontSize: 13 }}>
-        <a href="/" style={{ color: S.dim, textDecoration: 'none' }}>Análise</a>
-        <a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>Validação</a>
-        <a href="/oportunidades" style={{ color: S.dim, textDecoration: 'none' }}>Teste prospectivo</a>
-        <span style={{ color: S.blue, fontWeight: 700 }}>Robustez</span>
-        <a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>Alertas</a>
-        <a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>Conta Binance</a>
-        {!session
-          ? <a href="/alertas?next=%2Frobustez" style={{ color: S.green, textDecoration: 'none' }}>Entrar</a>
-          : <button onClick={() => supabase.auth.signOut()} style={{ background: 'transparent', border: 0, color: S.red, fontSize: 13, cursor: 'pointer', padding: 0 }}>Sair</button>}
-      </nav>
-    </header>
+    <CabecalhoVigIA
+        titulo="Robustez"
+        subtitulo="integridade · classificação"
+        ativo="/robustez"
+        supabase={supabase}
+      />
 
     <div style={{ maxWidth: 1220, margin: '0 auto', padding: '24px 16px 60px', display: 'grid', gap: 18 }}>
       {loading && <Card>Carregando…</Card>}
