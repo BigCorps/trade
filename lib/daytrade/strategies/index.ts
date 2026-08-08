@@ -35,6 +35,11 @@ import {
   RANGE_MEAN_REVERSION_STRATEGY_VERSION,
 } from './rangeMeanReversion';
 
+import {
+  CONFIRMED_TREND_CONTINUATION_STRATEGY_ID,
+  CONFIRMED_TREND_CONTINUATION_STRATEGY_VERSION,
+} from './confirmedTrendContinuation';
+
 // -----------------------------------------------------------------------------
 // Reexports
 // -----------------------------------------------------------------------------
@@ -43,6 +48,7 @@ export * from './trendBreakout';
 export * from './trendPullback';
 export * from './squeezeBreakout';
 export * from './rangeMeanReversion';
+export * from './confirmedTrendContinuation';
 
 // -----------------------------------------------------------------------------
 // Tipos do registro
@@ -52,13 +58,15 @@ export type DayTradeStrategyId =
   | typeof TREND_BREAKOUT_STRATEGY_ID
   | typeof TREND_PULLBACK_STRATEGY_ID
   | typeof SQUEEZE_BREAKOUT_STRATEGY_ID
-  | typeof RANGE_MEAN_REVERSION_STRATEGY_ID;
+  | typeof RANGE_MEAN_REVERSION_STRATEGY_ID
+  | typeof CONFIRMED_TREND_CONTINUATION_STRATEGY_ID;
 
 export type DayTradeStrategyVersion =
   | typeof TREND_BREAKOUT_STRATEGY_VERSION
   | typeof TREND_PULLBACK_STRATEGY_VERSION
   | typeof SQUEEZE_BREAKOUT_STRATEGY_VERSION
-  | typeof RANGE_MEAN_REVERSION_STRATEGY_VERSION;
+  | typeof RANGE_MEAN_REVERSION_STRATEGY_VERSION
+  | typeof CONFIRMED_TREND_CONTINUATION_STRATEGY_VERSION;
 
 export type DayTradeStrategyCategory =
   | 'trend_following'
@@ -195,6 +203,26 @@ export const DAYTRADE_STRATEGY_REGISTRY = {
     enabledForPersistence: true,
     displayOrder: 4,
   },
+  [CONFIRMED_TREND_CONTINUATION_STRATEGY_ID]: {
+    id: CONFIRMED_TREND_CONTINUATION_STRATEGY_ID,
+    version: CONFIRMED_TREND_CONTINUATION_STRATEGY_VERSION,
+    label: 'Continuação confirmada',
+    shortLabel: 'Confirmed Continuation',
+    description:
+      'Exige rompimento com distância mínima, corpo dominante, fechamento no topo da barra e volume acima da média para entrar a favor da tendência.',
+    category: 'trend_following',
+    preferredRegimes: ['tendência'],
+    /**
+     * Em coleta prospectiva desde 07/08/2026 (configs 2.0.0-selective e
+     * 2.0.0-control). Nenhuma autorização de ordem enquanto não houver
+     * evidência que sobreviva à correção por múltiplos testes.
+     */
+    executionMode: 'shadow',
+    authorizedForAutomaticOrders: false,
+    enabledForBacktest: true,
+    enabledForPersistence: true,
+    displayOrder: 5,
+  },
 } as const satisfies Record<
   DayTradeStrategyId,
   DayTradeStrategyDefinition
@@ -209,6 +237,7 @@ export const DAYTRADE_STRATEGY_IDS = [
   TREND_PULLBACK_STRATEGY_ID,
   SQUEEZE_BREAKOUT_STRATEGY_ID,
   RANGE_MEAN_REVERSION_STRATEGY_ID,
+  CONFIRMED_TREND_CONTINUATION_STRATEGY_ID,
 ] as const satisfies readonly DayTradeStrategyId[];
 
 export const EXECUTABLE_DAYTRADE_STRATEGY_IDS =

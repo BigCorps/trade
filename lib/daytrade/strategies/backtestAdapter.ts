@@ -56,6 +56,14 @@ import {
   type RangeMeanReversionPlan,
 } from './rangeMeanReversion';
 
+import {
+  evaluateConfirmedTrendContinuation,
+  resolveConfirmedTrendContinuationOptions,
+  type ConfirmedTrendContinuationEvaluation,
+  type ConfirmedTrendContinuationOptions,
+  type ConfirmedTrendContinuationPlan,
+} from './confirmedTrendContinuation';
+
 // -----------------------------------------------------------------------------
 // Mapas tipados
 // -----------------------------------------------------------------------------
@@ -65,6 +73,7 @@ export interface DayTradeBacktestStrategyOptionsMap {
   trend_pullback: TrendPullbackOptions;
   squeeze_breakout: SqueezeBreakoutOptions;
   range_mean_reversion: RangeMeanReversionOptions;
+  confirmed_trend_continuation: ConfirmedTrendContinuationOptions;
 }
 
 export interface DayTradeBacktestStrategyEvaluationMap {
@@ -72,6 +81,7 @@ export interface DayTradeBacktestStrategyEvaluationMap {
   trend_pullback: TrendPullbackEvaluation;
   squeeze_breakout: SqueezeBreakoutEvaluation;
   range_mean_reversion: RangeMeanReversionEvaluation;
+  confirmed_trend_continuation: ConfirmedTrendContinuationEvaluation;
 }
 
 export interface DayTradeBacktestStrategyPlanMap {
@@ -79,6 +89,7 @@ export interface DayTradeBacktestStrategyPlanMap {
   trend_pullback: TrendPullbackPlan;
   squeeze_breakout: SqueezeBreakoutPlan;
   range_mean_reversion: RangeMeanReversionPlan;
+  confirmed_trend_continuation: ConfirmedTrendContinuationPlan;
 }
 
 export type AnyDayTradeBacktestStrategyOptions =
@@ -186,6 +197,43 @@ export interface DayTradeBacktestStrategyDescriptor {
 }
 
 // -----------------------------------------------------------------------------
+// Normalização de diagnósticos
+// -----------------------------------------------------------------------------
+
+/**
+ * Os playbooks mais novos declaram `diagnostics` como um mapa aberto
+ * (`Record<string, number | string | boolean | null>`) em vez de uma interface
+ * fechada. Isso é conveniente para quem escreve a estratégia, mas o contrato
+ * comum do backtest exige campos com tipo definido.
+ *
+ * Estas funções fazem a ponte. A alternativa seria alterar o formato de saída
+ * das estratégias — inaceitável, porque duas delas estão coletando dados
+ * prospectivos neste momento e mudar sua saída invalidaria o experimento.
+ *
+ * Campos ausentes viram zero. `requiredCandles` e `missingCandles` não existem
+ * em todos os playbooks; quando faltam, o backtest não os usa para decidir
+ * nada — servem apenas para relatório.
+ */
+
+function coerceBoolean(value: unknown, fallback = false): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function coerceNumber(value: unknown, fallback = 0): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value
+    : fallback;
+}
+
+function coerceString(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.length > 0 ? value : fallback;
+}
+
+function coerceNumberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+// -----------------------------------------------------------------------------
 // Avaliação pelo ID
 // -----------------------------------------------------------------------------
 
@@ -243,6 +291,17 @@ export function evaluateBacktestStrategy<
         options:
           input.strategyOptions as
             | RangeMeanReversionOptions
+            | undefined,
+      }) as DayTradeBacktestStrategyEvaluationMap[TStrategyId];
+
+    case 'confirmed_trend_continuation':
+      return evaluateConfirmedTrendContinuation({
+        candles,
+        indicators,
+        livePrice,
+        options:
+          input.strategyOptions as
+            | ConfirmedTrendContinuationOptions
             | undefined,
       }) as DayTradeBacktestStrategyEvaluationMap[TStrategyId];
 
@@ -328,21 +387,34 @@ export function toCommonBacktestEvaluation(
 
     diagnostics: {
       ready:
-        evaluation.diagnostics.ready,
+        coerceBoolean(
+          evaluation.diagnostics.ready,
+        ),
       candleCount:
-        evaluation.diagnostics.candleCount,
+        coerceNumber(
+          evaluation.diagnostics.candleCount,
+        ),
       requiredCandles:
-        evaluation.diagnostics
-          .requiredCandles,
+        coerceNumber(
+          evaluation.diagnostics
+            .requiredCandles,
+        ),
       missingCandles:
-        evaluation.diagnostics
-          .missingCandles,
+        coerceNumber(
+          evaluation.diagnostics
+            .missingCandles,
+        ),
       volatilityRegime:
-        evaluation.diagnostics
-          .volatilityRegime,
+        coerceString(
+          evaluation.diagnostics
+            .volatilityRegime,
+          'indisponível',
+        ),
       relativeVolume:
-        evaluation.diagnostics
-          .relativeVolume,
+        coerceNumberOrNull(
+          evaluation.diagnostics
+            .relativeVolume,
+        ),
     },
   };
 }
@@ -435,6 +507,14 @@ export function getBacktestStrategyRequiredCandleCount(
       );
     }
 
+    /**
+     * A continuação confirmada não usa janela própria além dos indicadores:
+     * lê o candle corrente contra o nível de rompimento e o ATR, ambos já
+     * cobertos pelo aquecimento dos indicadores.
+     */
+    case 'confirmed_trend_continuation':
+      return indicatorRequired;
+
     default: {
       const exhaustiveCheck: never =
         strategyId;
@@ -475,6 +555,12 @@ export function getDefaultMaximumNextOpenDistanceAtr(
       return resolveRangeMeanReversionOptions(
         strategyOptions
           .range_mean_reversion,
+      ).maximumLateEntryDistanceAtr;
+
+    case 'confirmed_trend_continuation':
+      return resolveConfirmedTrendContinuationOptions(
+        strategyOptions
+          .confirmed_trend_continuation,
       ).maximumLateEntryDistanceAtr;
 
     default: {

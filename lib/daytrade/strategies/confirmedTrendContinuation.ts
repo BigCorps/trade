@@ -108,6 +108,15 @@ function resolveOptions(options: ConfirmedTrendContinuationOptions = {}) {
   };
 }
 
+/**
+ * Mesmo resolvedor acima, exposto para o adaptador de backtest.
+ *
+ * Exportar em vez de duplicar os defaults evita que as duas cópias divirjam —
+ * foi exatamente esse tipo de duplicação que fez as paletas do frontend
+ * desencontrarem. Nenhum comportamento muda: é a mesma função.
+ */
+export const resolveConfirmedTrendContinuationOptions = resolveOptions;
+
 function condition(
   value: Omit<ConfirmedTrendContinuationCondition, 'available'> & { available?: boolean },
 ): ConfirmedTrendContinuationCondition {

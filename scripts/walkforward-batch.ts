@@ -85,6 +85,7 @@ const VALID_STRATEGIES: DayTradeStrategyId[] = [
   'trend_pullback',
   'squeeze_breakout',
   'range_mean_reversion',
+  'confirmed_trend_continuation',
 ];
 
 const MANAGEMENT_PRESETS: Record<
@@ -278,6 +279,9 @@ const strategyOptions =
     : {
         trend_breakout: { minimumStopDistanceAtr: stopMinAtr },
         trend_pullback: { minimumStopDistanceAtr: stopMinAtr },
+        confirmed_trend_continuation: {
+          minimumStopDistanceAtr: stopMinAtr,
+        },
       };
 
 // -----------------------------------------------------------------------------
