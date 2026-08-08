@@ -1,2729 +1,760 @@
-'use client';
-
 /**
- * Dashboard de Análise de Mercado — VigIA Trade v5
+ * app/page.tsx — VigIA Trade
  * ---------------------------------------------------------------------------
- * Correções desta versão:
- * - Usa somente candles já encerrados.
- * - Mantém os símbolos da análise separados dos controles atuais.
- * - Alinha comparação e correlação pelo horário real dos candles.
- * - Permite o período semanal de 12 meses com amostra suficiente.
- * - Calcula Sharpe histórico com retornos logarítmicos e desvio-padrão amostral.
- * - Valida amostra dos dois ativos antes de exibir ou persistir a análise.
- * - Evita que falhas de persistência derrubem a análise já concluída.
- * - Busca candles extras para aquecer a volatilidade sem ampliar o período exibido.
+ * Painel principal.
+ *
+ * Substitui a home antiga (2.728 linhas) que mostrava ordens, análises e
+ * oportunidades — tabelas com 6 a 16 registros de um sistema que não opera.
+ *
+ * Este painel responde quatro perguntas, nesta ordem de importância:
+ *
+ *   1. Posso operar com dinheiro de verdade hoje?
+ *   2. Como está indo o teste?
+ *   3. Por que está perdendo?
+ *   4. Existe alguma oportunidade real aberta?
+ *
+ * Regra de escrita: todo número aparece acompanhado da frase que explica o
+ * que ele significa. Quem lê não precisa saber o que é "expectativa em R"
+ * para entender se pode operar ou não.
  */
 
-import { useState, useMemo, useCallback, useEffect } from 'react';
-import type { Session } from '@supabase/supabase-js';
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  Legend,
-  CartesianGrid,
-  ReferenceLine,
-} from 'recharts';
-import { getSupabase } from '../lib/supabaseClient';
-import { isSafeUuid } from '../lib/auth/safeRedirect';
+import { createClient } from '@supabase/supabase-js';
 
-// ---------------------------------------------------------------------------
-// Timeframes e períodos
-// ---------------------------------------------------------------------------
-
-interface PeriodOption {
-  label: string;
-  days: number;
-}
-
-const TIMEFRAMES = {
-  '1h': {
-    api: '1h',
-    label: '1 hora',
-    windowLabel: 'janela de 72h',
-    unitLabel: 'janela de 24h',
-    periodsPerYear: 24 * 365,
-    volWindow: 72,
-    candlesPorDia: 24,
-    periods: [
-      { label: '7 dias', days: 7 },
-      { label: '14 dias', days: 14 },
-      { label: '30 dias', days: 30 },
-      { label: '60 dias', days: 60 },
-      { label: '90 dias', days: 90 },
-    ] as PeriodOption[],
-  },
-  '4h': {
-    api: '4h',
-    label: '4 horas',
-    windowLabel: 'janela de 7 dias',
-    unitLabel: 'janela de 24h',
-    periodsPerYear: 6 * 365,
-    volWindow: 42,
-    candlesPorDia: 6,
-    periods: [
-      { label: '14 dias', days: 14 },
-      { label: '30 dias', days: 30 },
-      { label: '90 dias', days: 90 },
-      { label: '180 dias', days: 180 },
-      { label: '12 meses', days: 365 },
-    ] as PeriodOption[],
-  },
-  '1d': {
-    api: '1d',
-    label: 'diário',
-    windowLabel: 'janela de 30 dias',
-    unitLabel: 'dia',
-    periodsPerYear: 365,
-    volWindow: 30,
-    candlesPorDia: 1,
-    periods: [
-      { label: '3 meses', days: 90 },
-      { label: '6 meses', days: 180 },
-      { label: '12 meses', days: 365 },
-      { label: '24 meses', days: 730 },
-      { label: '36 meses', days: 1095 },
-    ] as PeriodOption[],
-  },
-  '1w': {
-    api: '1w',
-    label: 'semanal',
-    windowLabel: 'janela de 12 semanas',
-    unitLabel: 'semana',
-    periodsPerYear: 52,
-    volWindow: 12,
-    candlesPorDia: 0,
-    periods: [
-      { label: '12 meses', days: 365 },
-      { label: '24 meses', days: 730 },
-      { label: '36 meses', days: 1095 },
-      { label: '60 meses', days: 1825 },
-    ] as PeriodOption[],
-  },
-} as const;
-
-type Timeframe = keyof typeof TIMEFRAMES;
-
-const SYMBOLS = [
-  'BTCUSDT',
-  'ETHUSDT',
-  'SOLUSDT',
-  'BNBUSDT',
-  'XRPUSDT',
-  'nenhum',
-];
-
-const MIN_ALIGNED_RETURNS = 30;
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 // ---------------------------------------------------------------------------
 // Tipos
 // ---------------------------------------------------------------------------
 
-interface Candle {
-  openTime: number;
-  closeTime: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
-
-type Regime = 'calmo' | 'normal' | 'volátil' | 'extremo';
-
-interface AssetStats {
-  symbol: string;
-  returnPct: number;
-  annualReturnPct: number;
-  maxDrawdownPct: number;
-  currentDrawdownPct: number;
-  timeInDrawdownPct: number;
-  annualVolPct: number;
-  currentVolPct: number;
-  sharpe: number;
-  pctPositive: number;
-  regime: Regime;
-  bestUnitPct: number;
-  worstUnitPct: number;
-  lastPrice: number;
-}
-
-interface AnalysisRow {
-  id: string;
-  symbol_a: string;
-  symbol_b: string | null;
-  timeframe: Timeframe;
-  period_label: string;
-  retorno_a: number | null;
-  retorno_b: number | null;
-  correlacao: number | null;
-  criado_em: string;
-}
-
-interface OrderRow {
-  id: string;
-  symbol: string;
-  status: string;
-  is_testnet: boolean;
-  entry_price: number | null;
-  exit_price: number | null;
-  pnl_usdt: number | null;
-  criado_em: string;
-}
-
-interface KeyInfo {
-  is_testnet: boolean;
-}
-
-/** Retorno da RPC get_exchange_key_status(): sem chave completa nem segredo. */
-interface KeyStatusRow {
-  configured: boolean;
-  api_key_masked: string | null;
-  is_testnet: boolean | null;
-  atualizado_em: string | null;
-}
-
-type OpportunityLifecycleStatus =
-  | 'pending'
-  | 'under_review'
-  | 'revalidating'
-  | 'invalidated'
-  | 'expired'
-  | 'rejected'
-  | 'opening'
-  | 'open'
-  | 'exit_pending'
-  | 'closing'
-  | 'closed'
-  | 'error';
-
-interface OpportunityCardRow {
-  id: string;
-  symbol: string;
+interface LinhaEvidencia {
+  estrategia: string;
   timeframe: string;
-  opportunity_type: 'entry' | 'exit';
-  lifecycle_status: OpportunityLifecycleStatus;
-  detected_at: string;
-  expires_at: string | null;
+  operacoes: number;
+  soma_r: number | null;
+  media_r: number | null;
+  t_observado: number | null;
+  piso_ruido: number | null;
+  combinacoes_no_experimento: number | null;
+  veredito: string;
+  mfe_perdedoras_r: number | null;
 }
 
-interface OpportunitySummary {
-  pendingCount: number;
-  positionCount: number;
-  exitCount: number;
-  latestActive: OpportunityCardRow | null;
+interface Decomposicao {
+  operacoes: number;
+  taxa_acerto: number | null;
+  ganho_medio_r: number | null;
+  perda_media_r: number | null;
+  expectativa_real_r: number | null;
+  expectativa_sem_friccao_r: number | null;
+  custo_friccao_r: number | null;
+  stop_pct_preco: number | null;
+  problema_principal: string | null;
+}
+
+interface FaixaRisco {
+  faixa: string;
+  operacoes: number;
+  imposto_pct_de_cada_r: number | null;
+  resultado_medio_r: number | null;
+  severidade: string;
+}
+
+interface Funding {
+  simbolo: string;
+  funding_anualizado_pct: number | null;
+  carry_liquido_anualizado_pct: number | null;
+  elegivel: boolean | null;
 }
 
 // ---------------------------------------------------------------------------
-// Estilo
+// Dados
 // ---------------------------------------------------------------------------
 
-const S = {
-  bg: '#101418',
-  panel: '#181f26',
-  border: '#2a343f',
-  text: '#d7dee6',
-  dim: '#7d8a97',
-  a: '#e8a13c',
-  b: '#4f8fd0',
-  green: '#3fb26f',
-  red: '#d05555',
-  regime: {
-    calmo: '#4f8fd0',
-    normal: '#3fb26f',
-    'volátil': '#e8a13c',
-    extremo: '#d05555',
-  } as Record<Regime, string>,
-};
-
-const fmt = (n: number, d = 2) =>
-  n.toLocaleString('pt-BR', {
-    minimumFractionDigits: d,
-    maximumFractionDigits: d,
-  });
-
-const fmtPct = (n: number) => `${n >= 0 ? '+' : ''}${fmt(n)}%`;
-
-const fmtData = (iso: string) =>
-  new Date(iso).toLocaleString('pt-BR', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-
-const STATUS_LABEL: Record<string, { label: string; color: string }> = {
-  pendente: { label: 'pendente', color: '#7d8a97' },
-  entrada_enviada: { label: 'enviando entrada', color: '#e8a13c' },
-  entrada_executada: { label: 'entrada feita', color: '#e8a13c' },
-  protecao_pendente: { label: 'criando proteção', color: '#e8a13c' },
-  entrada_sem_protecao: { label: 'sem proteção ⚠️', color: '#d05555' },
-  oco_ativa: { label: 'OCO ativa', color: '#4f8fd0' },
-  alvo_executado: { label: 'alvo ✅', color: '#3fb26f' },
-  stop_executado: { label: 'stop 🛑', color: '#d05555' },
-  cancelada: { label: 'cancelada', color: '#7d8a97' },
-  erro_pre_entrada: { label: 'erro antes da entrada', color: '#d05555' },
-  erro: { label: 'erro', color: '#d05555' },
-};
-
-const OPPORTUNITY_STATUS_LABEL: Record<
-  OpportunityLifecycleStatus,
-  { label: string; color: string }
-> = {
-  pending: { label: 'pendente', color: S.a },
-  under_review: { label: 'em revisão', color: S.a },
-  revalidating: { label: 'revalidando', color: S.a },
-  invalidated: { label: 'invalidada', color: S.dim },
-  expired: { label: 'expirada', color: S.dim },
-  rejected: { label: 'recusada', color: S.dim },
-  opening: { label: 'abrindo', color: S.a },
-  open: { label: 'em andamento', color: S.b },
-  exit_pending: { label: 'saída pendente', color: S.red },
-  closing: { label: 'encerrando', color: S.a },
-  closed: { label: 'encerrada', color: S.green },
-  error: { label: 'erro', color: S.red },
-};
-
-// ---------------------------------------------------------------------------
-// Dados e cálculos
-// ---------------------------------------------------------------------------
-
-async function fetchKlines(
-  symbol: string,
-  interval: string,
-  requestedStart: number,
-  requestedEnd: number,
-  onProgress: (message: string) => void,
-): Promise<Candle[]> {
-  let cursor = requestedStart;
-
-  const candlesByTime = new Map<number, Candle>();
-
-  while (cursor < requestedEnd) {
-    const params = new URLSearchParams({
-      symbol,
-      interval,
-      startTime: String(cursor),
-      endTime: String(requestedEnd),
-      limit: '1000',
-    });
-
-    const res = await fetch(
-      `https://api.binance.com/api/v3/klines?${params.toString()}`,
-      { cache: 'no-store' },
-    );
-
-    if (!res.ok) {
-      throw new Error(`Binance respondeu ${res.status} para ${symbol}`);
-    }
-
-    const batch: (string | number)[][] = await res.json();
-    if (!batch.length) break;
-
-    for (const k of batch) {
-      const openTime = Number(k[0]);
-      const closeTime = Number(k[6]);
-
-      // A Binance inclui o candle ainda em formação. Ele não pode participar
-      // de métricas históricas porque seu fechamento ainda pode mudar.
-      if (closeTime > requestedEnd) continue;
-
-      candlesByTime.set(openTime, {
-        openTime,
-        closeTime,
-        open: Number(k[1]),
-        high: Number(k[2]),
-        low: Number(k[3]),
-        close: Number(k[4]),
-        volume: Number(k[5]),
-      });
-    }
-
-    const lastOpenTime = Number(batch[batch.length - 1][0]);
-    const nextCursor = lastOpenTime + 1;
-
-    if (nextCursor <= cursor) break;
-    cursor = nextCursor;
-
-    onProgress(`${symbol}: ${candlesByTime.size} candles fechados...`);
-
-    if (batch.length < 1000) break;
-  }
-
-  return [...candlesByTime.values()]
-    .filter((candle) => candle.openTime >= requestedStart)
-    .sort((a, b) => a.openTime - b.openTime);
-}
-
-function logReturns(candles: Candle[]): number[] {
-  const returns: number[] = [];
-
-  for (let i = 1; i < candles.length; i++) {
-    const previous = candles[i - 1].close;
-    const current = candles[i].close;
-
-    if (previous > 0 && current > 0) {
-      returns.push(Math.log(current / previous));
-    }
-  }
-
-  return returns;
-}
-
-function mean(values: number[]): number {
-  if (!values.length) return 0;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function sampleStandardDeviation(values: number[]): number {
-  if (values.length < 2) return 0;
-
-  const average = mean(values);
-  const variance = values.reduce(
-    (sum, value) => sum + (value - average) ** 2,
-    0,
-  ) / (values.length - 1);
-
-  return Math.sqrt(Math.max(0, variance));
-}
-
-function rollingVol(
-  returns: number[],
-  window: number,
-  periodsPerYear: number,
-): (number | null)[] {
-  const annualize = Math.sqrt(periodsPerYear);
-  const output: (number | null)[] = new Array(returns.length + 1).fill(null);
-
-  let sum = 0;
-  let sumSq = 0;
-
-  for (let i = 0; i < returns.length; i++) {
-    sum += returns[i];
-    sumSq += returns[i] ** 2;
-
-    if (i >= window) {
-      sum -= returns[i - window];
-      sumSq -= returns[i - window] ** 2;
-    }
-
-    if (i >= window - 1) {
-      const average = sum / window;
-      const variance = Math.max(0, sumSq / window - average ** 2);
-      output[i + 1] = Math.sqrt(variance) * annualize * 100;
-    }
-  }
-
-  return output;
-}
-
-function classifyRegime(volSeries: (number | null)[]): Regime {
-  const values = volSeries
-    .filter((value): value is number => value !== null)
-    .sort((a, b) => a - b);
-  const current = volSeries[volSeries.length - 1];
-
-  if (current === null || current === undefined || values.length < 4) {
-    return 'normal';
-  }
-
-  // Mantido igual ao cálculo server-side usado pelos alertas para que o mesmo
-  // conjunto de candles não receba regimes diferentes no painel e no cron.
-  const quantile = (p: number) =>
-    values[Math.floor(p * (values.length - 1))];
-
-  if (current <= quantile(0.25)) return 'calmo';
-  if (current <= quantile(0.75)) return 'normal';
-  if (current <= quantile(0.95)) return 'volátil';
-  return 'extremo';
-}
-
-function alignedCandlePairs(
-  a: Candle[],
-  b: Candle[],
-): { a: Candle; b: Candle }[] {
-  const mapB = new Map(b.map((candle) => [candle.openTime, candle]));
-
-  return a.flatMap((candleA) => {
-    const candleB = mapB.get(candleA.openTime);
-    return candleB ? [{ a: candleA, b: candleB }] : [];
-  });
-}
-
-function correlation(a: Candle[], b: Candle[]): number | null {
-  const pairs = alignedCandlePairs(a, b);
-  if (pairs.length < MIN_ALIGNED_RETURNS + 1) return null;
-
-  const xs: number[] = [];
-  const ys: number[] = [];
-
-  for (let i = 1; i < pairs.length; i++) {
-    const previous = pairs[i - 1];
-    const current = pairs[i];
-
-    if (
-      previous.a.close <= 0 ||
-      previous.b.close <= 0 ||
-      current.a.close <= 0 ||
-      current.b.close <= 0
-    ) {
-      continue;
-    }
-
-    xs.push(Math.log(current.a.close / previous.a.close));
-    ys.push(Math.log(current.b.close / previous.b.close));
-  }
-
-  const n = xs.length;
-  if (n < MIN_ALIGNED_RETURNS) return null;
-
-  const meanX = mean(xs);
-  const meanY = mean(ys);
-
-  let covariance = 0;
-  let varianceX = 0;
-  let varianceY = 0;
-
-  for (let i = 0; i < n; i++) {
-    const dx = xs[i] - meanX;
-    const dy = ys[i] - meanY;
-
-    covariance += dx * dy;
-    varianceX += dx ** 2;
-    varianceY += dy ** 2;
-  }
-
-  const denominator = Math.sqrt(varianceX * varianceY);
-  return denominator > 0 ? covariance / denominator : null;
-}
-
-function correlationLabel(r: number): string {
-  const absolute = Math.abs(r);
-
-  if (absolute >= 0.7) return r > 0 ? 'alta' : 'alta inversa';
-  if (absolute >= 0.4) return r > 0 ? 'moderada' : 'moderada inversa';
-  return 'baixa';
-}
-
-function computeStats(
-  symbol: string,
-  candles: Candle[],
-  vol: (number | null)[],
-  tf: (typeof TIMEFRAMES)[Timeframe],
-): AssetStats {
-  const first = candles[0].close;
-  const last = candles[candles.length - 1].close;
-  const n = candles.length;
-
-  let peak = -Infinity;
-  let maxDrawdown = 0;
-  let belowPeak = 0;
-
-  for (const candle of candles) {
-    peak = Math.max(peak, candle.close);
-    const drawdown = (candle.close - peak) / peak;
-    maxDrawdown = Math.min(maxDrawdown, drawdown);
-
-    if (drawdown < 0) belowPeak++;
-  }
-
-  const currentDrawdown = (last - peak) / peak;
-  const span = tf.candlesPorDia > 0 ? tf.candlesPorDia : 1;
-
-  let best = 0;
-  let worst = 0;
-  let hasUnitReturn = false;
-
-  for (let i = span; i < n; i++) {
-    const unitReturn = (candles[i].close / candles[i - span].close - 1) * 100;
-
-    if (!hasUnitReturn) {
-      best = unitReturn;
-      worst = unitReturn;
-      hasUnitReturn = true;
-    } else {
-      best = Math.max(best, unitReturn);
-      worst = Math.min(worst, unitReturn);
-    }
-  }
-
-  const returns = logReturns(candles);
-  const positives = returns.filter((value) => value > 0).length;
-  const volValues = vol.filter((value): value is number => value !== null);
-  const averageRollingVol = mean(volValues);
-
-  const elapsedPeriods = Math.max(1, returns.length);
-  const annualizedLogReturn = Math.log(last / first) * (
-    tf.periodsPerYear / elapsedPeriods
-  );
-  const annualReturn = (Math.exp(annualizedLogReturn) - 1) * 100;
-
-  const periodMean = mean(returns);
-  const periodStd = sampleStandardDeviation(returns);
-  const sharpe = periodStd > 0
-    ? (periodMean / periodStd) * Math.sqrt(tf.periodsPerYear)
-    : 0;
+async function carregar() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!url || !key) return null;
+
+  const db = createClient(url, key);
+
+  const [evidencia, decomposicao, faixas, funding, politicas] =
+    await Promise.all([
+      db.from('vw_forward_test_evidencia').select('*'),
+      db.from('vw_decomposicao_edge').select('*').maybeSingle(),
+      db.from('vw_imposto_por_faixa_risco').select('*'),
+      db
+        .from('funding_carry_latest')
+        .select('simbolo, funding_anualizado_pct, carry_liquido_anualizado_pct, elegivel')
+        .order('carry_liquido_anualizado_pct', { ascending: false, nullsFirst: false })
+        .limit(6),
+      db
+        .from('daytrade_strategy_execution_policy')
+        .select('strategy, execution_environment, execution_enabled'),
+    ]);
 
   return {
-    symbol,
-    returnPct: (last / first - 1) * 100,
-    annualReturnPct: annualReturn,
-    maxDrawdownPct: maxDrawdown * 100,
-    currentDrawdownPct: currentDrawdown * 100,
-    timeInDrawdownPct: (belowPeak / n) * 100,
-    annualVolPct: averageRollingVol,
-    currentVolPct: volValues[volValues.length - 1] ?? 0,
-    sharpe,
-    pctPositive: returns.length ? (positives / returns.length) * 100 : 0,
-    regime: classifyRegime(vol),
-    bestUnitPct: best,
-    worstUnitPct: worst,
-    lastPrice: last,
+    evidencia: (evidencia.data ?? []) as LinhaEvidencia[],
+    decomposicao: (decomposicao.data ?? null) as Decomposicao | null,
+    faixas: (faixas.data ?? []) as FaixaRisco[],
+    funding: (funding.data ?? []) as Funding[],
+    politicas: politicas.data ?? [],
   };
 }
 
-const DAY_MS = 24 * 60 * 60 * 1_000;
-
-function minimumCandlesFor(timeframe: Timeframe): number {
-  const config = TIMEFRAMES[timeframe];
-  return Math.max(MIN_ALIGNED_RETURNS, config.volWindow + 10);
-}
-
-function volatilityWarmupDays(timeframe: Timeframe): number {
-  const config = TIMEFRAMES[timeframe];
-  const candlesNeeded = config.volWindow + 2;
-
-  // O semanal não possui uma quantidade inteira de candles por dia.
-  // Acrescentamos duas semanas de margem para feriados, alinhamento do candle
-  // e para garantir que a primeira janela visível já esteja completa.
-  if (timeframe === '1w') return candlesNeeded * 7;
-
-  return Math.ceil(candlesNeeded / config.candlesPorDia);
-}
-
-function alignVolatilityToVisibleCandles(
-  fullCandles: Candle[],
-  fullVolatility: (number | null)[],
-  visibleCandles: Candle[],
-): (number | null)[] {
-  const volatilityByTime = new Map<number, number | null>(
-    fullCandles.map((candle, index) => [
-      candle.openTime,
-      fullVolatility[index] ?? null,
-    ]),
-  );
-
-  return visibleCandles.map(
-    (candle) => volatilityByTime.get(candle.openTime) ?? null,
-  );
-}
-
 // ---------------------------------------------------------------------------
-// UI auxiliares
+// Auxiliares
 // ---------------------------------------------------------------------------
 
-function Card({
-  children,
-  style,
-  title,
-}: {
-  children: React.ReactNode;
-  style?: React.CSSProperties;
-  title?: string;
-}) {
-  return (
-    <section
-      title={title}
-      style={{
-        background: S.panel,
-        border: `1px solid ${S.border}`,
-        borderRadius: 10,
-        padding: 16,
-        ...style,
-      }}
-    >
-      {children}
-    </section>
-  );
-}
+const n = (valor: number | null | undefined, casas = 2): string =>
+  valor === null || valor === undefined ? '—' : Number(valor).toFixed(casas);
 
-function RegimeBadge({ regime }: { regime: Regime }) {
-  return (
-    <span
-      style={{
-        background: `${S.regime[regime]}22`,
-        color: S.regime[regime],
-        border: `1px solid ${S.regime[regime]}55`,
-        borderRadius: 20,
-        padding: '2px 10px',
-        fontSize: 12,
-        fontWeight: 600,
-        textTransform: 'uppercase',
-        letterSpacing: 0.5,
-      }}
-    >
-      {regime}
-    </span>
-  );
-}
+const pct = (valor: number | null | undefined, casas = 1): string =>
+  valor === null || valor === undefined ? '—' : `${(Number(valor) * 100).toFixed(casas)}%`;
 
 // ---------------------------------------------------------------------------
 // Página
 // ---------------------------------------------------------------------------
 
-export default function AnalisePage() {
-  const supabase = getSupabase();
+export default async function Painel() {
+  const dados = await carregar();
 
-  const [session, setSession] = useState<Session | null>(null);
-
-  const [symbolA, setSymbolA] = useState('BTCUSDT');
-  const [symbolB, setSymbolB] = useState('ETHUSDT');
-  const [timeframe, setTimeframe] = useState<Timeframe>('1d');
-  const [periodIdx, setPeriodIdx] = useState(1);
-
-  const [status, setStatus] = useState<
-    'idle' | 'loading' | 'done' | 'error'
-  >('idle');
-  const [progress, setProgress] = useState('');
-  const [error, setError] = useState('');
-
-  const [usedSymbolA, setUsedSymbolA] = useState('BTCUSDT');
-  const [usedSymbolB, setUsedSymbolB] = useState('ETHUSDT');
-  const [usedTf, setUsedTf] = useState<Timeframe>('1d');
-  const [usedPeriodLabel, setUsedPeriodLabel] = useState('6 meses');
-
-  const [dataA, setDataA] = useState<Candle[]>([]);
-  const [dataB, setDataB] = useState<Candle[]>([]);
-  const [volA, setVolA] = useState<(number | null)[]>([]);
-  const [volB, setVolB] = useState<(number | null)[]>([]);
-  const [report, setReport] = useState('');
-  const [reportLoading, setReportLoading] = useState(false);
-  const [copyStatus, setCopyStatus] = useState<
-    'idle' | 'loading' | 'success' | 'error'
-  >('idle');
-  const [copyMessage, setCopyMessage] = useState('');
-
-  // Status e histórico do usuário autenticado.
-  const [alertCount, setAlertCount] = useState<number | null>(null);
-  const [keyInfo, setKeyInfo] = useState<KeyInfo | null | undefined>(undefined);
-  const [lastOrders, setLastOrders] = useState<OrderRow[]>([]);
-  const [lastAnalyses, setLastAnalyses] = useState<AnalysisRow[]>([]);
-  const [opportunitySummary, setOpportunitySummary] = useState<
-    OpportunitySummary | null | undefined
-  >(undefined);
-  const [currentAnalysisId, setCurrentAnalysisId] = useState<string | null>(null);
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }: { data: { session: Session | null } }) => setSession(data.session));
-
-    const { data: subscription } = supabase.auth.onAuthStateChange(
-      (_event: string, nextSession: Session | null) => setSession(nextSession),
+  if (!dados) {
+    return (
+      <main className="painel">
+        <style>{estilos}</style>
+        <div className="aviso">
+          Defina <code>NEXT_PUBLIC_SUPABASE_URL</code> e{' '}
+          <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> para carregar o painel.
+        </div>
+      </main>
     );
+  }
 
-    return () => subscription.subscription.unsubscribe();
-  }, [supabase]);
+  const { evidencia, decomposicao, faixas, funding, politicas } = dados;
 
-  const loadStatus = useCallback(async () => {
-    const [alerts, keys, orders, analyses] = await Promise.all([
-      supabase
-        .from('alert_rules')
-        .select('id', { count: 'exact', head: true })
-        .eq('ativo', true),
-      // Nunca consultar exchange_keys direto: a tabela guarda a chave e o
-      // segredo cifrado, e o cliente não tem mais permissão de leitura.
-      // A RPC devolve apenas status e chave mascarada.
-      supabase.rpc('get_exchange_key_status'),
-      supabase
-        .from('orders')
-        .select(
-          'id, symbol, status, is_testnet, entry_price, exit_price, pnl_usdt, criado_em',
-        )
-        .order('criado_em', { ascending: false })
-        .limit(3),
-      supabase
-        .from('analyses')
-        .select(
-          'id, symbol_a, symbol_b, timeframe, period_label, retorno_a, retorno_b, correlacao, criado_em',
-        )
-        .order('criado_em', { ascending: false })
-        .limit(5),
-    ]);
+  const habilitadasReal = politicas.filter(
+    (p: { execution_environment: string; execution_enabled: boolean }) =>
+      p.execution_environment === 'real' && p.execution_enabled,
+  ).length;
 
-    setAlertCount(alerts.error ? 0 : alerts.count ?? 0);
-    const keyStatus = Array.isArray(keys.data)
-      ? (keys.data[0] as KeyStatusRow | undefined)
-      : (keys.data as KeyStatusRow | null);
+  const totalOperacoes = evidencia.reduce((s, r) => s + (r.operacoes ?? 0), 0);
+  const somaTotal = evidencia.reduce((s, r) => s + Number(r.soma_r ?? 0), 0);
 
-    setKeyInfo(
-      keys.error || !keyStatus || !keyStatus.configured
-        ? null
-        : { is_testnet: Boolean(keyStatus.is_testnet) },
-    );
-    setLastOrders(orders.error ? [] : (orders.data as OrderRow[]) ?? []);
-    setLastAnalyses(
-      analyses.error ? [] : (analyses.data as AnalysisRow[]) ?? [],
-    );
-  }, [supabase]);
+  const aprovadas = evidencia.filter((r) => r.veredito.includes('sobrevive'));
+  const podeOperar = habilitadasReal > 0 && aprovadas.length > 0;
 
-  const loadOpportunityStatus = useCallback(async () => {
-    const activeStatuses: OpportunityLifecycleStatus[] = [
-      'pending',
-      'under_review',
-      'revalidating',
-      'opening',
-      'open',
-      'exit_pending',
-      'closing',
-    ];
+  const fundingElegivel = funding.filter((f) => f.elegivel);
+  const melhorFunding = funding[0] ?? null;
 
-    const [pending, positions, exits, latestActive] = await Promise.all([
-      supabase
-        .from('trade_opportunities')
-        .select('id', { count: 'exact', head: true })
-        .in('lifecycle_status', [
-          'pending',
-          'under_review',
-          'revalidating',
-        ]),
-      supabase
-        .from('trade_opportunities')
-        .select('id', { count: 'exact', head: true })
-        .in('lifecycle_status', ['opening', 'open']),
-      supabase
-        .from('trade_opportunities')
-        .select('id', { count: 'exact', head: true })
-        .in('lifecycle_status', ['exit_pending', 'closing']),
-      supabase
-        .from('trade_opportunities')
-        .select(
-          'id, symbol, timeframe, opportunity_type, lifecycle_status, detected_at, expires_at',
-        )
-        .in('lifecycle_status', activeStatuses)
-        .order('detected_at', { ascending: false })
-        .limit(1)
-        .maybeSingle(),
-    ]);
-
-    const firstError = [
-      pending.error,
-      positions.error,
-      exits.error,
-      latestActive.error,
-    ].find(Boolean);
-
-    if (firstError) {
-      // A página principal continua funcional mesmo antes da migration da
-      // Central ser aplicada. O card informa a indisponibilidade sem bloquear
-      // análise, alertas, conta ou histórico.
-      console.warn('Central de Oportunidades indisponível:', firstError);
-      setOpportunitySummary(null);
-      return;
-    }
-
-    setOpportunitySummary({
-      pendingCount: pending.count ?? 0,
-      positionCount: positions.count ?? 0,
-      exitCount: exits.count ?? 0,
-      latestActive:
-        (latestActive.data as OpportunityCardRow | null | undefined) ?? null,
-    });
-  }, [supabase]);
-
-  useEffect(() => {
-    if (session) {
-      setKeyInfo(undefined);
-      setOpportunitySummary(undefined);
-      void Promise.all([loadStatus(), loadOpportunityStatus()]);
-      return;
-    }
-
-    setAlertCount(null);
-    setKeyInfo(undefined);
-    setLastOrders([]);
-    setLastAnalyses([]);
-    setOpportunitySummary(undefined);
-    setCurrentAnalysisId(null);
-  }, [session, loadStatus, loadOpportunityStatus]);
-
-  useEffect(() => {
-    if (!session) return;
-
-    const channel = supabase
-      .channel(`main-opportunities-${session.user.id}`)
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'trade_opportunities',
-          filter: `user_id=eq.${session.user.id}`,
-        },
-        () => {
-          void loadOpportunityStatus();
-        },
-      )
-      .subscribe();
-
-    return () => {
-      void supabase.removeChannel(channel);
-    };
-  }, [session, supabase, loadOpportunityStatus]);
-
-  const latestOpportunityHref = useMemo(() => {
-    const id = opportunitySummary?.latestActive?.id;
-
-    return id && isSafeUuid(id)
-      ? `/oportunidades?focus=${encodeURIComponent(id)}`
-      : '/oportunidades';
-  }, [opportunitySummary]);
-
-  const onTimeframeChange = (value: string) => {
-    const next = value as Timeframe;
-    setTimeframe(next);
-    setPeriodIdx(Math.min(1, TIMEFRAMES[next].periods.length - 1));
-  };
-
-  const run = useCallback(async (
-    override?: {
-      symbolA: string;
-      symbolB: string;
-      timeframe: Timeframe;
-      periodLabel: string;
-    },
-  ) => {
-    const selectedTf = override?.timeframe ?? timeframe;
-    const config = TIMEFRAMES[selectedTf];
-
-    const selectedPeriod = override
-      ? config.periods.find((period) => period.label === override.periodLabel)
-        ?? config.periods[Math.min(1, config.periods.length - 1)]
-      : config.periods[Math.min(periodIdx, config.periods.length - 1)];
-
-    const selectedA = override?.symbolA ?? symbolA;
-    const requestedB = override?.symbolB ?? symbolB;
-    const selectedB = requestedB !== 'nenhum' && requestedB !== selectedA
-      ? requestedB
-      : 'nenhum';
-
-    if (override) {
-      setSymbolA(selectedA);
-      setSymbolB(requestedB);
-      setTimeframe(selectedTf);
-      setPeriodIdx(
-        Math.max(
-          0,
-          config.periods.findIndex(
-            (period) => period.label === selectedPeriod.label,
-          ),
-        ),
-      );
-    }
-
-    setStatus('loading');
-    setProgress('');
-    setError('');
-    setReport('');
-    setCopyStatus('idle');
-    setCopyMessage('');
-    setCurrentAnalysisId(null);
-
-    try {
-      const analysisEnd = Date.now();
-      const analysisStart = analysisEnd - selectedPeriod.days * DAY_MS;
-      const warmupStart = analysisStart - volatilityWarmupDays(selectedTf) * DAY_MS;
-
-      const fullCandlesA = await fetchKlines(
-        selectedA,
-        config.api,
-        warmupStart,
-        analysisEnd,
-        setProgress,
-      );
-
-      const fullCandlesB = selectedB !== 'nenhum'
-        ? await fetchKlines(
-          selectedB,
-          config.api,
-          warmupStart,
-          analysisEnd,
-          setProgress,
-        )
-        : [];
-
-      // Os candles anteriores ao período escolhido existem apenas para formar
-      // a primeira janela de volatilidade. Retorno, drawdown, correlação,
-      // performance e eixo do gráfico continuam restritos ao período solicitado.
-      const candlesA = fullCandlesA.filter(
-        (candle) => candle.openTime >= analysisStart,
-      );
-      const candlesB = fullCandlesB.filter(
-        (candle) => candle.openTime >= analysisStart,
-      );
-
-      const fullVolA = rollingVol(
-        logReturns(fullCandlesA),
-        config.volWindow,
-        config.periodsPerYear,
-      );
-      const fullVolB = fullCandlesB.length
-        ? rollingVol(
-          logReturns(fullCandlesB),
-          config.volWindow,
-          config.periodsPerYear,
-        )
-        : [];
-
-      const visibleVolA = alignVolatilityToVisibleCandles(
-        fullCandlesA,
-        fullVolA,
-        candlesA,
-      );
-      const visibleVolB = alignVolatilityToVisibleCandles(
-        fullCandlesB,
-        fullVolB,
-        candlesB,
-      );
-
-      const minimum = minimumCandlesFor(selectedTf);
-
-      if (candlesA.length < minimum) {
-        throw new Error(
-          `${selectedA}: amostra insuficiente (${candlesA.length} candles fechados; mínimo ${minimum}). Aumente o período.`,
-        );
-      }
-
-      if (selectedB !== 'nenhum' && candlesB.length < minimum) {
-        throw new Error(
-          `${selectedB}: amostra insuficiente (${candlesB.length} candles fechados; mínimo ${minimum}). Aumente o período.`,
-        );
-      }
-
-      if (candlesB.length) {
-        const aligned = alignedCandlePairs(candlesA, candlesB);
-
-        if (aligned.length < MIN_ALIGNED_RETURNS + 1) {
-          throw new Error(
-            `Os ativos possuem somente ${Math.max(0, aligned.length - 1)} retornos alinhados; mínimo ${MIN_ALIGNED_RETURNS}.`,
-          );
-        }
-      }
-
-      setDataA(candlesA);
-      setDataB(candlesB);
-      setVolA(visibleVolA);
-      setVolB(visibleVolB);
-      setUsedSymbolA(selectedA);
-      setUsedSymbolB(selectedB);
-      setUsedTf(selectedTf);
-      setUsedPeriodLabel(selectedPeriod.label);
-      setStatus('done');
-      setProgress('');
-
-      // A persistência é secundária: uma falha no banco não invalida os dados
-      // de mercado que já foram calculados e exibidos corretamente.
-      if (session) {
-        try {
-          const statsForA = computeStats(
-            selectedA,
-            candlesA,
-            visibleVolA,
-            config,
-          );
-
-          let statsForB: AssetStats | null = null;
-          let correlationValue: number | null = null;
-
-          if (candlesB.length) {
-            statsForB = computeStats(
-              selectedB,
-              candlesB,
-              visibleVolB,
-              config,
-            );
-            correlationValue = correlation(candlesA, candlesB);
-          }
-
-          const { data: row, error: insertError } = await supabase
-            .from('analyses')
-            .insert({
-              symbol_a: selectedA,
-              symbol_b: candlesB.length ? selectedB : null,
-              timeframe: selectedTf,
-              period_label: selectedPeriod.label,
-              retorno_a: statsForA.returnPct,
-              retorno_b: statsForB?.returnPct ?? null,
-              correlacao: correlationValue,
-              stats: { a: statsForA, b: statsForB },
-              user_id: session.user.id,
-            })
-            .select('id')
-            .single();
-
-          if (!insertError && row) {
-            setCurrentAnalysisId(row.id as string);
-          }
-
-          await loadStatus();
-        } catch (persistenceError) {
-          console.error('Falha ao persistir análise:', persistenceError);
-        }
-      }
-    } catch (runError) {
-      setError(
-        runError instanceof Error
-          ? runError.message
-          : 'Erro ao buscar dados.',
-      );
-      setStatus('error');
-      setProgress('');
-    }
-  }, [
-    timeframe,
-    periodIdx,
-    symbolA,
-    symbolB,
-    session,
-    supabase,
-    loadStatus,
-  ]);
-
-  // Derivados da última análise concluída, nunca dos controles que ainda não
-  // foram executados.
-  const tf = TIMEFRAMES[usedTf];
-
-  const statsA = useMemo(
-    () => dataA.length
-      ? computeStats(usedSymbolA, dataA, volA, tf)
-      : null,
-    [dataA, volA, usedSymbolA, tf],
-  );
-
-  const statsB = useMemo(
-    () => dataB.length
-      ? computeStats(usedSymbolB, dataB, volB, tf)
-      : null,
-    [dataB, volB, usedSymbolB, tf],
-  );
-
-  const corr = useMemo(
-    () => dataA.length && dataB.length
-      ? correlation(dataA, dataB)
-      : null,
-    [dataA, dataB],
-  );
-
-  const charts = useMemo(() => {
-    if (!dataA.length) return { perf: [], vol: [] };
-
-    const step = Math.max(1, Math.floor(dataA.length / 500));
-    const sampledIndexes: number[] = [];
-
-    for (let index = 0; index < dataA.length; index += step) {
-      sampledIndexes.push(index);
-    }
-
-    if (sampledIndexes[sampledIndexes.length - 1] !== dataA.length - 1) {
-      sampledIndexes.push(dataA.length - 1);
-    }
-
-    const baseA = dataA[0].close;
-    const bByTime = new Map(
-      dataB.map((candle, index) => [
-        candle.openTime,
-        { candle, volatility: volB[index] },
-      ]),
-    );
-
-    const firstMatchedB = dataA
-      .map((candle) => bByTime.get(candle.openTime)?.candle)
-      .find((candle): candle is Candle => Boolean(candle));
-
-    const baseB = firstMatchedB?.close ?? 1;
-    const performance: Record<string, number | string>[] = [];
-    const volatility: Record<string, number | string>[] = [];
-    const longRange = usedTf === '1d' || usedTf === '1w';
-
-    for (const index of sampledIndexes) {
-      const candleA = dataA[index];
-      const date = new Date(candleA.openTime);
-      const label = longRange
-        ? `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getFullYear()).slice(2)}`
-        : `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}`;
-
-      const performancePoint: Record<string, number | string> = {
-        label,
-        [usedSymbolA]: Number(((candleA.close / baseA) * 100).toFixed(2)),
-      };
-      const volatilityPoint: Record<string, number | string> = { label };
-
-      if (volA[index] !== null && volA[index] !== undefined) {
-        volatilityPoint[usedSymbolA] = Number(
-          (volA[index] as number).toFixed(1),
-        );
-      }
-
-      const matchedB = bByTime.get(candleA.openTime);
-
-      if (matchedB && usedSymbolB !== 'nenhum') {
-        performancePoint[usedSymbolB] = Number(
-          ((matchedB.candle.close / baseB) * 100).toFixed(2),
-        );
-
-        if (
-          matchedB.volatility !== null &&
-          matchedB.volatility !== undefined
-        ) {
-          volatilityPoint[usedSymbolB] = Number(
-            matchedB.volatility.toFixed(1),
-          );
-        }
-      }
-
-      performance.push(performancePoint);
-      volatility.push(volatilityPoint);
-    }
-
-    return { perf: performance, vol: volatility };
-  }, [
-    dataA,
-    dataB,
-    volA,
-    volB,
-    usedSymbolA,
-    usedSymbolB,
-    usedTf,
-  ]);
-
-  const generateReport = useCallback(async () => {
-    if (!statsA) return;
-
-    setReportLoading(true);
-    setReport('');
-
-    try {
-      const res = await fetch('/api/relatorio', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          periodoLabel: usedPeriodLabel,
-          timeframeLabel: tf.label,
-          unidadeExtremos: tf.unitLabel,
-          correlacao: corr,
-          ativos: [statsA, statsB].filter(Boolean),
-        }),
-      });
-
-      if (!res.ok) throw new Error(`API respondeu ${res.status}`);
-
-      const json = await res.json();
-      const text = json.relatorio ?? 'Resposta vazia da API.';
-      setReport(text);
-
-      if (session && currentAnalysisId) {
-        const { error: updateError } = await supabase
-          .from('analyses')
-          .update({ report: text })
-          .eq('id', currentAnalysisId);
-
-        if (updateError) {
-          console.error('Falha ao anexar relatório à análise:', updateError);
-        }
-      }
-    } catch (reportError) {
-      setReport(
-        `Erro ao gerar relatório: ${
-          reportError instanceof Error ? reportError.message : 'desconhecido'
-        }.`,
-      );
-    } finally {
-      setReportLoading(false);
-    }
-  }, [
-    statsA,
-    statsB,
-    usedPeriodLabel,
-    tf,
-    corr,
-    session,
-    currentAnalysisId,
-    supabase,
-  ]);
-
-  const copyAnalysisMarkdown = useCallback(async () => {
-    if (!statsA) {
-      setCopyStatus('error');
-      setCopyMessage('Execute uma análise antes de copiar o Markdown.');
-      return;
-    }
-
-    const generatedAt = new Date();
-    const firstCandleA = dataA[0] ?? null;
-    const lastCandleA = dataA[dataA.length - 1] ?? null;
-    const firstCandleB = dataB[0] ?? null;
-    const lastCandleB = dataB[dataB.length - 1] ?? null;
-    const intervalMsByTimeframe: Record<Timeframe, number> = {
-      '1h': 60 * 60 * 1_000,
-      '4h': 4 * 60 * 60 * 1_000,
-      '1d': 24 * 60 * 60 * 1_000,
-      '1w': 7 * 24 * 60 * 60 * 1_000,
-    };
-    const intervalMs = intervalMsByTimeframe[usedTf];
-
-    const mdNumber = (
-      value: number | null | undefined,
-      digits = 2,
-    ): string =>
-      value === null || value === undefined || !Number.isFinite(value)
-        ? '—'
-        : fmt(value, digits);
-
-    const mdPct = (
-      value: number | null | undefined,
-      digits = 2,
-    ): string =>
-      value === null || value === undefined || !Number.isFinite(value)
-        ? '—'
-        : `${value >= 0 ? '+' : ''}${fmt(value, digits)}%`;
-
-    const mdDate = (
-      value: number | string | null | undefined,
-    ): string => {
-      if (value === null || value === undefined || value === '') return '—';
-      const parsed = new Date(value);
-      return Number.isNaN(parsed.getTime())
-        ? '—'
-        : parsed.toLocaleString('pt-BR');
-    };
-
-    const cleanCell = (
-      value: string | number | null | undefined,
-    ): string =>
-      String(value ?? '—')
-        .replaceAll('|', '\\|')
-        .replace(/\r?\n/g, ' ')
-        .trim();
-
-    const countMissingCandles = (candles: Candle[]): number => {
-      let missing = 0;
-
-      for (let index = 1; index < candles.length; index += 1) {
-        const distance =
-          candles[index].openTime - candles[index - 1].openTime;
-        const steps = Math.round(distance / intervalMs);
-        if (steps > 1) missing += steps - 1;
-      }
-
-      return missing;
-    };
-
-    const volatilityProfile = (
-      values: (number | null)[],
-      current: number,
-    ): {
-      sampleCount: number;
-      q25: number | null;
-      q75: number | null;
-      q95: number | null;
-      percentile: number | null;
-    } => {
-      const sorted = values
-        .filter((value): value is number => value !== null)
-        .sort((left, right) => left - right);
-
-      if (!sorted.length) {
-        return {
-          sampleCount: 0,
-          q25: null,
-          q75: null,
-          q95: null,
-          percentile: null,
-        };
-      }
-
-      const quantile = (p: number) =>
-        sorted[Math.floor(p * (sorted.length - 1))];
-
-      const rank =
-        (sorted.filter((value) => value <= current).length /
-          sorted.length) *
-        100;
-
-      return {
-        sampleCount: sorted.length,
-        q25: quantile(0.25),
-        q75: quantile(0.75),
-        q95: quantile(0.95),
-        percentile: rank,
-      };
-    };
-
-    const alignedPairs = statsB
-      ? alignedCandlePairs(dataA, dataB)
-      : [];
-    const alignedReturnCount = Math.max(0, alignedPairs.length - 1);
-    const volProfileA = volatilityProfile(volA, statsA.currentVolPct);
-    const volProfileB = statsB
-      ? volatilityProfile(volB, statsB.currentVolPct)
-      : null;
-
-    const appendAsset = (
-      lines: string[],
-      title: string,
-      stats: AssetStats,
-      candles: Candle[],
-      volatilityValues: (number | null)[],
-      firstCandle: Candle | null,
-      lastCandle: Candle | null,
-    ) => {
-      const returnsCount = Math.max(0, candles.length - 1);
-      const missingCandles = countMissingCandles(candles);
-      const nextExpectedClose =
-        lastCandle === null
-          ? null
-          : lastCandle.closeTime + intervalMs;
-      const profile = volatilityProfile(
-        volatilityValues,
-        stats.currentVolPct,
-      );
-
-      lines.push(
-        '',
-        `## ${title}: ${stats.symbol}`,
-        '',
-        `- **Candles encerrados utilizados:** ${candles.length}`,
-        `- **Retornos logarítmicos calculados:** ${returnsCount}`,
-        `- **Candles ausentes dentro da série:** ${missingCandles}`,
-        `- **Primeiro candle:** ${mdDate(firstCandle?.openTime)}`,
-        `- **Último candle encerrado:** ${mdDate(
-          lastCandle?.closeTime,
-        )}`,
-        `- **Próximo encerramento esperado:** ${mdDate(
-          nextExpectedClose,
-        )}`,
-        '- **Candle atualmente em formação:** não incluído nas métricas',
-        '',
-        '| Métrica | Valor |',
-        '|---|---:|',
-        `| Último fechamento | ${mdNumber(
-          stats.lastPrice,
-          8,
-        )} USDT |`,
-        `| Retorno no período | ${mdPct(stats.returnPct)} |`,
-        `| Retorno anualizado histórico | ${mdPct(
-          stats.annualReturnPct,
-        )} |`,
-        `| Drawdown máximo por fechamento | ${mdPct(
-          stats.maxDrawdownPct,
-        )} |`,
-        `| Drawdown atual por fechamento | ${mdPct(
-          stats.currentDrawdownPct,
-        )} |`,
-        `| Tempo abaixo de um topo anterior | ${mdNumber(
-          stats.timeInDrawdownPct,
-          0,
-        )}% |`,
-        `| Volatilidade média anualizada | ${mdNumber(
-          stats.annualVolPct,
-          2,
-        )}% |`,
-        `| Volatilidade atual anualizada | ${mdNumber(
-          stats.currentVolPct,
-          2,
-        )}% |`,
-        `| Regime atual | ${stats.regime} |`,
-        `| Percentil empírico da volatilidade atual | ${mdNumber(
-          profile.percentile,
-          2,
-        )}% |`,
-        `| Limite do regime calmo — Q25 | ${mdNumber(
-          profile.q25,
-          2,
-        )}% |`,
-        `| Limite do regime normal — Q75 | ${mdNumber(
-          profile.q75,
-          2,
-        )}% |`,
-        `| Limite do regime volátil — Q95 | ${mdNumber(
-          profile.q95,
-          2,
-        )}% |`,
-        `| Janelas válidas de volatilidade | ${profile.sampleCount} |`,
-        `| Sharpe histórico simplificado | ${mdNumber(
-          stats.sharpe,
-          4,
-        )} |`,
-        `| Retornos positivos | ${mdNumber(
-          stats.pctPositive,
-          2,
-        )}% |`,
-        `| Melhor ${tf.unitLabel} | ${mdPct(
-          stats.bestUnitPct,
-        )} |`,
-        `| Pior ${tf.unitLabel} | ${mdPct(
-          stats.worstUnitPct,
-        )} |`,
-      );
-
-      if (firstCandle && lastCandle && returnsCount > 0) {
-        lines.push(
-          '',
-          '### Fórmulas reproduzíveis',
-          '',
-          `- **Retorno do período:** \`(${mdNumber(
-            lastCandle.close,
-            8,
-          )} ÷ ${mdNumber(
-            firstCandle.close,
-            8,
-          )} − 1) × 100\``,
-          `- **Retorno anualizado:** \`[exp(ln(último ÷ primeiro) × ${
-            tf.periodsPerYear
-          } ÷ ${returnsCount}) − 1] × 100\``,
-          `- **Volatilidade móvel:** desvio-padrão populacional dos retornos logarítmicos em ${tf.volWindow} períodos × \`√${tf.periodsPerYear}\` × 100`,
-          `- **Sharpe simplificado:** média dos retornos logarítmicos ÷ desvio-padrão amostral × \`√${tf.periodsPerYear}\`, com taxa livre de risco igual a zero`,
-          '- **Drawdown:** diferença percentual entre cada fechamento e o maior fechamento anterior da série',
-          '- **Regime:** calmo até Q25; normal acima de Q25 até Q75; volátil acima de Q75 até Q95; extremo acima de Q95',
-        );
-      }
-
-      if (lastCandle) {
-        lines.push(
-          '',
-          '### Último candle encerrado',
-          '',
-          '| Abertura | Máxima | Mínima | Fechamento | Volume base |',
-          '|---:|---:|---:|---:|---:|',
-          `| ${mdNumber(lastCandle.open, 8)} | ${mdNumber(
-            lastCandle.high,
-            8,
-          )} | ${mdNumber(lastCandle.low, 8)} | ${mdNumber(
-            lastCandle.close,
-            8,
-          )} | ${mdNumber(lastCandle.volume, 8)} |`,
-        );
-      }
-    };
-
-    const lines: string[] = [
-      '# VigIA Trade — Snapshot auditável da análise de mercado',
-      '',
-      '> Faça uma revisão quantitativa independente deste snapshot. Verifique fórmulas, número de observações, continuidade da série, limites dos regimes e interpretação das métricas. Não invente notícias ou dados externos, não altere números sem demonstrar a fórmula e não transforme a análise em recomendação de investimento.',
-      '',
-      '## Contexto',
-      '',
-      `- **Gerado em:** ${generatedAt.toLocaleString('pt-BR')}`,
-      `- **Ativo principal:** ${usedSymbolA}`,
-      `- **Ativo comparativo:** ${
-        statsB ? usedSymbolB : 'não utilizado'
-      }`,
-      `- **Timeframe:** ${tf.label} (${usedTf})`,
-      `- **Período analisado:** ${usedPeriodLabel}`,
-      `- **Janela de volatilidade:** ${tf.windowLabel} (${tf.volWindow} candles)`,
-      '- **Fonte dos candles:** Binance',
-      '- **Regra temporal:** somente candles encerrados',
-      `- **Data de corte do ativo principal:** ${mdDate(
-        lastCandleA?.closeTime,
-      )}`,
-      '- **Período atual em formação:** excluído dos cálculos',
-      '',
-      '## Definições metodológicas',
-      '',
-      '- Retorno no período compara o primeiro e o último fechamento da janela.',
-      '- Retorno anualizado é uma extrapolação geométrica histórica pelo número de retornos observados; não é previsão.',
-      '- Volatilidade móvel usa retornos logarítmicos e desvio-padrão populacional; o valor é anualizado pela raiz quadrada dos períodos por ano.',
-      '- Sharpe usa média dos retornos logarítmicos, desvio-padrão amostral e taxa livre de risco igual a zero.',
-      '- Drawdown usa somente preços de fechamento. Máximas intraperíodo não formam o pico do cálculo.',
-      '- Tempo abaixo de um topo anterior é a fração de candles cujo fechamento ficou abaixo do maior fechamento observado até aquele ponto.',
-      '- O regime é determinado pelos quantis Q25, Q75 e Q95 da própria série de volatilidade do ativo.',
-      '- Correlação usa retornos logarítmicos de candles com o mesmo horário de abertura.',
-      '- Nenhuma dessas métricas, isoladamente ou em conjunto, prevê o próximo movimento.',
-    ];
-
-    appendAsset(
-      lines,
-      'Ativo principal',
-      statsA,
-      dataA,
-      volA,
-      firstCandleA,
-      lastCandleA,
-    );
-
-    if (statsB) {
-      appendAsset(
-        lines,
-        'Ativo de comparação',
-        statsB,
-        dataB,
-        volB,
-        firstCandleB,
-        lastCandleB,
-      );
-
-      lines.push(
-        '',
-        '## Comparação e correlação',
-        '',
-        `- **Candles alinhados pelo horário:** ${alignedPairs.length}`,
-        `- **Retornos alinhados usados:** ${alignedReturnCount}`,
-        '- **Método:** correlação de Pearson entre retornos logarítmicos alinhados',
-        '',
-        '| Item | Resultado |',
-        '|---|---:|',
-        `| Retorno de ${statsA.symbol} | ${mdPct(
-          statsA.returnPct,
-        )} |`,
-        `| Retorno de ${statsB.symbol} | ${mdPct(
-          statsB.returnPct,
-        )} |`,
-        `| Volatilidade atual de ${statsA.symbol} | ${mdNumber(
-          statsA.currentVolPct,
-          2,
-        )}% a.a. |`,
-        `| Volatilidade atual de ${statsB.symbol} | ${mdNumber(
-          statsB.currentVolPct,
-          2,
-        )}% a.a. |`,
-        `| Drawdown máximo de ${statsA.symbol} | ${mdPct(
-          statsA.maxDrawdownPct,
-        )} |`,
-        `| Drawdown máximo de ${statsB.symbol} | ${mdPct(
-          statsB.maxDrawdownPct,
-        )} |`,
-        `| Correlação de Pearson | ${
-          corr === null ? 'indisponível' : mdNumber(corr, 4)
-        } |`,
-        `| Classificação da correlação | ${
-          corr === null
-            ? 'amostra insuficiente'
-            : cleanCell(correlationLabel(corr))
-        } |`,
-        `| Q25/Q75/Q95 de ${statsA.symbol} | ${mdNumber(
-          volProfileA.q25,
-          2,
-        )}% / ${mdNumber(volProfileA.q75, 2)}% / ${mdNumber(
-          volProfileA.q95,
-          2,
-        )}% |`,
-        `| Q25/Q75/Q95 de ${statsB.symbol} | ${mdNumber(
-          volProfileB?.q25,
-          2,
-        )}% / ${mdNumber(
-          volProfileB?.q75,
-          2,
-        )}% / ${mdNumber(volProfileB?.q95, 2)}% |`,
-      );
-    }
-
-    lines.push(
-      '',
-      '## Relatório explicativo do VigIA',
-      '',
-      report
-        ? report
-        : 'O relatório interno com IA ainda não foi gerado. Revise diretamente as métricas e fórmulas acima.',
-      '',
-      '## Perguntas sugeridas para a IA revisora',
-      '',
-      '1. O retorno do período e o retorno anualizado conferem com o primeiro fechamento, o último fechamento e o número de retornos?',
-      '2. Drawdown máximo, drawdown atual e tempo abaixo de topo foram interpretados usando fechamentos?',
-      '3. Q25, Q75, Q95 e o percentil atual justificam o regime atribuído?',
-      '4. A volatilidade e o Sharpe foram anualizados com o fator correto para o timeframe?',
-      '5. A correlação usa quantidade suficiente de retornos alinhados e não foi confundida com causalidade?',
-      '6. Existem lacunas de candles ou diferenças de corte entre os ativos que limitam a comparação?',
-      '7. Quais conclusões são apenas descritivas e não podem ser transformadas em previsão?',
-      '',
-      '> Este snapshot é descritivo, usa dados históricos e não constitui recomendação de investimento.',
-    );
-
-    const markdown = lines.join('\n');
-
-    setCopyStatus('loading');
-    setCopyMessage('Preparando o Markdown...');
-
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(markdown);
-      } else {
-        const textarea = document.createElement('textarea');
-        textarea.value = markdown;
-        textarea.setAttribute('readonly', '');
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.select();
-
-        const copied = document.execCommand('copy');
-        document.body.removeChild(textarea);
-
-        if (!copied) {
-          throw new Error(
-            'O navegador recusou o acesso à área de transferência.',
-          );
-        }
-      }
-
-      setCopyStatus('success');
-      setCopyMessage(
-        `Markdown completo copiado (${markdown.length.toLocaleString(
-          'pt-BR',
-        )} caracteres). Cole na IA de sua preferência.`,
-      );
-    } catch (copyError) {
-      setCopyStatus('error');
-      setCopyMessage(
-        copyError instanceof Error
-          ? `Não foi possível copiar: ${copyError.message}`
-          : 'Não foi possível copiar o Markdown.',
-      );
-    }
-  }, [
-    statsA,
-    statsB,
-    dataA,
-    dataB,
-    volA,
-    volB,
-    corr,
-    usedSymbolA,
-    usedSymbolB,
-    usedTf,
-    usedPeriodLabel,
-    tf,
-    report,
-  ]);
-
-  const select = (
-    value: string,
-    onChange: (value: string) => void,
-    options: { value: string; label: string }[],
-  ) => (
-    <select
-      value={value}
-      onChange={(event: React.ChangeEvent<HTMLSelectElement>) => onChange(event.target.value)}
-      style={{
-        background: S.bg,
-        border: `1px solid ${S.border}`,
-        borderRadius: 6,
-        color: S.text,
-        padding: '8px 10px',
-        fontSize: 14,
-        textAlign: 'center',
-      }}
-    >
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
-  );
-
-  const currentPeriods = TIMEFRAMES[timeframe].periods;
-
-  const statRows: {
-    label: string;
-    tip: string;
-    get: (stats: AssetStats) => string;
-    color?: (stats: AssetStats) => string;
-  }[] = [
-    {
-      label: 'Último preço (USDT)',
-      tip: 'Preço de fechamento do candle encerrado mais recente.',
-      get: (stats) => fmt(stats.lastPrice),
-    },
-    {
-      label: 'Retorno no período',
-      tip: 'Variação do preço do início ao fim do período analisado.',
-      get: (stats) => fmtPct(stats.returnPct),
-      color: (stats) => stats.returnPct >= 0 ? S.green : S.red,
-    },
-    {
-      label: 'Drawdown máximo',
-      tip: 'Maior queda registrada de um topo até o fundo seguinte dentro do período.',
-      get: (stats) => fmtPct(stats.maxDrawdownPct),
-      color: () => S.red,
-    },
-    {
-      label: 'Drawdown atual',
-      tip: 'Quanto o último fechamento está abaixo do maior topo do período.',
-      get: (stats) => fmtPct(stats.currentDrawdownPct),
-      color: (stats) => stats.currentDrawdownPct < -0.5 ? S.red : S.dim,
-    },
-    {
-      label: 'Tempo em drawdown',
-      tip: 'Fração dos candles em que o preço esteve abaixo do topo anterior.',
-      get: (stats) => `${fmt(stats.timeInDrawdownPct, 0)}%`,
-    },
-    {
-      label: 'Volatilidade média (anualizada)',
-      tip: 'Média da volatilidade realizada das janelas históricas, projetada em escala anual. Mede risco, não direção.',
-      get: (stats) => `${fmt(stats.annualVolPct, 0)}%`,
-    },
-    {
-      label: 'Volatilidade atual (anualizada)',
-      tip: 'Volatilidade realizada da janela encerrada mais recente, projetada em escala anual.',
-      get: (stats) => `${fmt(stats.currentVolPct, 0)}%`,
-    },
-    {
-      label: 'Sharpe histórico (rf = 0)',
-      tip: 'Média dos retornos logarítmicos dividida pelo desvio-padrão amostral, anualizada e sem descontar taxa livre de risco. É descritivo e não prevê retorno futuro.',
-      get: (stats) => fmt(stats.sharpe),
-      color: (stats) => stats.sharpe >= 0 ? S.green : S.red,
-    },
-    {
-      label: 'Candles positivos (histórico)',
-      tip: 'Percentual histórico de candles que fecharam acima do candle anterior. Não representa probabilidade futura.',
-      get: (stats) => `${fmt(stats.pctPositive, 0)}%`,
-    },
-    {
-      label: `Melhor ${tf.unitLabel}`,
-      tip: 'Maior alta histórica registrada nessa unidade dentro do período.',
-      get: (stats) => fmtPct(stats.bestUnitPct),
-      color: () => S.green,
-    },
-    {
-      label: `Pior ${tf.unitLabel}`,
-      tip: 'Maior queda histórica registrada nessa unidade dentro do período.',
-      get: (stats) => fmtPct(stats.worstUnitPct),
-      color: () => S.red,
-    },
-  ];
+  const comAmostra = evidencia
+    .filter((r) => r.operacoes >= 30)
+    .sort((a, b) => Number(a.soma_r ?? 0) - Number(b.soma_r ?? 0));
 
   return (
-    <main
-      style={{
-        minHeight: '100vh',
-        background: S.bg,
-        color: S.text,
-        fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-      }}
-    >
-      {/* Header + navegação */}
-      <header
-        style={{
-          borderBottom: `1px solid ${S.border}`,
-          background: S.panel,
-          padding: '12px 20px',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 12,
-          }}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/logo.png"
-            alt="VigIA Trade"
-            style={{ height: 32, width: 'auto', display: 'block' }}
-          />
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.1 }}>
-              Análise de mercado
-            </div>
-            <div style={{ fontSize: 11, color: S.dim }}>
-              monitoramento · risco definido · decisão sua
-            </div>
+    <main className="painel">
+      <style>{estilos}</style>
+
+      {/* ============================================ 1. O SEMÁFORO */}
+      <section className={`semaforo ${podeOperar ? 'liberado' : 'travado'}`}>
+        <p className="semaforo-pergunta">
+          Posso operar com dinheiro de verdade hoje?
+        </p>
+        <p className="semaforo-resposta">{podeOperar ? 'SIM' : 'NÃO'}</p>
+        <p className="semaforo-motivo">
+          {podeOperar
+            ? `${aprovadas.length} estratégia(s) passaram na verificação estatística e a execução real está habilitada.`
+            : 'Nenhuma estratégia passou na verificação estatística. O sistema está travado — e essa trava é intencional.'}
+        </p>
+
+        <div className="semaforo-detalhe">
+          <div>
+            <span>Estratégias liberadas para dinheiro real</span>
+            <strong>{habilitadasReal} de 6</strong>
+          </div>
+          <div>
+            <span>Estratégias com evidência aprovada</span>
+            <strong>{aprovadas.length} de {evidencia.length}</strong>
+          </div>
+        </div>
+      </section>
+
+      {/* ============================================ 2. O TESTE */}
+      <section className="bloco">
+        <h2>Como está indo o teste</h2>
+        <p className="intro">
+          O sistema vem gerando sinais e registrando o que teria acontecido, sem
+          dinheiro envolvido. Cada operação é medida em <strong>R</strong> — a
+          unidade que você arriscou. Perder 1 R é perder exatamente o que estava
+          disposto a perder naquela operação.
+        </p>
+
+        <div className="cartoes">
+          <div className="cartao">
+            <span className="cartao-rotulo">Operações registradas</span>
+            <span className="cartao-numero">{totalOperacoes}</span>
+            <span className="cartao-frase">
+              desde que o teste começou
+            </span>
+          </div>
+
+          <div className="cartao">
+            <span className="cartao-rotulo">Resultado acumulado</span>
+            <span className={`cartao-numero ${somaTotal < 0 ? 'ruim' : 'bom'}`}>
+              {somaTotal >= 0 ? '+' : ''}
+              {n(somaTotal)} R
+            </span>
+            <span className="cartao-frase">
+              {somaTotal < 0
+                ? `arriscando 1% por operação, isso seria cerca de ${Math.abs(somaTotal).toFixed(0)}% da conta`
+                : 'em terreno positivo'}
+            </span>
+          </div>
+
+          <div className="cartao">
+            <span className="cartao-rotulo">Por operação</span>
+            <span
+              className={`cartao-numero ${
+                Number(decomposicao?.expectativa_real_r ?? 0) < 0 ? 'ruim' : 'bom'
+              }`}
+            >
+              {n(decomposicao?.expectativa_real_r, 3)} R
+            </span>
+            <span className="cartao-frase">
+              o que sobra, em média, ao fim de cada operação
+            </span>
           </div>
         </div>
 
-<nav
-  style={{
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 20,
-    marginTop: 8,
-    fontSize: 13,
-  }}
->
-<span style={{ color: S.a, fontWeight: 600 }}>Análise</span>
-
-<a href="/daytrade" style={{ color: S.dim, textDecoration: 'none' }}>
-  Validação
-</a>
-
-<a href="/oportunidades" style={{ color: S.dim, textDecoration: 'none' }}>
-  Teste prospectivo
-</a>
-
-<a href="/robustez" style={{ color: S.dim, textDecoration: 'none' }}>
-Robustez
-</a>
-
-<a href="/alertas" style={{ color: S.dim, textDecoration: 'none' }}>
-  Alertas
-</a>
-
-<a href="/conta" style={{ color: S.dim, textDecoration: 'none' }}>
-  Conta Binance
-</a>
-          {!session ? (
-            <a
-              href="/alertas?next=%2F"
-              style={{ color: S.green, textDecoration: 'none' }}
-            >
-              Entrar
-            </a>
-          ) : (
-            <button
-              onClick={() => supabase.auth.signOut()}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: S.red,
-                fontSize: 13,
-                cursor: 'pointer',
-                padding: 0,
-                fontFamily: 'inherit',
-              }}
-            >
-              Sair
-            </button>
-          )}
-        </nav>
-      </header>
-
-      <div
-        style={{
-          maxWidth: 1080,
-          margin: '0 auto',
-          padding: '24px 20px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 16,
-        }}
-      >
-        {/* Cards de status (logado) */}
-        {session && (
-          <div
-            style={{
-              display: 'flex',
-              gap: 12,
-              flexWrap: 'wrap',
-              justifyContent: 'center',
-            }}
-          >
-            <a href="/alertas" style={{ textDecoration: 'none', color: S.text }}>
-              <Card
-                style={{
-                  padding: '10px 16px',
-                  textAlign: 'center',
-                  minWidth: 140,
-                  cursor: 'pointer',
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: S.dim,
-                    textTransform: 'uppercase',
-                    letterSpacing: 0.6,
-                  }}
-                >
-                  Alertas ativos
-                </div>
-                <div style={{ fontSize: 20, fontWeight: 700, color: S.a }}>
-                  {alertCount ?? '—'}
-                </div>
-              </Card>
-            </a>
-
-            <a
-              href={latestOpportunityHref}
-              style={{ textDecoration: 'none', color: S.text }}
-            >
-              <Card
-                style={{
-                  padding: '10px 16px',
-                  textAlign: 'center',
-                  minWidth: 230,
-                  cursor: 'pointer',
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: S.dim,
-                    textTransform: 'uppercase',
-                    letterSpacing: 0.6,
-                  }}
-                >
-                  Oportunidades
-                </div>
-
-                {opportunitySummary === undefined ? (
-                  <div style={{ fontSize: 13, color: S.dim, marginTop: 6 }}>
-                    carregando...
-                  </div>
-                ) : opportunitySummary === null ? (
-                  <div style={{ fontSize: 12, color: S.dim, marginTop: 6 }}>
-                    Central ainda não ativada
-                  </div>
-                ) : (
-                  <>
-                    <div
-                      style={{
-                        display: 'flex',
-                        justifyContent: 'center',
-                        gap: 14,
-                        marginTop: 5,
-                        fontVariantNumeric: 'tabular-nums',
-                      }}
-                    >
-                      <span title="Pendentes, em revisão ou revalidando">
-                        <strong style={{ color: S.a }}>
-                          {opportunitySummary.pendingCount}
-                        </strong>{' '}
-                        <span style={{ color: S.dim, fontSize: 11 }}>pend.</span>
-                      </span>
-                      <span title="Posições abrindo ou em andamento">
-                        <strong style={{ color: S.b }}>
-                          {opportunitySummary.positionCount}
-                        </strong>{' '}
-                        <span style={{ color: S.dim, fontSize: 11 }}>pos.</span>
-                      </span>
-                      <span title="Saídas pendentes ou em encerramento">
-                        <strong style={{ color: S.red }}>
-                          {opportunitySummary.exitCount}
-                        </strong>{' '}
-                        <span style={{ color: S.dim, fontSize: 11 }}>saídas</span>
-                      </span>
-                    </div>
-
-                    {opportunitySummary.latestActive ? (
-                      <div style={{ fontSize: 11, color: S.dim, marginTop: 5 }}>
-                        {opportunitySummary.latestActive.symbol} ·{' '}
-                        {opportunitySummary.latestActive.timeframe} ·{' '}
-                        <span
-                          style={{
-                            color:
-                              OPPORTUNITY_STATUS_LABEL[
-                                opportunitySummary.latestActive.lifecycle_status
-                              ].color,
-                          }}
-                        >
-                          {
-                            OPPORTUNITY_STATUS_LABEL[
-                              opportunitySummary.latestActive.lifecycle_status
-                            ].label
-                          }
-                        </span>
-                      </div>
-                    ) : (
-                      <div style={{ fontSize: 11, color: S.dim, marginTop: 5 }}>
-                        nenhuma oportunidade ativa
-                      </div>
-                    )}
-                  </>
-                )}
-              </Card>
-            </a>
-
-            <a href="/conta" style={{ textDecoration: 'none', color: S.text }}>
-              <Card
-                style={{
-                  padding: '10px 16px',
-                  textAlign: 'center',
-                  minWidth: 140,
-                  cursor: 'pointer',
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: S.dim,
-                    textTransform: 'uppercase',
-                    letterSpacing: 0.6,
-                  }}
-                >
-                  Binance
-                </div>
-                <div
-                  style={{
-                    fontSize: 14,
-                    fontWeight: 700,
-                    marginTop: 4,
-                    color: keyInfo === null
-                      ? S.dim
-                      : keyInfo?.is_testnet
-                        ? S.green
-                        : S.red,
-                  }}
-                >
-                  {keyInfo === undefined
-                    ? '—'
-                    : keyInfo === null
-                      ? 'não conectada'
-                      : keyInfo.is_testnet
-                        ? 'TESTNET'
-                        : 'CONTA REAL'}
-                </div>
-              </Card>
-            </a>
-
-            <a href="/conta" style={{ textDecoration: 'none', color: S.text }}>
-              <Card
-                style={{
-                  padding: '10px 16px',
-                  textAlign: 'center',
-                  minWidth: 200,
-                  cursor: 'pointer',
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: S.dim,
-                    textTransform: 'uppercase',
-                    letterSpacing: 0.6,
-                  }}
-                >
-                  Últimas ordens
-                </div>
-
-                {lastOrders.length === 0 ? (
-                  <div style={{ fontSize: 13, color: S.dim, marginTop: 4 }}>
-                    nenhuma
-                  </div>
-                ) : (
-                  lastOrders.map((order) => (
-                    <div key={order.id} style={{ fontSize: 12, marginTop: 4 }}>
-                      {order.symbol} ·{' '}
-                      <span
-                        style={{
-                          color: STATUS_LABEL[order.status]?.color ?? S.dim,
-                        }}
-                      >
-                        {STATUS_LABEL[order.status]?.label ?? order.status}
-                      </span>
-                      {order.pnl_usdt !== null && (
-                        <span
-                          style={{
-                            color: order.pnl_usdt >= 0 ? S.green : S.red,
-                          }}
-                        >
-                          {' '}· {order.pnl_usdt >= 0 ? '+' : ''}
-                          {fmt(order.pnl_usdt)} USDT
-                        </span>
-                      )}
-                    </div>
-                  ))
-                )}
-              </Card>
-            </a>
-          </div>
-        )}
-
-        <p
-          style={{
-            color: S.dim,
-            fontSize: 13,
-            margin: '0 auto',
-            maxWidth: 780,
-            textAlign: 'center',
-          }}
-        >
-          Dados da Binance usando somente candles encerrados. Volatilidade
-          realizada em {tf.windowLabel}, anualizada; regime classificado contra
-          os quartis do próprio histórico. Ferramenta de análise — volatilidade
-          mede amplitude de risco, não direção futura de preço. Use os{' '}
-          <a href="/alertas" style={{ color: S.a, textDecoration: 'none' }}>
-            Alertas
-          </a>{' '}
-          para acompanhar mudanças e o{' '}
-          <a
-            href="/oportunidades"
-            style={{ color: S.b, textDecoration: 'none' }}
-          >
-            Teste prospectivo
-          </a>{' '}
-          para acompanhar a validação das estratégias diárias em curso.
-        </p>
-
-        {/* Controles */}
-        <Card
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 16,
-            alignItems: 'flex-end',
-            justifyContent: 'center',
-          }}
-        >
-          <label
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 4,
-              fontSize: 12,
-              color: S.dim,
-              textAlign: 'center',
-            }}
-          >
-            Ativo A
-            {select(
-              symbolA,
-              setSymbolA,
-              SYMBOLS
-                .filter((symbol) => symbol !== 'nenhum')
-                .map((symbol) => ({ value: symbol, label: symbol })),
-            )}
-          </label>
-
-          <label
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 4,
-              fontSize: 12,
-              color: S.dim,
-              textAlign: 'center',
-            }}
-          >
-            Ativo B (comparação)
-            {select(
-              symbolB,
-              setSymbolB,
-              SYMBOLS.map((symbol) => ({ value: symbol, label: symbol })),
-            )}
-          </label>
-
-          <label
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 4,
-              fontSize: 12,
-              color: S.dim,
-              textAlign: 'center',
-            }}
-          >
-            Timeframe
-            {select(
-              timeframe,
-              onTimeframeChange,
-              (Object.keys(TIMEFRAMES) as Timeframe[]).map((key) => ({
-                value: key,
-                label: TIMEFRAMES[key].label,
-              })),
-            )}
-          </label>
-
-          <label
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 4,
-              fontSize: 12,
-              color: S.dim,
-              textAlign: 'center',
-            }}
-          >
-            Período
-            {select(
-              String(Math.min(periodIdx, currentPeriods.length - 1)),
-              (value) => setPeriodIdx(Number(value)),
-              currentPeriods.map((period, index) => ({
-                value: String(index),
-                label: period.label,
-              })),
-            )}
-          </label>
-
-          <button
-            onClick={() => run()}
-            disabled={status === 'loading'}
-            style={{
-              background: S.a,
-              color: '#1a1206',
-              border: 'none',
-              borderRadius: 8,
-              padding: '10px 22px',
-              fontSize: 14,
-              fontWeight: 700,
-              cursor: status === 'loading' ? 'wait' : 'pointer',
-              opacity: status === 'loading' ? 0.6 : 1,
-            }}
-          >
-            {status === 'loading' ? progress || 'Carregando...' : 'Analisar'}
-          </button>
-
-          {status === 'error' && (
-            <span
-              style={{
-                color: S.red,
-                fontSize: 13,
-                flexBasis: '100%',
-                textAlign: 'center',
-              }}
-            >
-              {error}
-            </span>
-          )}
-        </Card>
-
-        {/* Histórico de análises (logado) */}
-        {session && lastAnalyses.length > 0 && (
-          <Card>
-            <div
-              style={{
-                fontSize: 13,
-                fontWeight: 600,
-                textAlign: 'center',
-                marginBottom: 8,
-              }}
-            >
-              Últimas análises
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {lastAnalyses.map((analysis) => (
-                <button
-                  key={analysis.id}
-                  onClick={() => run({
-                    symbolA: analysis.symbol_a,
-                    symbolB: analysis.symbol_b ?? 'nenhum',
-                    timeframe: analysis.timeframe,
-                    periodLabel: analysis.period_label,
-                  })}
-                  style={{
-                    background: 'transparent',
-                    border: `1px solid ${S.border}`,
-                    borderRadius: 8,
-                    padding: '8px 12px',
-                    color: S.text,
-                    fontSize: 12,
-                    cursor: 'pointer',
-                    textAlign: 'center',
-                  }}
-                >
-                  {analysis.symbol_a}
-                  {analysis.symbol_b ? ` × ${analysis.symbol_b}` : ''}
-                  {' '}· {TIMEFRAMES[analysis.timeframe]?.label ?? analysis.timeframe}
-                  {' '}· {analysis.period_label}
-                  {analysis.retorno_a !== null && (
-                    <span
-                      style={{
-                        color: analysis.retorno_a >= 0 ? S.green : S.red,
-                      }}
-                    >
-                      {' '}· {fmtPct(analysis.retorno_a)}
-                    </span>
-                  )}
-                  {analysis.correlacao !== null && (
-                    <span style={{ color: S.dim }}>
-                      {' '}· corr {fmt(analysis.correlacao)}
-                    </span>
-                  )}
-                  <span style={{ color: S.dim }}>
-                    {' '}· {fmtData(analysis.criado_em)}
-                  </span>
-                </button>
-              ))}
-            </div>
-
-            <div
-              style={{
-                fontSize: 11,
-                color: S.dim,
-                textAlign: 'center',
-                marginTop: 8,
-              }}
-            >
-              Tocar reabre a análise com os mesmos parâmetros sobre dados atuais.
-            </div>
-          </Card>
-        )}
-
-        {status === 'done' && statsA && (
+        {comAmostra.length > 0 && (
           <>
-            {/* Regimes + correlação */}
-            <div
-              style={{
-                display: 'flex',
-                gap: 12,
-                flexWrap: 'wrap',
-                justifyContent: 'center',
-              }}
-            >
-              {[statsA, statsB]
-                .filter((stats): stats is AssetStats => Boolean(stats))
-                .map((stats) => (
-                  <Card
-                    key={stats.symbol}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: 12,
-                      padding: '12px 16px',
-                    }}
-                  >
-                    <strong style={{ fontSize: 15 }}>{stats.symbol}</strong>
-                    <RegimeBadge regime={stats.regime} />
-                    <span style={{ color: S.dim, fontSize: 13 }}>
-                      vol. atual {fmt(stats.currentVolPct, 0)}% a.a. · média{' '}
-                      {fmt(stats.annualVolPct, 0)}%
-                    </span>
-                  </Card>
-                ))}
+            <h3>Cada estratégia, com amostra suficiente para julgar</h3>
+            <div className="lista">
+              {comAmostra.map((linha) => {
+                const t = Number(linha.t_observado ?? 0);
+                const piso = Number(linha.piso_ruido ?? 0);
+                const ruim = linha.veredito.includes('negativo');
+                const ruido = linha.veredito.includes('ruído');
 
-              {corr !== null && statsB && (
-                <Card
-                  title="Correlação de Pearson entre retornos alinhados pelo mesmo horário. Perto de 1 = movem juntos; perto de 0 = baixa relação linear; negativa = tendem a mover em direções opostas."
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 10,
-                    padding: '12px 16px',
-                    cursor: 'help',
-                  }}
-                >
-                  <strong style={{ fontSize: 14 }}>
-                    Correlação {statsA.symbol} × {statsB.symbol}
-                  </strong>
-                  <span
-                    style={{
-                      fontSize: 15,
-                      fontWeight: 700,
-                      color: Math.abs(corr) >= 0.7 ? S.a : S.text,
-                    }}
-                  >
-                    {fmt(corr)}
-                  </span>
-                  <span style={{ color: S.dim, fontSize: 13 }}>
-                    ({correlationLabel(corr)})
-                  </span>
-                </Card>
-              )}
-            </div>
-
-            {/* Performance */}
-            <Card style={{ height: 340 }}>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: S.dim,
-                  marginBottom: 8,
-                  textAlign: 'center',
-                }}
-              >
-                Performance (base 100 no primeiro candle alinhado) — candles{' '}
-                {tf.label} · {usedPeriodLabel}
-              </div>
-
-              <ResponsiveContainer width="100%" height="90%">
-                <LineChart data={charts.perf}>
-                  <CartesianGrid stroke={S.border} strokeDasharray="3 3" />
-                  <XAxis
-                    dataKey="label"
-                    stroke={S.dim}
-                    fontSize={11}
-                    minTickGap={40}
-                  />
-                  <YAxis
-                    stroke={S.dim}
-                    fontSize={11}
-                    domain={['auto', 'auto']}
-                    width={60}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: S.bg,
-                      border: `1px solid ${S.border}`,
-                      borderRadius: 8,
-                      fontSize: 12,
-                    }}
-                    labelStyle={{ color: S.dim }}
-                  />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <ReferenceLine
-                    y={100}
-                    stroke={S.dim}
-                    strokeDasharray="4 4"
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey={usedSymbolA}
-                    stroke={S.a}
-                    dot={false}
-                    strokeWidth={2}
-                  />
-                  {statsB && (
-                    <Line
-                      type="monotone"
-                      dataKey={usedSymbolB}
-                      stroke={S.b}
-                      dot={false}
-                      strokeWidth={2}
-                      connectNulls
-                    />
-                  )}
-                </LineChart>
-              </ResponsiveContainer>
-            </Card>
-
-            {/* Volatilidade */}
-            <Card style={{ height: 300 }}>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: S.dim,
-                  marginBottom: 8,
-                  textAlign: 'center',
-                }}
-              >
-                Volatilidade realizada anualizada (%) — {tf.windowLabel}
-              </div>
-
-              <ResponsiveContainer width="100%" height="88%">
-                <LineChart data={charts.vol}>
-                  <CartesianGrid stroke={S.border} strokeDasharray="3 3" />
-                  <XAxis
-                    dataKey="label"
-                    stroke={S.dim}
-                    fontSize={11}
-                    minTickGap={40}
-                  />
-                  <YAxis stroke={S.dim} fontSize={11} width={50} />
-                  <Tooltip
-                    contentStyle={{
-                      background: S.bg,
-                      border: `1px solid ${S.border}`,
-                      borderRadius: 8,
-                      fontSize: 12,
-                    }}
-                    labelStyle={{ color: S.dim }}
-                  />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
-                  <Line
-                    type="monotone"
-                    dataKey={usedSymbolA}
-                    stroke={S.a}
-                    dot={false}
-                    strokeWidth={2}
-                    connectNulls
-                  />
-                  {statsB && (
-                    <Line
-                      type="monotone"
-                      dataKey={usedSymbolB}
-                      stroke={S.b}
-                      dot={false}
-                      strokeWidth={2}
-                      connectNulls
-                    />
-                  )}
-                </LineChart>
-              </ResponsiveContainer>
-            </Card>
-
-            {/* Tabela */}
-            <Card>
-              <table
-                style={{
-                  width: '100%',
-                  borderCollapse: 'collapse',
-                  fontSize: 13,
-                  fontVariantNumeric: 'tabular-nums',
-                }}
-              >
-                <thead>
-                  <tr style={{ color: S.dim, textAlign: 'center' }}>
-                    <th style={{ padding: '6px 8px', textAlign: 'center' }}>
-                      Métrica ({usedPeriodLabel} · {tf.label})
-                    </th>
-                    <th
-                      style={{
-                        padding: '6px 8px',
-                        color: S.a,
-                        textAlign: 'center',
-                      }}
-                    >
-                      {statsA.symbol}
-                    </th>
-                    {statsB && (
-                      <th
-                        style={{
-                          padding: '6px 8px',
-                          color: S.b,
-                          textAlign: 'center',
-                        }}
-                      >
-                        {statsB.symbol}
-                      </th>
-                    )}
-                  </tr>
-                </thead>
-                <tbody>
-                  {statRows.map((row) => (
-                    <tr
-                      key={row.label}
-                      style={{
-                        borderTop: `1px solid ${S.border}`,
-                        textAlign: 'center',
-                      }}
-                    >
-                      <td
-                        title={row.tip}
-                        style={{
-                          padding: '8px',
-                          color: S.dim,
-                          cursor: 'help',
-                          textAlign: 'center',
-                        }}
-                      >
-                        {row.label}
-                      </td>
-                      <td
-                        style={{
-                          padding: '8px',
-                          color: row.color?.(statsA),
-                        }}
-                      >
-                        {row.get(statsA)}
-                      </td>
-                      {statsB && (
-                        <td
-                          style={{
-                            padding: '8px',
-                            color: row.color?.(statsB),
-                          }}
-                        >
-                          {row.get(statsB)}
-                        </td>
-                      )}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </Card>
-
-            {/* Relatório IA e exportação */}
-            <Card>
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  gap: 10,
-                  textAlign: 'center',
-                }}
-              >
-                <div>
-                  <div style={{ fontSize: 15, fontWeight: 600 }}>
-                    Relatório analítico
-                  </div>
-                  <div style={{ fontSize: 12, color: S.dim }}>
-                    Gere pelo VigIA ou copie o snapshot em Markdown para revisar
-                    na IA de sua preferência.
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    justifyContent: 'center',
-                    gap: 10,
-                  }}
-                >
-                  <button
-                    onClick={generateReport}
-                    disabled={reportLoading}
-                    style={{
-                      background: 'transparent',
-                      color: S.a,
-                      border: `1px solid ${S.a}`,
-                      borderRadius: 8,
-                      padding: '8px 18px',
-                      fontSize: 13,
-                      fontWeight: 600,
-                      cursor: reportLoading ? 'wait' : 'pointer',
-                      opacity: reportLoading ? 0.6 : 1,
-                    }}
-                  >
-                    {reportLoading
-                      ? 'Gerando...'
-                      : report
-                        ? 'Gerar novo relatório'
-                        : 'Gerar relatório com IA'}
-                  </button>
-
-                  <button
-                    onClick={copyAnalysisMarkdown}
-                    disabled={copyStatus === 'loading'}
-                    style={{
-                      background:
-                        copyStatus === 'success' ? `${S.green}18` : 'transparent',
-                      color: copyStatus === 'success' ? S.green : S.b,
-                      border: `1px solid ${
-                        copyStatus === 'success' ? S.green : S.b
-                      }`,
-                      borderRadius: 8,
-                      padding: '8px 18px',
-                      fontSize: 13,
-                      fontWeight: 600,
-                      cursor: copyStatus === 'loading' ? 'wait' : 'pointer',
-                      opacity: copyStatus === 'loading' ? 0.6 : 1,
-                    }}
-                  >
-                    {copyStatus === 'loading'
-                      ? 'Copiando...'
-                      : copyStatus === 'success'
-                        ? '✓ Markdown copiado'
-                        : 'Copiar Markdown'}
-                  </button>
-                </div>
-
-                {copyMessage && (
+                return (
                   <div
-                    style={{
-                      color:
-                        copyStatus === 'success'
-                          ? S.green
-                          : copyStatus === 'error'
-                            ? S.red
-                            : S.dim,
-                      fontSize: 11,
-                      lineHeight: 1.45,
-                      maxWidth: 760,
-                    }}
+                    className="item"
+                    key={`${linha.estrategia}-${linha.timeframe}`}
                   >
-                    {copyMessage}
-                  </div>
-                )}
-              </div>
+                    <div className="item-topo">
+                      <span className="item-nome">
+                        {linha.estrategia}
+                        <span className="item-tf">{linha.timeframe}</span>
+                      </span>
+                      <span className={`item-r ${ruim ? 'ruim' : ''}`}>
+                        {Number(linha.soma_r ?? 0) >= 0 ? '+' : ''}
+                        {n(linha.soma_r)} R
+                      </span>
+                    </div>
 
-              {report && (
-                <div
-                  style={{
-                    marginTop: 14,
-                    fontSize: 14,
-                    lineHeight: 1.7,
-                    whiteSpace: 'pre-wrap',
-                    borderTop: `1px solid ${S.border}`,
-                    paddingTop: 14,
-                    textAlign: 'left',
-                  }}
-                >
-                  {report}
-                </div>
-              )}
-            </Card>
+                    <p className="item-traducao">
+                      {ruim
+                        ? `Em ${linha.operacoes} operações, perdeu de forma consistente. ` +
+                          `Não é falta de sorte: o resultado é forte o bastante para ` +
+                          `esperar que se repita.`
+                        : ruido
+                          ? `Em ${linha.operacoes} operações, o resultado não se distingue ` +
+                            `do acaso. Testamos ${linha.combinacoes_no_experimento} combinações, ` +
+                            `e com esse tanto de tentativas a sorte sozinha produziria algo assim.`
+                          : `${linha.operacoes} operações registradas. Ainda sem conclusão.`}
+                    </p>
+
+                    <div className="barra-fundo">
+                      <div
+                        className="barra-piso"
+                        style={{ left: `${Math.min(95, (piso / 4) * 100)}%` }}
+                      />
+                      <div
+                        className={`barra-valor ${ruim ? 'ruim' : 'neutro'}`}
+                        style={{
+                          width: `${Math.min(50, (Math.abs(t) / 4) * 50)}%`,
+                          [t >= 0 ? 'left' : 'right']: '50%',
+                        }}
+                      />
+                      <div className="barra-zero" />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="rodape-nota">
+              A linha pontilhada marca o nível que um resultado precisa cruzar
+              para ser levado a sério. Ela existe porque testar muitas
+              combinações e escolher a melhor produz vencedores por acaso — e
+              quanto mais combinações, mais alto o nível.
+            </p>
           </>
         )}
-      </div>
+      </section>
+
+      {/* ============================================ 3. O PORQUÊ */}
+      {decomposicao && (
+        <section className="bloco">
+          <h2>Por que está perdendo</h2>
+          <p className="intro">
+            Existem só duas causas possíveis, e elas se resolvem de formas
+            opostas. Confundir uma com a outra custa meses.
+          </p>
+
+          <div className="causas">
+            <div className="causa">
+              <span className="causa-titulo">1. A entrada não acerta</span>
+              <span
+                className={`causa-numero ${
+                  Number(decomposicao.expectativa_sem_friccao_r ?? 0) < 0 ? 'ruim' : 'bom'
+                }`}
+              >
+                {n(decomposicao.expectativa_sem_friccao_r, 3)} R
+              </span>
+              <p>
+                É o que sobraria se a corretora não cobrasse nada. Como está
+                negativo, o problema começa na decisão de entrar — o sistema
+                acerta a direção em apenas{' '}
+                <strong>{pct(decomposicao.taxa_acerto)}</strong> das vezes, e
+                precisaria de mais para empatar.
+              </p>
+            </div>
+
+            <div className="causa">
+              <span className="causa-titulo">2. O custo de operar</span>
+              <span className="causa-numero ruim">
+                {n(decomposicao.custo_friccao_r, 3)} R
+              </span>
+              <p>
+                Taxas e diferença de preço na execução. É o pedágio que se paga
+                para abrir e fechar, independentemente do que o mercado faça.
+              </p>
+            </div>
+          </div>
+
+          <p className="conclusao">{decomposicao.problema_principal}</p>
+
+          <div className="numeros-simples">
+            <div>
+              <span>Acerta</span>
+              <strong>{pct(decomposicao.taxa_acerto)}</strong>
+              <em>das operações</em>
+            </div>
+            <div>
+              <span>Precisaria acertar</span>
+              <strong>
+                {n(
+                  (Math.abs(Number(decomposicao.perda_media_r ?? 0)) /
+                    (Math.abs(Number(decomposicao.ganho_medio_r ?? 0)) +
+                      Math.abs(Number(decomposicao.perda_media_r ?? 1)))) *
+                    100,
+                  1,
+                )}
+                %
+              </strong>
+              <em>só para empatar</em>
+            </div>
+            <div>
+              <span>Quando ganha</span>
+              <strong>+{n(decomposicao.ganho_medio_r)} R</strong>
+              <em>em média</em>
+            </div>
+            <div>
+              <span>Quando perde</span>
+              <strong className="ruim">
+                −{n(Math.abs(Number(decomposicao.perda_media_r ?? 0)))} R
+              </strong>
+              <em>em média</em>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* ============================================ 4. O PEDÁGIO */}
+      {faixas.length > 0 && (
+        <section className="bloco">
+          <h2>A conta que decide quase tudo</h2>
+          <p className="intro">
+            As taxas são cobradas sobre o <strong>valor negociado</strong>, mas o
+            resultado é medido sobre o <strong>risco assumido</strong>. Quando o
+            stop fica perto do preço de entrada, o risco é pequeno e a mesma taxa
+            vira uma fatia enorme do resultado possível.
+          </p>
+
+          <div className="faixas">
+            {faixas.map((f) => {
+              const imposto = Number(f.imposto_pct_de_cada_r ?? 0);
+              return (
+                <div className={`faixa sev-${f.severidade}`} key={f.faixa}>
+                  <div className="faixa-topo">
+                    <span className="faixa-nome">
+                      {f.faixa.replace(/^\d\.\s*/, '')}
+                    </span>
+                    <span className="faixa-n">{f.operacoes} op.</span>
+                  </div>
+
+                  <div className="faixa-medidor">
+                    <div
+                      className="faixa-preenchimento"
+                      style={{ width: `${Math.min(100, imposto)}%` }}
+                    />
+                  </div>
+
+                  <p className="faixa-frase">
+                    A corretora fica com <strong>{n(imposto, 1)}%</strong> de cada
+                    unidade de risco. Resultado médio:{' '}
+                    <strong className={Number(f.resultado_medio_r) < 0 ? 'ruim' : 'bom'}>
+                      {n(f.resultado_medio_r, 3)} R
+                    </strong>
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+
+          <p className="rodape-nota">
+            Quanto mais apertado o risco, maior a fatia que vai para a corretora
+            e pior o resultado — sem exceção em nenhuma faixa. Operações de risco
+            muito curto nascem perdidas antes de o mercado se mexer.
+          </p>
+        </section>
+      )}
+
+      {/* ============================================ 5. FUNDING */}
+      {funding.length > 0 && (
+        <section className="bloco">
+          <h2>Existe alguma oportunidade real aberta?</h2>
+          <p className="intro">
+            Esta é a única parte do sistema que não tenta adivinhar para onde o
+            preço vai. Ela captura um pagamento que existe entre quem está
+            comprado e quem está vendido em contratos perpétuos. Vale a pena
+            quando esse pagamento supera o custo de montar a operação.
+          </p>
+
+          <div className={`funding-estado ${fundingElegivel.length > 0 ? 'aberta' : 'fechada'}`}>
+            <span className="funding-titulo">
+              {fundingElegivel.length > 0
+                ? `${fundingElegivel.length} oportunidade(s) dentro do critério`
+                : 'Nenhuma oportunidade dentro do critério agora'}
+            </span>
+            {melhorFunding && (
+              <span className="funding-detalhe">
+                O melhor caso hoje é {melhorFunding.simbolo}, pagando{' '}
+                {n(melhorFunding.funding_anualizado_pct)}% ao ano. Depois de
+                descontar os custos, sobrariam{' '}
+                {n(melhorFunding.carry_liquido_anualizado_pct)}% ao ano — ainda
+                pouco para justificar o risco de execução.
+              </span>
+            )}
+          </div>
+
+          <div className="funding-lista">
+            {funding.map((f) => (
+              <div className="funding-item" key={f.simbolo}>
+                <span className="funding-simbolo">{f.simbolo}</span>
+                <span className="funding-bruto">
+                  {n(f.funding_anualizado_pct)}% bruto
+                </span>
+                <span
+                  className={`funding-liquido ${
+                    Number(f.carry_liquido_anualizado_pct ?? 0) > 0 ? 'bom' : 'ruim'
+                  }`}
+                >
+                  {n(f.carry_liquido_anualizado_pct)}% líquido
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <p className="rodape-nota">
+            Este módulo custa quase nada para manter rodando e avisa quando a
+            janela abrir. Historicamente isso acontece em períodos de euforia,
+            algumas vezes por ano.
+          </p>
+        </section>
+      )}
+
+      <footer className="pe">
+        <p>
+          Painel de acompanhamento de um sistema em teste. Não é recomendação de
+          investimento.
+        </p>
+      </footer>
     </main>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Estilos
+// ---------------------------------------------------------------------------
+
+const estilos = `
+.painel {
+  --tinta: #0D1014;
+  --superficie: #151A21;
+  --superficie-alta: #1C232C;
+  --traco: #29323D;
+  --texto: #E3E8EF;
+  --texto-suave: #8794A5;
+  --texto-fraco: #5A6675;
+  --ruim: #B85C50;
+  --atencao: #B08843;
+  --bom: #4B9478;
+
+  background: var(--tinta);
+  color: var(--texto);
+  min-height: 100vh;
+  padding: 2.5rem 1.25rem 5rem;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-feature-settings: "tnum" 1;
+  line-height: 1.6;
+}
+
+.painel .cartao-numero,
+.painel .causa-numero,
+.painel .semaforo-resposta,
+.painel .item-r,
+.painel .numeros-simples strong,
+.painel .funding-bruto,
+.painel .funding-liquido,
+.painel .faixa-n {
+  font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+}
+
+.ruim { color: var(--ruim); }
+.bom  { color: var(--bom); }
+
+.aviso {
+  max-width: 44rem; margin: 4rem auto;
+  padding: 1.25rem; border: 1px solid var(--traco);
+  border-left: 2px solid var(--atencao);
+  background: var(--superficie); color: var(--texto-suave);
+  font-size: 0.9rem;
+}
+.aviso code { font-family: ui-monospace, monospace; color: var(--texto); }
+
+/* ---------- semáforo ---------- */
+.semaforo {
+  max-width: 44rem; margin: 0 auto 3.5rem;
+  padding: 2.25rem 1.75rem;
+  border: 1px solid var(--traco);
+  background: var(--superficie);
+  text-align: center;
+}
+.semaforo.travado  { border-top: 3px solid var(--ruim); }
+.semaforo.liberado { border-top: 3px solid var(--bom); }
+
+.semaforo-pergunta {
+  font-size: 0.82rem; letter-spacing: 0.06em;
+  color: var(--texto-fraco); margin: 0 0 1rem;
+  text-transform: uppercase;
+}
+.semaforo-resposta {
+  font-size: clamp(3rem, 14vw, 4.5rem);
+  line-height: 1; font-weight: 300; letter-spacing: -0.04em;
+  margin: 0 0 1.25rem;
+}
+.semaforo.travado  .semaforo-resposta { color: var(--ruim); }
+.semaforo.liberado .semaforo-resposta { color: var(--bom); }
+
+.semaforo-motivo {
+  color: var(--texto-suave); font-size: 0.9rem;
+  max-width: 28rem; margin: 0 auto 2rem;
+}
+
+.semaforo-detalhe {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 1px; background: var(--traco);
+  border: 1px solid var(--traco); text-align: left;
+}
+.semaforo-detalhe > div {
+  background: var(--tinta); padding: 0.9rem 1rem;
+  display: flex; flex-direction: column; gap: 0.3rem;
+}
+.semaforo-detalhe span {
+  font-size: 0.7rem; color: var(--texto-fraco);
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.semaforo-detalhe strong {
+  font-family: ui-monospace, monospace; font-size: 1.1rem; font-weight: 400;
+}
+
+/* ---------- blocos ---------- */
+.bloco { max-width: 44rem; margin: 0 auto 3.5rem; }
+.bloco h2 {
+  font-size: 1.15rem; font-weight: 500; letter-spacing: -0.01em;
+  margin: 0 0 0.75rem;
+}
+.bloco h3 {
+  font-size: 0.82rem; font-weight: 500; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--texto-fraco);
+  margin: 2.5rem 0 1rem;
+}
+.intro {
+  color: var(--texto-suave); font-size: 0.88rem;
+  margin: 0 0 1.75rem;
+}
+.intro strong { color: var(--texto); font-weight: 500; }
+
+/* ---------- cartões ---------- */
+.cartoes {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 1px; background: var(--traco); border: 1px solid var(--traco);
+}
+.cartao {
+  background: var(--superficie); padding: 1.25rem 1.1rem;
+  display: flex; flex-direction: column; gap: 0.55rem;
+}
+.cartao-rotulo {
+  font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--texto-fraco);
+}
+.cartao-numero {
+  font-size: 1.7rem; font-weight: 300; letter-spacing: -0.02em; line-height: 1;
+}
+.cartao-frase {
+  font-size: 0.75rem; color: var(--texto-suave); line-height: 1.45;
+}
+
+/* ---------- lista de estratégias ---------- */
+.lista { display: flex; flex-direction: column; gap: 1px;
+  background: var(--traco); border: 1px solid var(--traco); }
+.item { background: var(--superficie); padding: 1.15rem 1.1rem; }
+.item-topo {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 1rem; margin-bottom: 0.5rem;
+}
+.item-nome { font-size: 0.9rem; display: flex; align-items: baseline; gap: 0.5rem; }
+.item-tf {
+  font-family: ui-monospace, monospace; font-size: 0.68rem;
+  color: var(--texto-fraco); letter-spacing: 0.06em;
+}
+.item-r { font-size: 1rem; }
+.item-traducao {
+  font-size: 0.8rem; color: var(--texto-suave); margin: 0 0 0.9rem;
+}
+
+.barra-fundo {
+  position: relative; height: 0.5rem;
+  background: rgba(255,255,255,0.025);
+}
+.barra-zero {
+  position: absolute; left: 50%; top: -0.15rem; bottom: -0.15rem;
+  width: 1px; background: var(--traco);
+}
+.barra-piso {
+  position: absolute; top: -0.2rem; bottom: -0.2rem; width: 1px;
+  background: repeating-linear-gradient(
+    to bottom, var(--texto-fraco) 0 3px, transparent 3px 6px);
+}
+.barra-valor { position: absolute; top: 0; bottom: 0; min-width: 2px; }
+.barra-valor.ruim   { background: var(--ruim); }
+.barra-valor.neutro { background: var(--texto-fraco); }
+
+.rodape-nota {
+  font-size: 0.78rem; color: var(--texto-fraco);
+  margin: 1.25rem 0 0;
+}
+
+/* ---------- causas ---------- */
+.causas {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1px; background: var(--traco); border: 1px solid var(--traco);
+}
+.causa {
+  background: var(--superficie); padding: 1.4rem 1.2rem;
+  display: flex; flex-direction: column; gap: 0.7rem;
+}
+.causa-titulo {
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--texto-fraco);
+}
+.causa-numero { font-size: 1.8rem; font-weight: 300; letter-spacing: -0.02em; }
+.causa p { font-size: 0.8rem; color: var(--texto-suave); margin: 0; }
+.causa strong { color: var(--texto); }
+
+.conclusao {
+  margin: 1.5rem 0 2rem; padding: 1rem 1.15rem;
+  border-left: 2px solid var(--atencao); background: var(--superficie);
+  color: var(--texto-suave); font-size: 0.85rem;
+}
+
+.numeros-simples {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: 1px; background: var(--traco); border: 1px solid var(--traco);
+}
+.numeros-simples > div {
+  background: var(--tinta); padding: 0.95rem 1rem;
+  display: flex; flex-direction: column; gap: 0.25rem;
+}
+.numeros-simples span {
+  font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--texto-fraco);
+}
+.numeros-simples strong { font-size: 1.15rem; font-weight: 400; }
+.numeros-simples em {
+  font-size: 0.7rem; color: var(--texto-suave); font-style: normal;
+}
+
+/* ---------- faixas de risco ---------- */
+.faixas { display: flex; flex-direction: column; gap: 1px;
+  background: var(--traco); border: 1px solid var(--traco); }
+.faixa { background: var(--superficie); padding: 1.05rem 1.1rem; }
+.faixa-topo {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-bottom: 0.6rem;
+}
+.faixa-nome { font-size: 0.85rem; }
+.faixa-n { font-size: 0.72rem; color: var(--texto-fraco); }
+
+.faixa-medidor {
+  height: 0.4rem; background: rgba(255,255,255,0.03);
+  margin-bottom: 0.65rem;
+}
+.faixa-preenchimento { height: 100%; }
+.sev-proibitivo .faixa-preenchimento { background: var(--ruim); }
+.sev-alto       .faixa-preenchimento { background: var(--atencao); }
+.sev-aceitavel  .faixa-preenchimento { background: var(--bom); }
+
+.faixa-frase { font-size: 0.78rem; color: var(--texto-suave); margin: 0; }
+.faixa-frase strong { font-family: ui-monospace, monospace; font-weight: 400; }
+
+/* ---------- funding ---------- */
+.funding-estado {
+  padding: 1.15rem 1.2rem; border: 1px solid var(--traco);
+  background: var(--superficie); margin-bottom: 1.25rem;
+  display: flex; flex-direction: column; gap: 0.55rem;
+}
+.funding-estado.fechada { border-left: 2px solid var(--texto-fraco); }
+.funding-estado.aberta  { border-left: 2px solid var(--bom); }
+.funding-titulo { font-size: 0.92rem; }
+.funding-detalhe { font-size: 0.8rem; color: var(--texto-suave); }
+
+.funding-lista { display: flex; flex-direction: column; gap: 1px;
+  background: var(--traco); border: 1px solid var(--traco); }
+.funding-item {
+  background: var(--tinta); padding: 0.75rem 1rem;
+  display: grid; grid-template-columns: 1fr auto auto; gap: 1rem;
+  align-items: baseline;
+}
+.funding-simbolo { font-size: 0.82rem; }
+.funding-bruto { font-size: 0.78rem; color: var(--texto-fraco); }
+.funding-liquido { font-size: 0.82rem; }
+
+.pe {
+  max-width: 44rem; margin: 0 auto; padding-top: 2rem;
+  border-top: 1px solid var(--traco);
+}
+.pe p { font-size: 0.75rem; color: var(--texto-fraco); margin: 0; }
+
+@media (max-width: 560px) {
+  .painel { padding: 1.75rem 1rem 3.5rem; }
+  .cartao-numero { font-size: 1.4rem; }
+  .causa-numero { font-size: 1.5rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+`;
