@@ -1,0 +1,27 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: https://xzqmfcxtvfffgrmqqzdz.supabase.co
+      # This is a publishable browser key, never a service-role secret.
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: sb_publishable_gx2wceFzxuGz87s4oTPtKw_WPdBakiB
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
