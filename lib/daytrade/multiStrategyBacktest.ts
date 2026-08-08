@@ -72,7 +72,9 @@ export type MultiStrategyBacktestSkippedSignalReason =
   | 'position_open'
   | 'no_next_candle'
   | 'entry_below_stop'
+  | 'entry_above_stop'
   | 'entry_above_reference_limit'
+  | 'entry_below_reference_limit'
   | 'position_sizing_failed'
   /** Sinal ocorrido no aquecimento, antes do início da janela avaliada. */
   | 'warmup';
@@ -227,7 +229,7 @@ export interface MultiStrategyBacktestTrade {
 
   strategy: DayTradeStrategyId;
   strategyVersion: string;
-  direction: 'long';
+  direction: 'long' | 'short';
 
   signalCandleOpenTime: number;
   signalCandleCloseTime: number;
@@ -1167,6 +1169,26 @@ function chooseMultiStrategyBacktestExit(
   reason:
     MultiStrategyBacktestExitReason;
 } | null {
+  if (trade.plan.direction === 'short') {
+    if (candle.open >= trade.stopPrice) {
+      return { rawExitPrice: candle.open, reason: 'stop' };
+    }
+    if (candle.open <= trade.targetPrice) {
+      return { rawExitPrice: trade.targetPrice, reason: 'target' };
+    }
+
+    const touchedStop = candle.high >= trade.stopPrice;
+    const touchedTarget = candle.low <= trade.targetPrice;
+    if (touchedStop && touchedTarget) {
+      return priority === 'stop_first'
+        ? { rawExitPrice: trade.stopPrice, reason: 'stop' }
+        : { rawExitPrice: trade.targetPrice, reason: 'target' };
+    }
+    if (touchedStop) return { rawExitPrice: trade.stopPrice, reason: 'stop' };
+    if (touchedTarget) return { rawExitPrice: trade.targetPrice, reason: 'target' };
+    return null;
+  }
+
   /**
    * Gap abaixo do stop:
    * assume saída na abertura.
@@ -1256,9 +1278,9 @@ function applyMultiStrategyBacktestManagement(
 ): void {
   const management = options.management;
 
-  const riskDistance =
-    trade.entryPrice -
-    trade.initialStopPrice;
+  const riskDistance = trade.plan.direction === 'long'
+    ? trade.entryPrice - trade.initialStopPrice
+    : trade.initialStopPrice - trade.entryPrice;
 
   if (
     !Number.isFinite(riskDistance) ||
@@ -1268,8 +1290,14 @@ function applyMultiStrategyBacktestManagement(
   }
 
   const priceAtR = (multiple: number): number =>
-    trade.entryPrice +
-    multiple * riskDistance;
+    trade.plan.direction === 'long'
+      ? trade.entryPrice + multiple * riskDistance
+      : trade.entryPrice - multiple * riskDistance;
+
+  const reachedFavorablePrice = (price: number): boolean =>
+    trade.plan.direction === 'long'
+      ? candle.high >= price
+      : candle.low <= price;
 
   // Realização parcial (preenchimento no preço do gatilho, conservador).
   if (
@@ -1280,19 +1308,19 @@ function applyMultiStrategyBacktestManagement(
     const triggerPrice = priceAtR(partial.triggerR);
 
     if (
-      triggerPrice < trade.targetPrice &&
-      candle.high >= triggerPrice
+      (trade.plan.direction === 'long'
+        ? triggerPrice < trade.targetPrice
+        : triggerPrice > trade.targetPrice) &&
+      reachedFavorablePrice(triggerPrice)
     ) {
       const partialQuantity =
         trade.quantityRemaining *
         partial.fraction;
 
       if (partialQuantity > 0) {
-        const partialExitPrice =
-          applyBacktestSellSlippage(
-            triggerPrice,
-            options.slippagePct,
-          );
+        const partialExitPrice = trade.plan.direction === 'long'
+          ? applyBacktestSellSlippage(triggerPrice, options.slippagePct)
+          : applyBacktestBuySlippage(triggerPrice, options.slippagePct);
 
         const partialFeeUsdt =
           calculateBacktestExecutionFee(
@@ -1302,11 +1330,9 @@ function applyMultiStrategyBacktestManagement(
           );
 
         trade.realizedGrossPnlUsdt +=
-          (
-            partialExitPrice -
-            trade.entryPrice
-          ) *
-          partialQuantity;
+          (trade.plan.direction === 'long'
+            ? partialExitPrice - trade.entryPrice
+            : trade.entryPrice - partialExitPrice) * partialQuantity;
 
         trade.realizedExitFeesUsdt +=
           partialFeeUsdt;
@@ -1323,12 +1349,11 @@ function applyMultiStrategyBacktestManagement(
   if (
     management.breakevenAtR !== null &&
     !trade.breakevenApplied &&
-    candle.high >= priceAtR(management.breakevenAtR)
+    reachedFavorablePrice(priceAtR(management.breakevenAtR))
   ) {
-    trade.stopPrice = Math.max(
-      trade.stopPrice,
-      trade.entryPrice,
-    );
+    trade.stopPrice = trade.plan.direction === 'long'
+      ? Math.max(trade.stopPrice, trade.entryPrice)
+      : Math.min(trade.stopPrice, trade.entryPrice);
 
     trade.breakevenApplied = true;
   }
@@ -1339,7 +1364,7 @@ function applyMultiStrategyBacktestManagement(
 
     if (
       !trade.trailingActive &&
-      candle.high >= priceAtR(trailing.triggerR)
+      reachedFavorablePrice(priceAtR(trailing.triggerR))
     ) {
       trade.trailingActive = true;
     }
@@ -1354,15 +1379,13 @@ function applyMultiStrategyBacktestManagement(
           : 0;
 
       if (signalAtr > 0) {
-        const candidateStop =
-          candle.close -
-          trailing.atrMultiple *
-            signalAtr;
+        const candidateStop = trade.plan.direction === 'long'
+          ? candle.close - trailing.atrMultiple * signalAtr
+          : candle.close + trailing.atrMultiple * signalAtr;
 
-        if (
-          candidateStop >
-          trade.stopPrice
-        ) {
+        if (trade.plan.direction === 'long'
+          ? candidateStop > trade.stopPrice
+          : candidateStop < trade.stopPrice) {
           trade.stopPrice =
             candidateStop;
         }
@@ -1400,13 +1423,13 @@ function createMultiStrategyBacktestTrade(
         )
       : null;
 
+  const direction = plan.direction;
+
   if (
     atr !== null &&
-    nextCandle.open >
-      plan.entryReference +
-      atr *
-        options
-          .maximumNextOpenDistanceAtr
+    (direction === 'long'
+      ? nextCandle.open > plan.entryReference + atr * options.maximumNextOpenDistanceAtr
+      : nextCandle.open < plan.entryReference - atr * options.maximumNextOpenDistanceAtr)
   ) {
     return {
       trade: null,
@@ -1421,18 +1444,20 @@ function createMultiStrategyBacktestTrade(
         signalCandleCloseTime:
           signal.candleCloseTime,
 
-        reason:
-          'entry_above_reference_limit',
+        reason: direction === 'long'
+          ? 'entry_above_reference_limit'
+          : 'entry_below_reference_limit',
 
         explanation:
-          'A abertura do candle seguinte ficou além do limite máximo de distância da entrada de referência.',
+          'A abertura do candle seguinte ficou além do limite máximo de distância favorável da entrada de referência.',
       },
     };
   }
 
   if (
-    nextCandle.open <=
-    plan.stopReference
+    direction === 'long'
+      ? nextCandle.open <= plan.stopReference
+      : nextCandle.open >= plan.stopReference
   ) {
     return {
       trade: null,
@@ -1447,11 +1472,12 @@ function createMultiStrategyBacktestTrade(
         signalCandleCloseTime:
           signal.candleCloseTime,
 
-        reason:
-          'entry_below_stop',
+        reason: direction === 'long'
+          ? 'entry_below_stop'
+          : 'entry_above_stop',
 
         explanation:
-          'A abertura seguinte ocorreu no stop ou abaixo dele; o setup foi descartado antes da entrada.',
+          'A abertura seguinte ocorreu no stop ou além dele; o setup foi descartado antes da entrada.',
       },
     };
   }
@@ -1459,14 +1485,26 @@ function createMultiStrategyBacktestTrade(
   const rawEntryPrice =
     nextCandle.open;
 
-  const priceRisk =
-    rawEntryPrice -
-    plan.stopReference;
+  const priceRisk = direction === 'long'
+    ? rawEntryPrice - plan.stopReference
+    : plan.stopReference - rawEntryPrice;
 
-  const targetPrice =
-    rawEntryPrice +
-    priceRisk *
-      plan.riskRewardRatio;
+  const targetPrice = direction === 'long'
+    ? rawEntryPrice + priceRisk * plan.riskRewardRatio
+    : rawEntryPrice - priceRisk * plan.riskRewardRatio;
+
+  if (priceRisk <= 0 || targetPrice <= 0) {
+    return {
+      trade: null,
+      skipped: {
+        strategy: signal.strategy,
+        signalCandleOpenTime: signal.candleOpenTime,
+        signalCandleCloseTime: signal.candleCloseTime,
+        reason: 'position_sizing_failed',
+        explanation: 'Risco ou alvo inválido após ajustar a entrada à abertura seguinte.',
+      },
+    };
+  }
 
   const sizing =
     calculatePositionSize({
@@ -1479,8 +1517,7 @@ function createMultiStrategyBacktestTrade(
       riskPercent:
         options.riskPercent,
 
-      direction:
-        'long',
+      direction,
 
       entryPrice:
         rawEntryPrice,
@@ -1509,8 +1546,7 @@ function createMultiStrategyBacktestTrade(
         options
           .maxPositionNotional,
 
-      allowLeverage:
-        false,
+      allowLeverage: direction === 'short',
 
       policy: {
         recommendedRiskPercent: 1,
@@ -1541,11 +1577,9 @@ function createMultiStrategyBacktestTrade(
     };
   }
 
-  const entryPrice =
-    applyBacktestBuySlippage(
-      rawEntryPrice,
-      options.slippagePct,
-    );
+  const entryPrice = direction === 'long'
+    ? applyBacktestBuySlippage(rawEntryPrice, options.slippagePct)
+    : applyBacktestSellSlippage(rawEntryPrice, options.slippagePct);
 
   const entryFeeUsdt =
     calculateBacktestExecutionFee(
@@ -1626,11 +1660,9 @@ function closeMultiStrategyBacktestTrade(
   options:
     ResolvedMultiStrategyBacktestOptions,
 ): MultiStrategyBacktestTrade {
-  const exitPrice =
-    applyBacktestSellSlippage(
-      rawExitPrice,
-      options.slippagePct,
-    );
+  const exitPrice = trade.plan.direction === 'long'
+    ? applyBacktestSellSlippage(rawExitPrice, options.slippagePct)
+    : applyBacktestBuySlippage(rawExitPrice, options.slippagePct);
 
   const exitFeeUsdt =
     calculateBacktestExecutionFee(
@@ -1641,11 +1673,9 @@ function closeMultiStrategyBacktestTrade(
 
   const grossPnlUsdt =
     trade.realizedGrossPnlUsdt +
-    (
-      exitPrice -
-      trade.entryPrice
-    ) *
-    trade.quantityRemaining;
+    (trade.plan.direction === 'long'
+      ? exitPrice - trade.entryPrice
+      : trade.entryPrice - exitPrice) * trade.quantityRemaining;
 
   const totalFeesUsdt =
     trade.entryFeeUsdt +
@@ -1693,8 +1723,7 @@ function closeMultiStrategyBacktestTrade(
       trade.signal
         .strategyVersion,
 
-    direction:
-      'long',
+    direction: trade.plan.direction,
 
     signalCandleOpenTime:
       trade.signal

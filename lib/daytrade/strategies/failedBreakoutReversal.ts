@@ -98,7 +98,9 @@ const DEFAULTS = {
 const finitePositive = (value: number | null): value is number =>
   value !== null && Number.isFinite(value) && value > 0;
 
-function resolveOptions(options: FailedBreakoutReversalOptions = {}) {
+export function resolveFailedBreakoutReversalOptions(
+  options: FailedBreakoutReversalOptions = {},
+) {
   return {
     ...DEFAULTS,
     ...options,
@@ -119,7 +121,7 @@ export function evaluateFailedBreakoutReversal(input: {
   livePrice?: number | null;
   options?: FailedBreakoutReversalOptions;
 }): FailedBreakoutReversalEvaluation {
-  const options = resolveOptions(input.options);
+  const options = resolveFailedBreakoutReversalOptions(input.options);
   const candles = normalizeClosedCandles(input.candles);
   if (candles.length === 0) throw new Error('Informe candles encerrados.');
   const candle = candles[candles.length - 1];

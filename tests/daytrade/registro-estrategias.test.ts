@@ -186,12 +186,33 @@ test('as estratégias antigas continuam avaliando igual', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Limite conhecido
+// Estratégia vendida
 // ---------------------------------------------------------------------------
 
-test('failed_breakout_reversal NÃO foi registrada — motor é apenas comprado', () => {
-  // Ela opera vendida e `multiStrategyBacktest` não tem lógica de venda.
-  // Registrá-la faria o motor tratar uma venda como compra, invertendo o
-  // sinal do resultado e produzindo backtests plausíveis e errados.
-  assert.equal(isDayTradeStrategyId('failed_breakout_reversal'), false);
+test('failed_breakout_reversal foi registrada somente em shadow', () => {
+  assert.equal(isDayTradeStrategyId('failed_breakout_reversal'), true);
+
+  const definicao = DAYTRADE_STRATEGY_REGISTRY.failed_breakout_reversal;
+  assert.equal(definicao.executionMode, 'shadow');
+  assert.equal(definicao.authorizedForAutomaticOrders, false);
+  assert.equal(definicao.enabledForBacktest, true);
+});
+
+test('adaptador preserva a direção short da reversão de falso rompimento', () => {
+  const candles = buildTrendingCandles();
+  const indicators = calculateDayTradeIndicators(candles, OPCOES_1H);
+  const avaliacao = evaluateCommonBacktestStrategy({
+    strategyId: 'failed_breakout_reversal',
+    candles,
+    indicators,
+  });
+
+  assert.equal(avaliacao.strategy, 'failed_breakout_reversal');
+  assert.equal(avaliacao.direction, 'short');
+
+  const descritor = getBacktestStrategyDescriptor(
+    'failed_breakout_reversal',
+    OPCOES_1H,
+  );
+  assert.equal(descritor.defaultMaximumNextOpenDistanceAtr, 0.35);
 });

@@ -40,6 +40,11 @@ import {
   CONFIRMED_TREND_CONTINUATION_STRATEGY_VERSION,
 } from './confirmedTrendContinuation';
 
+import {
+  FAILED_BREAKOUT_REVERSAL_STRATEGY_ID,
+  FAILED_BREAKOUT_REVERSAL_STRATEGY_VERSION,
+} from './failedBreakoutReversal';
+
 // -----------------------------------------------------------------------------
 // Reexports
 // -----------------------------------------------------------------------------
@@ -49,6 +54,7 @@ export * from './trendPullback';
 export * from './squeezeBreakout';
 export * from './rangeMeanReversion';
 export * from './confirmedTrendContinuation';
+export * from './failedBreakoutReversal';
 
 // -----------------------------------------------------------------------------
 // Tipos do registro
@@ -59,14 +65,16 @@ export type DayTradeStrategyId =
   | typeof TREND_PULLBACK_STRATEGY_ID
   | typeof SQUEEZE_BREAKOUT_STRATEGY_ID
   | typeof RANGE_MEAN_REVERSION_STRATEGY_ID
-  | typeof CONFIRMED_TREND_CONTINUATION_STRATEGY_ID;
+  | typeof CONFIRMED_TREND_CONTINUATION_STRATEGY_ID
+  | typeof FAILED_BREAKOUT_REVERSAL_STRATEGY_ID;
 
 export type DayTradeStrategyVersion =
   | typeof TREND_BREAKOUT_STRATEGY_VERSION
   | typeof TREND_PULLBACK_STRATEGY_VERSION
   | typeof SQUEEZE_BREAKOUT_STRATEGY_VERSION
   | typeof RANGE_MEAN_REVERSION_STRATEGY_VERSION
-  | typeof CONFIRMED_TREND_CONTINUATION_STRATEGY_VERSION;
+  | typeof CONFIRMED_TREND_CONTINUATION_STRATEGY_VERSION
+  | typeof FAILED_BREAKOUT_REVERSAL_STRATEGY_VERSION;
 
 export type DayTradeStrategyCategory =
   | 'trend_following'
@@ -223,6 +231,21 @@ export const DAYTRADE_STRATEGY_REGISTRY = {
     enabledForPersistence: true,
     displayOrder: 5,
   },
+  [FAILED_BREAKOUT_REVERSAL_STRATEGY_ID]: {
+    id: FAILED_BREAKOUT_REVERSAL_STRATEGY_ID,
+    version: FAILED_BREAKOUT_REVERSAL_STRATEGY_VERSION,
+    label: 'Reversão de falso rompimento',
+    shortLabel: 'Failed Breakout Reversal',
+    description:
+      'Procura uma tentativa de rompimento rejeitada e entra vendido somente após o fechamento retornar para dentro da faixa.',
+    category: 'mean_reversion',
+    preferredRegimes: ['lateralidade'],
+    executionMode: 'shadow',
+    authorizedForAutomaticOrders: false,
+    enabledForBacktest: true,
+    enabledForPersistence: true,
+    displayOrder: 6,
+  },
 } as const satisfies Record<
   DayTradeStrategyId,
   DayTradeStrategyDefinition
@@ -238,6 +261,7 @@ export const DAYTRADE_STRATEGY_IDS = [
   SQUEEZE_BREAKOUT_STRATEGY_ID,
   RANGE_MEAN_REVERSION_STRATEGY_ID,
   CONFIRMED_TREND_CONTINUATION_STRATEGY_ID,
+  FAILED_BREAKOUT_REVERSAL_STRATEGY_ID,
 ] as const satisfies readonly DayTradeStrategyId[];
 
 export const EXECUTABLE_DAYTRADE_STRATEGY_IDS =

@@ -1,27 +1,23 @@
 Bateria walk-forward · 1h · 360 dias · janela 2000
 Custos: taxa 0.1% + slippage 0.05% · Stop mínimo: padrão · Fim: 2026-08-08
-Símbolos: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT · Estratégias: confirmed_trend_continuation
-Gerado em: 2026-08-08T18:08:47.817Z
+Símbolos: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT · Estratégias: failed_breakout_reversal
+Gerado em: 2026-08-08T18:57:37.196Z
 
 simbolo | estrategia | gestao | trades | acerto% | somaR | mediaR | medianaR | PF | t | janelasPos | piorJanela | obs
 ---|---|---|---|---|---|---|---|---|---|---|---|---
-ETHUSDT | confirmed_trend_continuation | parcial | 8 | 50.0 | +0.06 | +0.01 | -0.40 | 1.02 | +0.02 | 1/4 | -1.73 | indistinguivel de sorte
-BTCUSDT | confirmed_trend_continuation | parcial | 19 | 63.2 | -1.38 | -0.07 | +0.14 | 0.80 | -0.37 | 2/4 | -2.63 | indistinguivel de sorte
-ETHUSDT | confirmed_trend_continuation | breakeven | 8 | 25.0 | -0.76 | -0.09 | -0.60 | 0.83 | -0.22 | 1/4 | -2.16 | indistinguivel de sorte
-ETHUSDT | confirmed_trend_continuation | trailing | 8 | 37.5 | -1.12 | -0.14 | -0.91 | 0.77 | -0.32 | 1/4 | -1.92 | indistinguivel de sorte
-BTCUSDT | confirmed_trend_continuation | trailing | 18 | 22.2 | -3.26 | -0.18 | -0.47 | 0.67 | -0.73 | 1/4 | -2.05 | indistinguivel de sorte
-BTCUSDT | confirmed_trend_continuation | breakeven | 19 | 15.8 | -3.73 | -0.20 | -0.24 | 0.59 | -0.91 | 1/4 | -3.76 | indistinguivel de sorte
-ETHUSDT | confirmed_trend_continuation | nenhuma | 7 | 28.6 | -1.40 | -0.20 | -1.00 | 0.72 | -0.39 | 1/4 | -2.00 | indistinguivel de sorte
-XRPUSDT | confirmed_trend_continuation | parcial | 26 | 38.5 | -9.04 | -0.35 | -1.00 | 0.43 | -1.96 | 1/4 | -8.54 | indistinguivel de sorte
-XRPUSDT | confirmed_trend_continuation | nenhuma | 26 | 23.1 | -9.34 | -0.36 | -1.00 | 0.53 | -1.53 | 1/4 | -5.51 | indistinguivel de sorte
-SOLUSDT | confirmed_trend_continuation | breakeven | 19 | 15.8 | -7.00 | -0.37 | -1.00 | 0.44 | -1.54 | 1/4 | -4.11 | indistinguivel de sorte
-SOLUSDT | confirmed_trend_continuation | parcial | 19 | 36.8 | -6.96 | -0.37 | -1.00 | 0.42 | -1.77 | 1/4 | -3.67 | indistinguivel de sorte
-XRPUSDT | confirmed_trend_continuation | breakeven | 26 | 15.4 | -9.83 | -0.38 | -1.00 | 0.42 | -1.93 | 1/4 | -9.36 | indistinguivel de sorte
-BTCUSDT | confirmed_trend_continuation | nenhuma | 18 | 22.2 | -7.31 | -0.41 | -1.00 | 0.48 | -1.50 | 1/4 | -5.00 | indistinguivel de sorte
-SOLUSDT | confirmed_trend_continuation | trailing | 18 | 22.2 | -7.48 | -0.42 | -1.00 | 0.43 | -1.62 | 1/4 | -4.07 | indistinguivel de sorte
-XRPUSDT | confirmed_trend_continuation | trailing | 26 | 23.1 | -11.14 | -0.43 | -1.00 | 0.38 | -2.32 | 1/4 | -9.64 | amostra baixa
-SOLUSDT | confirmed_trend_continuation | nenhuma | 18 | 16.7 | -9.49 | -0.53 | -1.00 | 0.37 | -2.05 | 1/4 | -5.00 | amostra baixa
-BNBUSDT | confirmed_trend_continuation | nenhuma | 19 | 15.8 | -11.08 | -0.58 | -1.00 | 0.31 | -2.55 | 0/4 | -5.73 | amostra baixa
-BNBUSDT | confirmed_trend_continuation | parcial | 19 | 31.6 | -10.97 | -0.58 | -1.00 | 0.16 | -3.70 | 0/4 | -3.50 | amostra baixa
-BNBUSDT | confirmed_trend_continuation | trailing | 19 | 10.5 | -11.61 | -0.61 | -1.00 | 0.21 | -3.33 | 0/4 | -4.03 | amostra baixa
-BNBUSDT | confirmed_trend_continuation | breakeven | 19 | 5.3 | -12.34 | -0.65 | -1.00 | 0.13 | -4.12 | 0/4 | -4.98 | amostra baixa
+ETHUSDT | failed_breakout_reversal | nenhuma | 16 | 31.3 | -2.48 | -0.16 | -1.00 | 0.77 | -0.48 | 1/4 | -2.00 | indistinguivel de sorte
+BTCUSDT | failed_breakout_reversal | nenhuma | 13 | 30.8 | -3.60 | -0.28 | -1.00 | 0.60 | -0.88 | 1/4 | -2.00 | indistinguivel de sorte
+BTCUSDT | failed_breakout_reversal | breakeven | 13 | 30.8 | -3.60 | -0.28 | -1.00 | 0.60 | -0.88 | 1/4 | -2.00 | indistinguivel de sorte
+BTCUSDT | failed_breakout_reversal | trailing | 13 | 30.8 | -3.60 | -0.28 | -1.00 | 0.60 | -0.88 | 1/4 | -2.00 | indistinguivel de sorte
+SOLUSDT | failed_breakout_reversal | trailing | 9 | 22.2 | -2.88 | -0.32 | -1.00 | 0.54 | -0.84 | 1/4 | -1.95 | indistinguivel de sorte
+BNBUSDT | failed_breakout_reversal | parcial | 12 | 41.7 | -3.94 | -0.33 | -1.00 | 0.44 | -1.30 | 1/4 | -2.00 | indistinguivel de sorte
+ETHUSDT | failed_breakout_reversal | parcial | 16 | 37.5 | -5.42 | -0.34 | -1.00 | 0.40 | -1.62 | 1/4 | -2.60 | indistinguivel de sorte
+ETHUSDT | failed_breakout_reversal | trailing | 16 | 18.8 | -5.40 | -0.34 | -1.00 | 0.47 | -1.30 | 1/4 | -3.02 | indistinguivel de sorte
+SOLUSDT | failed_breakout_reversal | parcial | 9 | 44.4 | -3.02 | -0.34 | -1.00 | 0.40 | -1.20 | 0/4 | -0.79 | indistinguivel de sorte
+BTCUSDT | failed_breakout_reversal | parcial | 13 | 30.8 | -4.80 | -0.37 | -1.00 | 0.47 | -1.34 | 0/4 | -2.00 | indistinguivel de sorte
+BNBUSDT | failed_breakout_reversal | nenhuma | 12 | 25.0 | -4.54 | -0.38 | -1.00 | 0.50 | -1.16 | 1/4 | -3.00 | indistinguivel de sorte
+BNBUSDT | failed_breakout_reversal | breakeven | 12 | 16.7 | -4.82 | -0.40 | -1.00 | 0.35 | -1.57 | 0/4 | -2.18 | indistinguivel de sorte
+ETHUSDT | failed_breakout_reversal | breakeven | 16 | 12.5 | -6.51 | -0.41 | -1.00 | 0.34 | -1.79 | 1/4 | -3.07 | indistinguivel de sorte
+SOLUSDT | failed_breakout_reversal | nenhuma | 9 | 22.2 | -3.69 | -0.41 | -1.00 | 0.47 | -1.05 | 1/4 | -2.00 | indistinguivel de sorte
+SOLUSDT | failed_breakout_reversal | breakeven | 9 | 11.1 | -3.80 | -0.42 | -1.00 | 0.31 | -1.43 | 0/4 | -1.19 | indistinguivel de sorte
+BNBUSDT | failed_breakout_reversal | trailing | 12 | 25.0 | -5.42 | -0.45 | -1.00 | 0.35 | -1.71 | 1/4 | -2.97 | indistinguivel de sorte

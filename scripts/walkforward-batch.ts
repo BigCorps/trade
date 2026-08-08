@@ -86,6 +86,7 @@ const VALID_STRATEGIES: DayTradeStrategyId[] = [
   'squeeze_breakout',
   'range_mean_reversion',
   'confirmed_trend_continuation',
+  'failed_breakout_reversal',
 ];
 
 const MANAGEMENT_PRESETS: Record<

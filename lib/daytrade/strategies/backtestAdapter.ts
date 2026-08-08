@@ -64,6 +64,13 @@ import {
   type ConfirmedTrendContinuationPlan,
 } from './confirmedTrendContinuation';
 
+import {
+  evaluateFailedBreakoutReversal,
+  type FailedBreakoutReversalEvaluation,
+  type FailedBreakoutReversalOptions,
+  type FailedBreakoutReversalPlan,
+} from './failedBreakoutReversal';
+
 // -----------------------------------------------------------------------------
 // Mapas tipados
 // -----------------------------------------------------------------------------
@@ -74,6 +81,7 @@ export interface DayTradeBacktestStrategyOptionsMap {
   squeeze_breakout: SqueezeBreakoutOptions;
   range_mean_reversion: RangeMeanReversionOptions;
   confirmed_trend_continuation: ConfirmedTrendContinuationOptions;
+  failed_breakout_reversal: FailedBreakoutReversalOptions;
 }
 
 export interface DayTradeBacktestStrategyEvaluationMap {
@@ -82,6 +90,7 @@ export interface DayTradeBacktestStrategyEvaluationMap {
   squeeze_breakout: SqueezeBreakoutEvaluation;
   range_mean_reversion: RangeMeanReversionEvaluation;
   confirmed_trend_continuation: ConfirmedTrendContinuationEvaluation;
+  failed_breakout_reversal: FailedBreakoutReversalEvaluation;
 }
 
 export interface DayTradeBacktestStrategyPlanMap {
@@ -90,6 +99,7 @@ export interface DayTradeBacktestStrategyPlanMap {
   squeeze_breakout: SqueezeBreakoutPlan;
   range_mean_reversion: RangeMeanReversionPlan;
   confirmed_trend_continuation: ConfirmedTrendContinuationPlan;
+  failed_breakout_reversal: FailedBreakoutReversalPlan;
 }
 
 export type AnyDayTradeBacktestStrategyOptions =
@@ -106,7 +116,7 @@ export type AnyDayTradeBacktestStrategyPlan =
 // -----------------------------------------------------------------------------
 
 export interface CommonDayTradeBacktestPlan {
-  direction: 'long';
+  direction: 'long' | 'short';
 
   entryReference: number;
   stopReference: number;
@@ -126,7 +136,7 @@ export interface CommonDayTradeBacktestPlan {
 export interface CommonDayTradeBacktestEvaluation {
   strategy: DayTradeStrategyId;
   strategyVersion: string;
-  direction: 'long';
+  direction: 'long' | 'short';
 
   status:
     | 'dados_insuficientes'
@@ -302,6 +312,17 @@ export function evaluateBacktestStrategy<
         options:
           input.strategyOptions as
             | ConfirmedTrendContinuationOptions
+            | undefined,
+      }) as DayTradeBacktestStrategyEvaluationMap[TStrategyId];
+
+    case 'failed_breakout_reversal':
+      return evaluateFailedBreakoutReversal({
+        candles,
+        indicators,
+        livePrice,
+        options:
+          input.strategyOptions as
+            | FailedBreakoutReversalOptions
             | undefined,
       }) as DayTradeBacktestStrategyEvaluationMap[TStrategyId];
 
@@ -513,6 +534,7 @@ export function getBacktestStrategyRequiredCandleCount(
      * cobertos pelo aquecimento dos indicadores.
      */
     case 'confirmed_trend_continuation':
+    case 'failed_breakout_reversal':
       return indicatorRequired;
 
     default: {
@@ -562,6 +584,9 @@ export function getDefaultMaximumNextOpenDistanceAtr(
         strategyOptions
           .confirmed_trend_continuation,
       ).maximumLateEntryDistanceAtr;
+
+    case 'failed_breakout_reversal':
+      return 0.35;
 
     default: {
       const exhaustiveCheck: never =
