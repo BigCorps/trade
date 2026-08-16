@@ -84,11 +84,24 @@ type Funding = {
   coletado_em: string;
   funding_rate_pct: number;
   funding_anualizado_pct: number;
+  /**
+   * Média móvel de 72h do funding anualizado — protocolo 2.0.0.
+   *
+   * É este número, e não a taxa instantânea, que estima o que se recebe.
+   * A medição em 2.706 snapshots mostrou que o funding reverte para ~6% a.a.
+   * em 72h independentemente de onde começa.
+   */
+  funding_ma_72h_pct: number | null;
+  horas_na_media: number | null;
   basis_pct: number;
   custo_round_trip_pct: number;
+  holding_dias_assumido: number | null;
+  /** Ganho projetado sobre o horizonte menos o custo. NÃO anualizado. */
+  carry_liquido_periodo_pct: number | null;
   carry_liquido_anualizado_pct: number;
   elegivel: boolean;
   motivo: string;
+  protocolo_versao: string | null;
 };
 
 function numeric(value: unknown): number | null {
@@ -439,7 +452,8 @@ export default function OportunidadesV2Page() {
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 17, fontWeight: 750 }}>Funding carry delta-neutro</div>
               <div style={{ color: S.dim, fontSize: 12, marginTop: 5 }}>
-                Long spot + short perp, apenas observacional. Custos e basis entram na triagem.
+                Long spot + short perp, apenas observacional. Protocolo 2.0.0: a
+                triagem usa a média de 72h do funding, não a taxa do momento.
               </div>
             </div>
             <Badge color={S.orange}>SEM ORDENS</Badge>
@@ -449,7 +463,16 @@ export default function OportunidadesV2Page() {
             <table style={{ width: '100%', minWidth: 780, borderCollapse: 'collapse', fontSize: 12 }}>
               <thead>
                 <tr style={{ color: S.dim, textAlign: 'left' }}>
-                  {['Ativo', 'Funding 8h', 'Anualizado', 'Basis', 'Carry líquido est.', 'Situação', 'Coleta'].map(
+                  {[
+                    'Ativo',
+                    'Funding 8h',
+                    'Agora (a.a.)',
+                    'Média 72h (a.a.)',
+                    'Basis',
+                    'Líquido no período',
+                    'Situação',
+                    'Coleta',
+                  ].map(
                     (title) => (
                       <th
                         key={title}
@@ -474,8 +497,34 @@ export default function OportunidadesV2Page() {
                     <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}`, whiteSpace: 'nowrap' }}>
                       {fmtPct(row.funding_rate_pct, 4)}
                     </td>
-                    <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}`, whiteSpace: 'nowrap' }}>
+                    <td
+                      style={{
+                        padding: '9px 10px',
+                        borderBottom: `1px solid ${S.border}`,
+                        whiteSpace: 'nowrap',
+                        color: S.dim,
+                      }}
+                    >
                       {fmtPct(row.funding_anualizado_pct)}
+                    </td>
+                    {/* A média de 72h é o número que decide. A taxa do momento
+                        fica ao lado, esmaecida, só para comparação. */}
+                    <td
+                      style={{
+                        padding: '9px 10px',
+                        borderBottom: `1px solid ${S.border}`,
+                        whiteSpace: 'nowrap',
+                        fontWeight: 600,
+                      }}
+                    >
+                      {row.funding_ma_72h_pct === null
+                        ? '—'
+                        : fmtPct(row.funding_ma_72h_pct)}
+                      {row.horas_na_media !== null && row.horas_na_media < 72 ? (
+                        <span style={{ color: S.orange, fontSize: 11, marginLeft: 6 }}>
+                          {row.horas_na_media}h
+                        </span>
+                      ) : null}
                     </td>
                     <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}`, whiteSpace: 'nowrap' }}>
                       {fmtPct(row.basis_pct, 3)}
@@ -484,12 +533,17 @@ export default function OportunidadesV2Page() {
                       style={{
                         padding: '9px 10px',
                         borderBottom: `1px solid ${S.border}`,
-                        color: colorForResult(row.carry_liquido_anualizado_pct),
+                        color: colorForResult(row.carry_liquido_periodo_pct),
                         fontWeight: 700,
                         whiteSpace: 'nowrap',
                       }}
                     >
-                      {fmtPct(row.carry_liquido_anualizado_pct)}
+                      {row.carry_liquido_periodo_pct === null
+                        ? '—'
+                        : fmtPct(row.carry_liquido_periodo_pct, 3)}
+                      <span style={{ color: S.dim, fontWeight: 400, fontSize: 11, marginLeft: 4 }}>
+                        em {row.holding_dias_assumido ?? 30}d
+                      </span>
                     </td>
                     <td style={{ padding: '9px 10px', borderBottom: `1px solid ${S.border}`, whiteSpace: 'nowrap' }}>
                       <Badge color={row.elegivel ? S.green : S.dim}>

@@ -68,6 +68,15 @@ interface FaixaRisco {
 interface Funding {
   simbolo: string;
   funding_anualizado_pct: number | null;
+  /**
+   * Média móvel de 72h do funding anualizado — protocolo 2.0.0.
+   * É o estimador do que se recebe de fato; a taxa instantânea não é.
+   */
+  funding_ma_72h_pct: number | null;
+  horas_na_media: number | null;
+  holding_dias_assumido: number | null;
+  /** Ganho projetado sobre o horizonte menos o custo. NÃO anualizado. */
+  carry_liquido_periodo_pct: number | null;
   carry_liquido_anualizado_pct: number | null;
   elegivel: boolean | null;
 }
@@ -158,10 +167,15 @@ export default function Painel() {
         supabase.from('vw_imposto_por_faixa_risco').select('*'),
         supabase
           .from('funding_carry_latest')
+          // String literal única: o supabase-js infere o tipo da linha a partir
+          // dela em tempo de compilação. Quebrar em concatenação faz a inferência
+          // cair para GenericStringError e o cast abaixo passa a falhar.
           .select(
-            'simbolo, funding_anualizado_pct, carry_liquido_anualizado_pct, elegivel',
+            'simbolo, funding_anualizado_pct, funding_ma_72h_pct, horas_na_media, holding_dias_assumido, carry_liquido_periodo_pct, carry_liquido_anualizado_pct, elegivel',
           )
-          .order('carry_liquido_anualizado_pct', {
+          // Ordenar pela média de 72h, não pela taxa do momento: era
+          // exatamente isso que colocava um pico de seis horas no topo.
+          .order('funding_ma_72h_pct', {
             ascending: false,
             nullsFirst: false,
           })
@@ -743,7 +757,10 @@ export default function Painel() {
                   Esta é a única parte do sistema que não tenta adivinhar para onde
                   o preço vai. Ela captura um pagamento que existe entre quem está
                   comprado e quem está vendido em contratos perpétuos. Vale a pena
-                  quando esse pagamento supera o custo de montar a operação.
+                  quando esse pagamento supera o custo de montar a operação — e o
+                  que conta é o pagamento <em>sustentado</em>, não o do momento.
+                  Medimos: quando a taxa dispara, ela volta para perto de 6% ao ano
+                  em três dias. Por isso a triagem usa a média de 72 horas.
                 </p>
 
                 <Card
@@ -762,10 +779,16 @@ export default function Painel() {
                   {melhorFunding && (
                     <div style={fraseStyle}>
                       O melhor caso hoje é {melhorFunding.simbolo}, pagando{' '}
-                      {num(melhorFunding.funding_anualizado_pct)}% ao ano.
-                      Descontados os custos, sobrariam{' '}
-                      {num(melhorFunding.carry_liquido_anualizado_pct)}% ao ano —
-                      ainda pouco para justificar o risco de execução.
+                      {num(melhorFunding.funding_ma_72h_pct)}% ao ano de forma
+                      sustentada nas últimas 72 horas
+                      {melhorFunding.funding_anualizado_pct !== null && (
+                        <> (agora está em {num(melhorFunding.funding_anualizado_pct)}%)</>
+                      )}
+                      . Mantendo a posição por{' '}
+                      {melhorFunding.holding_dias_assumido ?? 30} dias e descontando
+                      o custo de montar e desmontar, sobrariam{' '}
+                      {num(melhorFunding.carry_liquido_periodo_pct, 3)}% do valor
+                      aplicado.
                     </div>
                   )}
                 </Card>
@@ -796,18 +819,19 @@ export default function Painel() {
                     >
                       <span>{f.simbolo}</span>
                       <span style={{ color: S.dim, fontSize: 12, fontFamily: mono }}>
-                        {num(f.funding_anualizado_pct)}% bruto
+                        {num(f.funding_ma_72h_pct)}% sustentado
                       </span>
                       <span
                         style={{
                           fontFamily: mono,
                           color:
-                            Number(f.carry_liquido_anualizado_pct ?? 0) > 0
+                            Number(f.carry_liquido_periodo_pct ?? 0) > 0
                               ? S.green
                               : S.red,
                         }}
                       >
-                        {num(f.carry_liquido_anualizado_pct)}% líquido
+                        {num(f.carry_liquido_periodo_pct, 3)}% em{' '}
+                        {f.holding_dias_assumido ?? 30}d
                       </span>
                     </div>
                   ))}
@@ -815,8 +839,10 @@ export default function Painel() {
 
                 <p style={{ ...fraseStyle, marginTop: 12 }}>
                   Este módulo custa quase nada para manter rodando e avisa quando a
-                  janela abrir. Historicamente isso acontece em períodos de euforia,
-                  algumas vezes por ano.
+                  janela abrir. Ainda não sabemos com que frequência ela abre: são
+                  dez dias de coleta, e a única janela observada até agora durou seis
+                  horas. O protocolo pede noventa dias antes de qualquer conclusão
+                  sobre isso.
                 </p>
               </section>
             )}
