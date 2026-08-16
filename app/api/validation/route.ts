@@ -555,29 +555,40 @@ export async function POST(request: Request) {
   });
   await supabase.rpc('abandon_stale_validation_news_runs');
 
-  const activeResult = await supabase
+  // Ver comentário equivalente em app/api/forward-test/route.ts: `coletar` é a
+  // fonte autoritativa e a checagem anterior via `.some()` sobre o resultado de
+  // `ativo=true` falhava silenciosamente quando nenhuma linha tinha `ativo=true`.
+  let configs: ConfigRow[] = [];
+
+  const collectingResult = await supabase
     .from('forward_test_config')
     .select('*')
-    .eq('ativo', true)
+    .eq('coletar', true)
     .order('congelado_em', { ascending: true });
-  if (activeResult.error) {
-    return json({ ok: false, error: activeResult.error.message }, 500);
-  }
 
-  let configs = (activeResult.data ?? []) as ConfigRow[];
-  if (configs.some((config) => Object.prototype.hasOwnProperty.call(config, 'coletar'))) {
-    const collectingResult = await supabase
+  if (collectingResult.error) {
+    const fallbackResult = await supabase
       .from('forward_test_config')
       .select('*')
-      .eq('coletar', true)
+      .eq('ativo', true)
       .order('congelado_em', { ascending: true });
-    if (collectingResult.error) {
-      return json({ ok: false, error: collectingResult.error.message }, 500);
+    if (fallbackResult.error) {
+      return json({ ok: false, error: fallbackResult.error.message }, 500);
     }
+    configs = (fallbackResult.data ?? []) as ConfigRow[];
+  } else {
     configs = (collectingResult.data ?? []) as ConfigRow[];
   }
+
   if (configs.length === 0) {
-    return json({ ok: false, error: 'configuração ativa ausente' }, 500);
+    return json({
+      ok: true,
+      noop: true,
+      reason: 'nenhum protocolo com coletar=true; nada a validar',
+      version: 'validation-v2.0.0',
+      generatedAt: new Date().toISOString(),
+      reports: [],
+    });
   }
   const cache = new Map<string, Promise<DayTradeCandle[]>>();
   const reports = [];

@@ -550,36 +550,47 @@ export async function POST(req: Request): Promise<NextResponse> {
   });
   await supabase.rpc('abandon_stale_validation_news_runs');
 
-  const activeResult = await supabase
+  // `coletar` é a fonte autoritativa de quais protocolos estão em coleta.
+  //
+  // A versão anterior consultava `ativo=true` primeiro e só então checava a
+  // existência da coluna `coletar` com `.some()` sobre o resultado. Se nenhuma
+  // linha tivesse `ativo=true`, o array vinha vazio, `.some()` devolvia false,
+  // o bloco de `coletar` nunca executava e a rota respondia 500 — mesmo com
+  // protocolos legitimamente em coleta. A coleta passava a depender de um flag
+  // de interface que não tem relação com o experimento.
+  let configs: ConfigRow[] = [];
+
+  const collectingResult = await supabase
     .from('forward_test_config')
     .select('*')
-    .eq('ativo', true)
+    .eq('coletar', true)
     .order('congelado_em', { ascending: true });
-  if (activeResult.error) {
-    return respostaJson({ ok: false, erro: activeResult.error.message }, 500);
-  }
 
-  let configs = (activeResult.data ?? []) as ConfigRow[];
-  // Compatibilidade de implantação: antes da migração, a coluna `coletar` não
-  // existe e a configuração ativa continua sendo processada normalmente. Após
-  // a migração, ela permite vários protocolos em coleta sem quebrar as telas
-  // antigas, que ainda esperam exatamente uma configuração `ativo=true`.
-  if (configs.some((config) => Object.prototype.hasOwnProperty.call(config, 'coletar'))) {
-    const collectingResult = await supabase
+  if (collectingResult.error) {
+    // Deploy anterior à migração da coluna `coletar`: cai para o critério antigo.
+    const fallbackResult = await supabase
       .from('forward_test_config')
       .select('*')
-      .eq('coletar', true)
+      .eq('ativo', true)
       .order('congelado_em', { ascending: true });
-    if (collectingResult.error) {
-      return respostaJson({ ok: false, erro: collectingResult.error.message }, 500);
+    if (fallbackResult.error) {
+      return respostaJson({ ok: false, erro: fallbackResult.error.message }, 500);
     }
+    configs = (fallbackResult.data ?? []) as ConfigRow[];
+  } else {
     configs = (collectingResult.data ?? []) as ConfigRow[];
   }
+
+  // Nenhum protocolo em coleta é um estado legítimo (todas as hipóteses
+  // encerradas), não uma falha. Responder 500 aqui transformaria o encerramento
+  // de uma linha de pesquisa em ruído de erro horário, escondendo falhas reais.
   if (configs.length === 0) {
-    return respostaJson(
-      { ok: false, erro: 'nenhuma configuração ativa' },
-      500,
-    );
+    return respostaJson({
+      ok: true,
+      noop: true,
+      motivo: 'nenhum protocolo com coletar=true; nada a processar',
+      configs: [],
+    });
   }
 
   const started = Date.now();
