@@ -60,6 +60,7 @@ export interface DestinoNav {
  */
 export const DESTINOS: DestinoNav[] = [
   { href: '/', rotulo: 'Painel' },
+  { href: '/coleta', rotulo: 'Coleta' },
   { href: '/validacao', rotulo: 'Estatística' },
   { href: '/daytrade', rotulo: 'Validação' },
   { href: '/oportunidades', rotulo: 'Teste prospectivo' },
